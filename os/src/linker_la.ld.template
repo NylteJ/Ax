@@ -1,0 +1,2 @@
+OUTPUT_ARCH(loongarch)
+BASE_ADDRESS = 0x90000000;

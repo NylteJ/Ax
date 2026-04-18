@@ -1,0 +1,11 @@
+os/target
+
+os/src/linker_rv.ld
+os/src/linker_la.ld
+
+.vscode
+
+kernel-rv
+kernel-la
+
+private.md
