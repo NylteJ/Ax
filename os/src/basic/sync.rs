@@ -16,7 +16,7 @@ impl<T> RwLock<T> {
     pub fn read(&self) -> impl Deref<Target = T> {
         self.value.borrow()
     }
-    
+
     pub fn write(&self) -> impl DerefMut<Target = T> {
         self.value.borrow_mut()
     }

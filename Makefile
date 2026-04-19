@@ -19,7 +19,7 @@ GREEN  := \033[0;32m
 NC     := \033[0m
 
 .PHONY: all
-all: rv la
+all: clean rv la
 
 .PHONY: clean
 clean:
@@ -43,7 +43,7 @@ fmt:
 	}
 
 .PHONY: rv
-rv: clean os/.cargo
+rv: os/.cargo
 	@{ \
 		cd os; \
 		printf "正在写入 linker_rv.ld ..."; \
@@ -55,7 +55,7 @@ rv: clean os/.cargo
 	}
 
 .PHONY: la
-la: clean os/.cargo
+la: os/.cargo
 	@{ \
 		cd os; \
 		printf "正在写入 linker_la.ld ..."; \

@@ -1,4 +1,5 @@
 os/target
+os/.cargo
 
 os/src/linker_rv.ld
 os/src/linker_la.ld
@@ -9,3 +10,5 @@ kernel-rv
 kernel-la
 
 private.md
+
+Cargo.lock
