@@ -7,12 +7,15 @@
 #![feature(fn_align)]
 #![feature(never_type)]
 
+extern crate alloc;
+
 use core::arch::asm;
 use core::arch::global_asm;
 use core::arch::naked_asm;
 use core::intrinsics::volatile_set_memory;
 
 use crate::basic::debugger::backtrace;
+use crate::basic::global_allocator::init_heap;
 use crate::basic::sbi::shutdown;
 
 mod basic;
@@ -45,6 +48,15 @@ pub extern "C" fn _start() {
 #[unsafe(no_mangle)]
 pub extern "C" fn main() -> ! {
     clear_bss();
+    init_heap();
+
+    let layout = core::alloc::Layout::from_size_align(256, 64).unwrap();
+    for _ in 0..100 {
+        let memory = unsafe { alloc::alloc::alloc(layout) };
+        let addr = memory as usize;
+        println!("动态分配得到了位于 {addr:#x} 的内存");
+        assert!(addr % layout.align() == 0);
+    }
 
     println!("Hello, world!");
     println!("中文也可以！");

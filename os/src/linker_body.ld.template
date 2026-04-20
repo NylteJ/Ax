@@ -31,6 +31,7 @@ SECTIONS
     edata = .;
     .bss : {
         *(.bss.stack)
+        *(.bss.kheap)
         sbss = .;
         *(.bss .bss.*)
         *(.sbss .sbss.*)
