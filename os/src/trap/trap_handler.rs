@@ -8,6 +8,7 @@ use seq_macro::seq;
 
 use crate::{
     basic::timer::reset_timer_interrupt,
+    multitask::{current_task, task_scheduler::TASK_SCHEDULER},
     trap::trap::{Exception, Interrupt, Trap},
 };
 
@@ -27,7 +28,7 @@ struct TrapContext {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn trap_handler(context: &mut TrapContext) {
+extern "C" fn trap_handler(context: &mut TrapContext) {
     recover_task_pointer();
 
     match Trap::new() {
@@ -62,13 +63,13 @@ pub extern "C" fn trap_handler(context: &mut TrapContext) {
         Trap::Interrupt(Interrupt::TimerInterrupt) => {
             reset_timer_interrupt();
 
-            let cur = crate::multitask::current_task();
-            crate::multitask::task_scheduler::TASK_SCHEDULER
-                .write()
-                .add_task(unsafe {
-                    core::pin::Pin::new_unchecked(alloc::sync::Arc::from_raw(cur))
-                });
-            crate::run_next_program();
+            let mut brw = TASK_SCHEDULER.write();
+            if let Some(next_task) =
+                brw.on_time_interrupt(unsafe { current_task().as_ref_unchecked() })
+            {
+                drop(brw);
+                crate::run_program(next_task);
+            }
         }
         other => {
             print_trap_context(context);
@@ -97,8 +98,8 @@ fn recover_task_pointer() {
 
 fn is_trap_from_kernel(context: &TrapContext) -> bool {
     cfg_select! {
-        target_arch = "riscv64" =>     unsafe { context.status >> 8 & 0b1 == 1 },
-        target_arch = "loongarch64" => unsafe { context.status & 0b11 == 0 },
+        target_arch = "riscv64" =>     context.status >> 8 & 0b1 == 1,
+        target_arch = "loongarch64" => context.status & 0b11 == 0,
     }
 }
 
@@ -108,7 +109,11 @@ fn print_trap_context(context: &TrapContext) {
     println!("====== TRAP CONTEXT ======");
     println!(
         "source privilege: {}",
-        if is_trap_from_kernel(context) { "K" } else { "U" },
+        if is_trap_from_kernel(context) {
+            "K"
+        } else {
+            "U"
+        },
     );
     println!("return PC: {:#x}", context.ret_pc);
     cfg_select! {

@@ -14,10 +14,12 @@ impl<T> RwLock<T> {
         }
     }
 
+    #[track_caller]
     pub fn read(&self) -> impl Deref<Target = T> {
         self.value.borrow()
     }
 
+    #[track_caller]
     pub fn write(&self) -> impl DerefMut<Target = T> {
         self.value.borrow_mut()
     }
@@ -38,6 +40,7 @@ impl<T> Mutex<T> {
         }
     }
 
+    #[track_caller]
     pub fn lock(&self) -> impl DerefMut<Target = T> {
         self.value.borrow_mut()
     }

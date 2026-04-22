@@ -1,10 +1,12 @@
 use core::{ffi::CStr, pin::Pin};
 
-use alloc::sync::Arc;
-
 use crate::{
+    basic::{
+        sbi::{ShutdownStatus, shutdown},
+        shared_with_asm::SharedWithAsm,
+    },
     multitask::{current_task, task_scheduler::TASK_SCHEDULER},
-    print, println, run_next_program,
+    print, println, run_program,
     syscall::Arguments,
 };
 
@@ -24,20 +26,26 @@ pub fn exit(args: Arguments) -> ! {
     );
 
     let cur = current_task();
-    unsafe { Arc::decrement_strong_count(cur) };
+    unsafe {
+        Pin::drop_asm(cur);
+    };
 
-    run_next_program();
+    let Some(next_task) = TASK_SCHEDULER.write().pick_next() else {
+        println!("所有用户程序运行完毕，关机");
+        shutdown(ShutdownStatus::Normal);
+    };
+
+    run_program(next_task);
     unreachable!();
 }
 
-pub fn yield_(args: Arguments) -> usize {
+pub fn yield_(_args: Arguments) -> usize {
     println!("[Kernel] Application yielded.");
 
+    let mut scheduler = TASK_SCHEDULER.write();
     let cur = current_task();
-    TASK_SCHEDULER
-        .write()
-        .add_task(unsafe { Pin::new_unchecked(Arc::from_raw(cur)) });
-    run_next_program();
+    scheduler.add_task(unsafe { Pin::from_asm(cur) });
+    run_program(scheduler.pick_next().unwrap());
 
     0
 }

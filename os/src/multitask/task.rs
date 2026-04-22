@@ -6,6 +6,7 @@ use crate::{
     basic::{stack::TaskKernelStackPtr, sync::RwLock},
     multitask::{
         SchedulePolicy, TaskPriority,
+        task_context::TaskContext,
         task_manager::{PID_ALLOCATOR, register_task},
     },
 };
@@ -96,12 +97,12 @@ impl Task {
         ret
     }
 
-    /// 获取 TaskContext 的地址
+    /// 获取 TaskContext
     ///
     /// # Safety
     /// 此函数本身安全，但当前任务不处于挂起状态时其返回值不能被安全使用
-    pub fn get_context_addr(&self) -> usize {
-        self.kstack.get_addr()
+    pub fn get_context(&self) -> *const TaskContext {
+        self.kstack.get_addr() as _
     }
 }
 

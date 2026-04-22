@@ -22,7 +22,7 @@ use alloc::sync::Arc;
 
 use crate::basic::debugger::backtrace;
 use crate::basic::global_allocator::init_heap;
-use crate::basic::sbi::shutdown;
+use crate::basic::shared_with_asm::SharedWithAsm;
 use crate::multitask::current_task;
 use crate::multitask::task::Task;
 use crate::multitask::task_context::TaskContext;
@@ -81,27 +81,32 @@ pub extern "C" fn main() -> ! {
 
     println!("准备进入用户态...");
 
+    TASK_SCHEDULER.write().add_task(Task::new(
+        multitask::SchedulePolicy::RoundRobin,
+        40,
+        user_start::<16, "我应该被打断！\n\0"> as usize,
+    ));
     seq_macro::seq!(N in 1..=3 {
         TASK_SCHEDULER.write().add_task(Task::new(
             multitask::SchedulePolicy::FIFO,
             40,
-            user_start::<N, { concat!("HELLO FROM", N, "\n\0") }> as usize,
+            user_start::<{10 + N}, { concat!("我不该被打断！", N, "\n\0") }> as usize,
         ));
     });
 
+    // TASK_SCHEDULER.write().add_task(Task::new(
+    //     multitask::SchedulePolicy::RoundRobin,
+    //     50,
+    //     (|| loop {}) as fn() as usize,
+    // ));
     TASK_SCHEDULER.write().add_task(Task::new(
-        multitask::SchedulePolicy::FIFO,
-        50,
-        (|| loop {}) as fn() as usize,
-    ));
-    TASK_SCHEDULER.write().add_task(Task::new(
-        multitask::SchedulePolicy::FIFO,
+        multitask::SchedulePolicy::RoundRobin,
         50,
         user_start::<5, "VME50\n\0"> as usize,
     ));
 
     let task = TASK_SCHEDULER.write().pick_next().unwrap();
-    let task = unsafe { Arc::into_raw(Pin::into_inner_unchecked(task)).as_ref_unchecked() };
+    let task = unsafe { task.into_asm().as_ref_unchecked() };
     let entry = task.entry.write().take().unwrap();
 
     // trap::set_global_interrupts_enable(true);
@@ -122,15 +127,10 @@ fn clear_bss() {
 }
 
 // FIXME: temp
-fn run_next_program() {
-    let Some(task) = TASK_SCHEDULER.write().pick_next() else {
-        println!("所有用户程序运行完毕，关机");
-        shutdown(basic::sbi::ShutdownStatus::Normal);
-    };
+fn run_program(task: Pin<Arc<Task>>) {
+    let task = unsafe { task.into_asm().as_ref_unchecked() };
 
-    let task = unsafe { Arc::into_raw(Pin::into_inner_unchecked(task)).as_ref_unchecked() };
-
-    if task as *const _ == current_task() {
+    if core::ptr::eq(task, current_task()) {
         // 仍然切换到当前任务，直接返回即可。
         // 注意这不仅是优化，也是正确性所必需的：下面的 switch_context 分支无法处理这种情况。
         return;
@@ -158,7 +158,7 @@ fn run_next_program() {
                 prmd.set_bits(0..2, 3);
                 prmd.set_bit(2, true);
                 asm!("csrwr {0}, 0x1", in(reg) prmd);
-                
+
                 asm!(
                     "csrwr {trap_handler_raw_from_user}, 0xc",
                     trap_handler_raw_from_user = in(reg) trap::trap_handler::trap_handler_raw_from_user,
@@ -168,9 +168,7 @@ fn run_next_program() {
         save_current_and_run(entry, task.ustack, task.kstack.get_addr());
     } else {
         drop(ent);
-        unsafe {
-            switch_context((task.get_context_addr() as *const TaskContext).as_ref_unchecked())
-        };
+        unsafe { switch_context(task.get_context().as_ref_unchecked()) };
     }
 }
 
@@ -290,7 +288,7 @@ extern "C" fn save_current_and_run(entry: usize, stack: usize, kstack: usize) {
 
 fn user_start<const RET: usize, const STR: &'static str>() -> ! {
     fn user_main<const RET: usize, const STR: &'static str>() {
-        for i in 0..RET {
+        for _ in 0..RET {
             syscall!(233, (STR as *const str).addr());
             // syscall!(124);
         }

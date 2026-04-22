@@ -43,6 +43,19 @@ impl TaskScheduler {
 
         None
     }
+
+    /// 发生时钟中断时调用。返回 Some 时调用方应当使用 switch_context 切换到返回的 Task。否则无需任何操作。
+    #[unsafe(no_mangle)]
+    pub fn on_time_interrupt(&mut self, task: &Task) -> Option<Pin<Arc<Task>>> {
+        // Performance Node: 或许考虑像 Linux 内核那样直接缓存一个指针（Rust 那么写起来太麻烦了 XP）？
+        for scheduler in &mut self.schedulers {
+            if let Ok(task) = scheduler.on_time_interrupt(task) {
+                return task;
+            }
+        }
+
+        panic!("无法为 Task {:?} 找到合适的调度器来处理时间中断", task);
+    }
 }
 
 lazy_static! {

@@ -20,6 +20,10 @@ impl Scheduler for IdleScheduler {
         // TODO
         None
     }
+
+    fn on_time_interrupt(&mut self, _task: &Task) -> Result<Option<Pin<Arc<Task>>>, ()> {
+        Ok(None) // no-op
+    }
 }
 
 impl IdleScheduler {

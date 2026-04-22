@@ -27,7 +27,9 @@ pub enum SchedulePolicy {
 }
 
 /// 获取指向当前 Task 结构体的指针。如果上下文不正确，返回值不能被安全使用。
-pub fn current_task() -> *mut task::Task {
+///
+/// 顺带一提，不设计成返回引用的形式是因为很难说清它的生命周期（'static 显然会带来数不尽的安全隐患）。
+pub fn current_task() -> *const task::Task {
     let tp;
     cfg_select! {
         target_arch = "riscv64" =>     unsafe { asm!("mv {0}, tp", out(reg) tp) },

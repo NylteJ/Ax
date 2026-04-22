@@ -3,8 +3,9 @@ use core::pin::Pin;
 use alloc::{collections::vec_deque::VecDeque, sync::Arc};
 use bitvec::{BitArr, array::BitArray};
 
-use crate::multitask::{
-    REALTIME_PRIORITY_COUNT, SchedulePolicy, schedulers::Scheduler, task::Task,
+use crate::{
+    basic::shared_with_asm::SharedWithAsm,
+    multitask::{REALTIME_PRIORITY_COUNT, SchedulePolicy, schedulers::Scheduler, task::Task},
 };
 
 /// 实时调度器
@@ -24,7 +25,6 @@ impl Scheduler for RealtimeScheduler {
         // 调度策略不在这里体现，此处两种策略没有区别
 
         let priority = task.priority as usize;
-        assert!(priority < REALTIME_PRIORITY_COUNT);
 
         if self.tasks[priority].is_empty() {
             self.has_tasks.set(priority, true);
@@ -42,6 +42,25 @@ impl Scheduler for RealtimeScheduler {
             }
             queue.pop_front().unwrap()
         })
+    }
+
+    fn on_time_interrupt(&mut self, task: &Task) -> Result<Option<Pin<Arc<Task>>>, ()> {
+        match task.policy {
+            SchedulePolicy::FIFO => Ok(None), // FIFO 不需要处理时间中断，跑到跑完
+            SchedulePolicy::RoundRobin => {
+                // 暂时只给跑一个时间片
+                let queue = &mut self.tasks[task.priority as usize];
+
+                let Some(next_task) = queue.pop_front() else {
+                    return Ok(None); // 队列里没有其它同优先级的任务，继续跑即可（更低优先级的必须等我们跑完）
+                };
+
+                // 切换任务
+                queue.push_back(unsafe { Pin::from_asm(task) });
+                Ok(Some(next_task))
+            }
+            _ => Err(()),
+        }
     }
 }
 
