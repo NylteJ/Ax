@@ -54,10 +54,11 @@ impl Trap {
 pub enum Interrupt {
     SupervisorSoft = 1,
     MachineSoft = 3,
-    SupervisorTimer = 5,
     MachineTimer = 7,
     SupervisorExternal = 9,
     MachineExternal = 11,
+
+    TimerInterrupt = 5,
 }
 
 #[cfg(target_arch = "riscv64")]
@@ -96,8 +97,9 @@ pub enum Interrupt {
     HardwareInterrupt6 = 8,
     HardwareInterrupt7 = 9,
     PerformanceMonitorCounterOverflow = 10,
-    TimerInterrupt = 11,
     InterProcessorInterrupt = 12,
+
+    TimerInterrupt = 11,
 }
 
 #[cfg(target_arch = "loongarch64")]

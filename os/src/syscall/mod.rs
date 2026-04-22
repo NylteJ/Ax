@@ -58,6 +58,8 @@ pub static TABLE: [Option<fn(Arguments) -> usize>; 256] = {
     let mut table: [Option<fn(Arguments) -> usize>; 256] = [None; 256];
 
     table[93] = Some(|args| basic::exit(args));
+    table[124] = Some(basic::yield_);
+    table[233] = Some(basic::print);
 
     table
 };

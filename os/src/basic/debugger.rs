@@ -25,8 +25,7 @@ pub fn backtrace() {
         return;
     }
 
-    let mut depth = 0usize;
-    loop {
+    for depth in 0..100 {
         let pc = unsafe { *frame_pointer.sub(1) };
         let fp = unsafe { *frame_pointer.sub(2) };
 
@@ -37,9 +36,8 @@ pub fn backtrace() {
             break;
         }
 
-        println!("#{depth} {pc:#18x}, fp = {fp:#18x}");
+        println!("#{depth:2} {pc:#18x}, fp = {fp:#18x}");
 
         frame_pointer = fp as *const usize;
-        depth += 1;
     }
 }
