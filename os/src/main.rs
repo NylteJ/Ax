@@ -60,7 +60,7 @@ pub extern "C" fn _start() {
 #[unsafe(no_mangle)]
 pub extern "C" fn main() -> ! {
     clear_bss();
-    trap::trap_handler::init();
+    trap::trap_handler::init_k();
 
     init_heap();
 
@@ -104,7 +104,6 @@ pub extern "C" fn main() -> ! {
     let task = unsafe { Arc::into_raw(Pin::into_inner_unchecked(task)).as_ref_unchecked() };
     let entry = task.entry.write().take().unwrap();
 
-    // FIXME: 未来肯定要支持内核态中断
     // trap::set_global_interrupts_enable(true);
     trap::enable_timer_interrupt();
     basic::timer::start_timer_tick_tock();
@@ -145,6 +144,11 @@ fn run_next_program() {
             target_arch = "riscv64" => unsafe {
                 use riscv::register::sstatus;
                 sstatus::set_spp(sstatus::SPP::User);
+
+                asm!(
+                    "csrw stvec, {trap_handler_raw_from_user}",
+                    trap_handler_raw_from_user = in(reg) trap::trap_handler::trap_handler_raw_from_user,
+                );
             },
             target_arch = "loongarch64" => unsafe {
                 use bit_field::BitField;
@@ -154,6 +158,11 @@ fn run_next_program() {
                 prmd.set_bits(0..2, 3);
                 prmd.set_bit(2, true);
                 asm!("csrwr {0}, 0x1", in(reg) prmd);
+                
+                asm!(
+                    "csrwr {trap_handler_raw_from_user}, 0xc",
+                    trap_handler_raw_from_user = in(reg) trap::trap_handler::trap_handler_raw_from_user,
+                );
             },
         }
         save_current_and_run(entry, task.ustack, task.kstack.get_addr());
@@ -176,10 +185,12 @@ fn run_user_program(entry: usize, stack: usize, kstack: usize) -> ! {
             sstatus::set_spp(sstatus::SPP::User);
 
             asm!(
+                "csrw stvec, {trap_handler_raw_from_user}",
                 "csrw sscratch, {stack}",
                 "csrw sepc, {entry}",
                 "csrrw sp, sscratch, {kstack}",
                 "sret",
+                trap_handler_raw_from_user = in(reg) trap::trap_handler::trap_handler_raw_from_user,
                 stack = in(reg) stack,
                 entry = in(reg) entry,
                 kstack = in(reg) kstack,
@@ -196,10 +207,12 @@ fn run_user_program(entry: usize, stack: usize, kstack: usize) -> ! {
             asm!("csrwr {0}, 0x1", in(reg) prmd);
 
             asm!(
+                "csrwr {trap_handler_raw_from_user}, 0xc",
                 "csrwr {entry}, 0x6",
                 "csrwr {kstack}, 0x30",
                 "move $sp, {stack}",
                 "ertn",
+                trap_handler_raw_from_user = in(reg) trap::trap_handler::trap_handler_raw_from_user,
                 entry = in(reg) entry,
                 stack = in(reg) stack,
                 kstack = in(reg) kstack,
