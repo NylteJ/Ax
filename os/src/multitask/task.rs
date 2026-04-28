@@ -4,6 +4,12 @@ use alloc::sync::Arc;
 
 use crate::{
     basic::{stack::TaskKernelStackPtr, sync::RwLock},
+    memory::{
+        PAGE_BYTES,
+        address::{VIRTUAL_ADDRESS_LOW_HIGHEST, VirtAddr},
+        address_space::AddressSpace,
+        virtual_memory_area::{VMAFlags, VMAGrowth, VMAType, VirtualMemoryArea},
+    },
     multitask::{
         SchedulePolicy, TaskPriority,
         task_context::TaskContext,
@@ -26,12 +32,16 @@ pub struct Task {
     pub policy: SchedulePolicy,
     pub priority: TaskPriority,
 
+    pub memory_space: Arc<RwLock<AddressSpace>>,
+
     // FIXME: 这是临时的
     pub ustack: usize,
     pub entry: RwLock<Option<usize>>,
 
     _pin: PhantomPinned, // Task 的地址需要在 tp、内核栈等区域存储，因此不能移动
 }
+
+pub type TaskArc = Pin<Arc<Task>>;
 
 impl Task {
     /// 创建一个新的 Task 并为它分配内核栈等资源。返回的 Arc 保证具有其独占所有权。
@@ -60,16 +70,17 @@ impl Task {
             kstack_top - size_of::<*const ()>()
         };
 
-        let ustack = {
-            let layout = alloc::alloc::Layout::from_size_align(1024 * 1024, 4096).unwrap();
+        let memory_space = Arc::new(RwLock::new(AddressSpace::new()));
 
-            let ustack_ptr = unsafe { alloc::alloc::alloc(layout) };
-            if ustack_ptr.is_null() {
-                panic!("无法为 Task 分配用户栈");
-            }
+        const USER_STACK_HIGHEST: usize = VIRTUAL_ADDRESS_LOW_HIGHEST + 1;
 
-            ustack_ptr as usize + 1024 * 1024
-        };
+        memory_space.write().add_vma(VirtualMemoryArea {
+            start: VirtAddr(USER_STACK_HIGHEST - PAGE_BYTES),
+            end: VirtAddr(USER_STACK_HIGHEST),
+            flags: VMAFlags::Read | VMAFlags::Write | VMAFlags::User,
+            vma_type: VMAType::Anonymous,
+            growth: VMAGrowth::GrowDown(VirtAddr(USER_STACK_HIGHEST - 2048 * PAGE_BYTES)),
+        });
 
         let ret = Arc::pin(Self {
             // SAFETY: 内核栈大小大于单个指针大小，因此此值一定仍在内核栈内，且不位于边界
@@ -79,7 +90,9 @@ impl Task {
             policy,
             priority,
 
-            ustack,
+            memory_space,
+
+            ustack: USER_STACK_HIGHEST,
             entry: RwLock::new(Some(entry)),
 
             _pin: PhantomPinned,

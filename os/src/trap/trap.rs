@@ -76,10 +76,10 @@ pub enum Exception {
     SupervisorEnvCall = 9,
     MachineEnvCall = 11,
     InstructionPageFault = 12,
-    LoadPageFault = 13,
-    StorePageFault = 15,
 
     Syscall = 8, // 即 UserEnvCall
+    LoadPageFault = 13,
+    StorePageFault = 15,
 }
 
 #[cfg(target_arch = "loongarch64")]
@@ -106,8 +106,6 @@ pub enum Interrupt {
 #[derive(Debug, Clone, Copy, TryFromPrimitive)]
 #[repr(usize)]
 pub enum Exception {
-    PageInvalidLoad = 0x1,
-    PageInvalidStore = 0x2,
     PageInvalidFetch = 0x3,
     PageModifyFault = 0x4,
     PageNonReadableFault = 0x5,
@@ -121,5 +119,7 @@ pub enum Exception {
     InstructionPrivilegeIllegal = 0xE,
     FloatingPointUnavailable = 0xF,
 
+    LoadPageFault = 0x1,  // 即 PageInvalidLoad
+    StorePageFault = 0x2, // 即 PageInvalidStore
     Syscall = 0xB,
 }

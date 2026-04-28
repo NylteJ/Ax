@@ -23,6 +23,10 @@ impl<T> RwLock<T> {
     pub fn write(&self) -> impl DerefMut<Target = T> {
         self.value.borrow_mut()
     }
+
+    pub fn as_ptr(&self) -> *mut T {
+        self.value.as_ptr()
+    }
 }
 
 // SAFETY: 目前我们不支持并行，故而无需担心数据竞争

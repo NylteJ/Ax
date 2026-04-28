@@ -36,6 +36,11 @@ pub fn backtrace() {
             break;
         }
 
+        #[cfg(target_arch = "riscv64")]
+        if fp <= crate::memory::address::VIRTUAL_ADDRESS_HIGH_BASE {
+            break;
+        }
+
         println!("#{depth:2} {pc:#18x}, fp = {fp:#18x}");
 
         frame_pointer = fp as *const usize;

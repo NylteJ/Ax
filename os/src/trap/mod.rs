@@ -1,3 +1,4 @@
+pub mod page_fault_type;
 pub mod trap_handler;
 
 mod trap;

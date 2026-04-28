@@ -66,6 +66,7 @@ pub fn reset_timer_interrupt() {
     }
 }
 
+// Performance Note: 或许可以移除 lazy_static，改为普通 static，手动 unsafe write_volatile 初始化
 lazy_static! {
     static ref CLOCK_FREQ: usize = {
         let freq = {

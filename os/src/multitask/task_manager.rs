@@ -1,11 +1,11 @@
-use core::pin::Pin;
-
 use crate::{
     basic::sync::Mutex,
-    multitask::{id_allocator::IdAllocator, task::Task},
+    multitask::{
+        id_allocator::IdAllocator,
+        task::{Task, TaskArc},
+    },
 };
 
-use alloc::sync::Arc;
 use hashbrown::HashMap;
 use pin_weak::sync::PinWeak;
 
@@ -16,7 +16,7 @@ lazy_static::lazy_static! {
 }
 
 /// 将 Task 注册到全局 Task 表中
-pub fn register_task(task: Pin<Arc<Task>>) {
+pub fn register_task(task: TaskArc) {
     let mut map = PID_TASK_MAP.lock();
     let entry = map.entry(task.pid);
 
@@ -39,6 +39,6 @@ pub fn register_task(task: Pin<Arc<Task>>) {
     }
 }
 
-pub fn get_task_by_pid(pid: usize) -> Option<Pin<Arc<Task>>> {
+pub fn get_task_by_pid(pid: usize) -> Option<TaskArc> {
     PID_TASK_MAP.lock().get(&pid)?.upgrade()
 }

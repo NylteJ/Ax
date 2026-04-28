@@ -1,11 +1,11 @@
 use core::pin::Pin;
 
-use alloc::sync::Arc;
+use alloc::{boxed::Box, sync::Arc};
 
 /// 标记此类型将与汇编代码共享。
 ///
 /// 这意味着它在某些时候可能完全不在 Rust 端可达。换言之，其所有权会在 Rust 端和汇编端之间转移。
-pub trait SharedWithAsm {
+pub unsafe trait SharedWithAsm {
     type AsmType;
 
     /// 将自身所有权转移给汇编端。如果返回值未妥善处理则可能引发资源泄露或内存不安全。
@@ -22,10 +22,15 @@ pub trait SharedWithAsm {
     ///
     /// # Safety
     /// 输入必须来源于 `into_asm` 的返回值，且每次 `into_asm` 必须恰好对应一次 `from_asm` 或 `drop_asm`。
-    unsafe fn drop_asm(asm_value: Self::AsmType);
+    unsafe fn drop_asm(asm_value: Self::AsmType)
+    where
+        Self: Sized,
+    {
+        drop(unsafe { Self::from_asm(asm_value) });
+    }
 }
 
-impl<T: ?Sized> SharedWithAsm for Pin<Arc<T>> {
+unsafe impl<T: ?Sized> SharedWithAsm for Pin<Arc<T>> {
     type AsmType = *const T;
 
     unsafe fn into_asm(self) -> Self::AsmType {
@@ -38,5 +43,17 @@ impl<T: ?Sized> SharedWithAsm for Pin<Arc<T>> {
 
     unsafe fn drop_asm(asm_value: Self::AsmType) {
         unsafe { Arc::decrement_strong_count(asm_value) };
+    }
+}
+
+unsafe impl<T: ?Sized> SharedWithAsm for Pin<Box<T>> {
+    type AsmType = *mut T;
+
+    unsafe fn into_asm(self) -> Self::AsmType {
+        Box::into_raw(unsafe { Pin::into_inner_unchecked(self) })
+    }
+
+    unsafe fn from_asm(asm_value: Self::AsmType) -> Self {
+        unsafe { Pin::new_unchecked(Box::from_raw(asm_value)) }
     }
 }

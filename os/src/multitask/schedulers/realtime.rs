@@ -1,23 +1,25 @@
-use core::pin::Pin;
-
-use alloc::{collections::vec_deque::VecDeque, sync::Arc};
+use alloc::collections::vec_deque::VecDeque;
 use bitvec::{BitArr, array::BitArray};
 
 use crate::{
     basic::shared_with_asm::SharedWithAsm,
-    multitask::{REALTIME_PRIORITY_COUNT, SchedulePolicy, schedulers::Scheduler, task::Task},
+    multitask::{
+        REALTIME_PRIORITY_COUNT, SchedulePolicy,
+        schedulers::Scheduler,
+        task::{Task, TaskArc},
+    },
 };
 
 /// 实时调度器
 ///
 /// 只存放实时优先级（0 ~ 99）的任务。优先调度高优先级任务，只在没有高优先级任务时调度低优先级任务。
 pub struct RealtimeScheduler {
-    tasks: [VecDeque<Pin<Arc<Task>>>; REALTIME_PRIORITY_COUNT],
+    tasks: [VecDeque<TaskArc>; REALTIME_PRIORITY_COUNT],
     has_tasks: BitArr!(for REALTIME_PRIORITY_COUNT),
 }
 
 impl Scheduler for RealtimeScheduler {
-    fn add_task(&mut self, task: Pin<Arc<Task>>) -> Result<(), ()> {
+    fn add_task(&mut self, task: TaskArc) -> Result<(), ()> {
         let (SchedulePolicy::FIFO | SchedulePolicy::RoundRobin) = task.policy else {
             return Err(());
         };
@@ -34,7 +36,7 @@ impl Scheduler for RealtimeScheduler {
         Ok(())
     }
 
-    fn pick_next(&mut self) -> Option<Pin<Arc<Task>>> {
+    fn pick_next(&mut self) -> Option<TaskArc> {
         self.has_tasks.first_one().map(|idx| {
             let queue = &mut self.tasks[idx];
             if queue.len() == 1 {
@@ -44,7 +46,7 @@ impl Scheduler for RealtimeScheduler {
         })
     }
 
-    fn on_time_interrupt(&mut self, task: &Task) -> Result<Option<Pin<Arc<Task>>>, ()> {
+    fn on_time_interrupt(&mut self, task: &Task) -> Result<Option<TaskArc>, ()> {
         match task.policy {
             SchedulePolicy::FIFO => Ok(None), // FIFO 不需要处理时间中断，跑到跑完
             SchedulePolicy::RoundRobin => {
@@ -56,7 +58,7 @@ impl Scheduler for RealtimeScheduler {
                 };
 
                 // 切换任务
-                queue.push_back(unsafe { Pin::from_asm(task) });
+                queue.push_back(unsafe { TaskArc::from_asm(task) });
                 Ok(Some(next_task))
             }
             _ => Err(()),

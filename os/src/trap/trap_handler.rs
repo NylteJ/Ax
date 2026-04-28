@@ -1,15 +1,20 @@
 use core::{
     arch::{asm, naked_asm},
     mem::offset_of,
-    ops::RangeInclusive,
+    ops::{Range, RangeInclusive},
 };
 
+use lazy_static::lazy_static;
 use seq_macro::seq;
 
 use crate::{
     basic::timer::reset_timer_interrupt,
+    memory::address::VirtAddr,
     multitask::{current_task, task_scheduler::TASK_SCHEDULER},
-    trap::trap::{Exception, Interrupt, Trap},
+    trap::{
+        page_fault_type::PageFaultType,
+        trap::{Exception, Interrupt, Trap},
+    },
 };
 
 pub fn init_k() {
@@ -71,6 +76,58 @@ extern "C" fn trap_handler(context: &mut TrapContext) {
                 crate::run_program(next_task);
             }
         }
+        Trap::Exception(fault @ (Exception::LoadPageFault | Exception::StorePageFault)) => {
+            if is_trap_from_kernel(context) {
+                let fixup = 'get_fixup: {
+                    for (addr_range, fixup_addr) in FIXUPS.iter() {
+                        if addr_range.contains(&context.ret_pc) {
+                            break 'get_fixup Some(*fixup_addr);
+                        }
+                    }
+                    None
+                };
+
+                if let Some(fixup) = fixup {
+                    // TODO：这里其实也要处理用户态缺页问题，不过现在暂时不用担心
+                    crate::println!(
+                        "{:#x} 处发生 PageFault，但位于 fixup 表内，准备重定向到 {fixup:#x}",
+                        context.ret_pc
+                    );
+                    context.ret_pc = fixup;
+                } else {
+                    print_trap_context(context);
+                    panic!("内核态发生 PageFault！");
+                }
+            } else {
+                let current_task = unsafe { current_task().as_ref_unchecked() };
+
+                let bad_address = get_bad_address();
+
+                let fault_type = match fault {
+                    Exception::LoadPageFault => PageFaultType::Read,
+                    Exception::StorePageFault => PageFaultType::Write,
+                    _ => unreachable!(),
+                };
+
+                let handle_result = current_task
+                    .memory_space
+                    .write()
+                    .handle_page_fault(VirtAddr(bad_address), fault_type);
+
+                if handle_result.is_err() {
+                    crate::println!("============☆喜报☆============");
+                    crate::println!(
+                        "用户态程序（PID = {}）发生 PageFault（类型：{:?}）",
+                        current_task.pid,
+                        fault_type
+                    );
+                    print_trap_context(context);
+                    crate::println!("===============================");
+
+                    todo!();
+                }
+            }
+        }
         other => {
             print_trap_context(context);
             todo!("TRAP: {other:?}");
@@ -103,6 +160,21 @@ fn is_trap_from_kernel(context: &TrapContext) -> bool {
     }
 }
 
+fn get_bad_address() -> usize {
+    cfg_select! {
+        target_arch = "riscv64" => {
+            let stval: usize;
+            unsafe { asm!("csrr {0}, stval", out(reg) stval) };
+            stval
+        },
+        target_arch = "loongarch64" => {
+            let badv: usize;
+            unsafe { asm!("csrrd {0}, 0x7", out(reg) badv) };
+            badv
+        },
+    }
+}
+
 fn print_trap_context(context: &TrapContext) {
     use crate::println;
 
@@ -116,17 +188,21 @@ fn print_trap_context(context: &TrapContext) {
         },
     );
     println!("return PC: {:#x}", context.ret_pc);
-    cfg_select! {
-        target_arch = "riscv64" => {
-            let stval: usize;
-            unsafe { asm!("csrr {0}, stval", out(reg) stval) };
-            println!("STVAL: {stval:#x}");
-        },
-        target_arch = "loongarch64" => {
-            let badv: usize;
-            unsafe { asm!("csrrd {0}, 0x7", out(reg) badv) };
-            println!("BADV: {badv:#x}");
-        },
+    println!("bad address: {:#x}", get_bad_address())
+}
+
+lazy_static! {
+    static ref FIXUPS: [(Range<usize>, usize); 1] = {
+        let suaccess: usize;
+        let euaccess: usize;
+        let __copy_uaccess_fault: usize;
+        unsafe {
+            asm!("la {0}, suaccess", out(reg) suaccess);
+            asm!("la {0}, euaccess", out(reg) euaccess);
+            asm!("la {0}, __copy_uaccess_fault", out(reg) __copy_uaccess_fault);
+        }
+
+        [(suaccess..euaccess, __copy_uaccess_fault)]
     };
 }
 
@@ -139,6 +215,7 @@ const RET_PC_OFFSET: usize = offset_of!(TrapContext, ret_pc);
 #[unsafe(naked)]
 #[unsafe(no_mangle)]
 #[cfg(target_arch = "riscv64")]
+#[unsafe(link_section = ".text.trampoline")]
 pub extern "C" fn trap_handler_raw_from_user() {
     seq!(N in 3..=31 {
         naked_asm!(
@@ -265,6 +342,7 @@ pub extern "C" fn trap_handler_raw_from_user() {
 #[unsafe(naked)]
 #[unsafe(no_mangle)]
 #[cfg(target_arch = "riscv64")]
+#[unsafe(link_section = ".text.trampoline")]
 pub extern "C" fn trap_handler_raw_from_kernel() {
     seq!(N in 3..=31 {
         naked_asm!(

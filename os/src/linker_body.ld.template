@@ -6,15 +6,18 @@ SECTIONS
     skernel = .;
 
     stext = .;
-    .text : {
+    .text : AT(. - ADDRESS_OFFSET) {
         *(.text.entry)
+        suaccess = .;
+        *(.text.uaccess)
+        euaccess = .;
         *(.text .text.*)
     }
 
     . = ALIGN(4K);
     etext = .;
     srodata = .;
-    .rodata : {
+    .rodata : AT(. - ADDRESS_OFFSET) {
         *(.rodata .rodata.*)
         *(.srodata .srodata.*)
     }
@@ -22,14 +25,14 @@ SECTIONS
     . = ALIGN(4K);
     erodata = .;
     sdata = .;
-    .data : {
+    .data : AT(. - ADDRESS_OFFSET) {
         *(.data .data.*)
         *(.sdata .sdata.*)
     }
 
     . = ALIGN(4K);
     edata = .;
-    .bss : {
+    .bss : AT(. - ADDRESS_OFFSET) {
         *(.bss.stack)
         *(.bss.kheap)
         sbss = .;

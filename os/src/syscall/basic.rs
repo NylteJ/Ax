@@ -1,11 +1,10 @@
-use core::{ffi::CStr, pin::Pin};
-
 use crate::{
     basic::{
         sbi::{ShutdownStatus, shutdown},
         shared_with_asm::SharedWithAsm,
     },
-    multitask::{current_task, task_scheduler::TASK_SCHEDULER},
+    memory::uaccess::copy_from_user,
+    multitask::{current_task, task::TaskArc, task_scheduler::TASK_SCHEDULER},
     print, println, run_program,
     syscall::Arguments,
 };
@@ -27,7 +26,7 @@ pub fn exit(args: Arguments) -> ! {
 
     let cur = current_task();
     unsafe {
-        Pin::drop_asm(cur);
+        TaskArc::drop_asm(cur);
     };
 
     let Some(next_task) = TASK_SCHEDULER.write().pick_next() else {
@@ -44,16 +43,52 @@ pub fn yield_(_args: Arguments) -> usize {
 
     let mut scheduler = TASK_SCHEDULER.write();
     let cur = current_task();
-    scheduler.add_task(unsafe { Pin::from_asm(cur) });
-    run_program(scheduler.pick_next().unwrap());
+    scheduler.add_task(unsafe { TaskArc::from_asm(cur) });
+    let next_task = scheduler.pick_next().unwrap();
+    drop(scheduler);
+    run_program(next_task);
 
     0
 }
 
 // FIXME: 临时
 pub fn print(args: Arguments) -> usize {
-    let str = args[0] as *const _;
-    let str = unsafe { CStr::from_ptr(str) };
-    print!("{}", str.to_str().unwrap());
+    let str_ptr = args[0] as *const u8;
+
+    let mut length = args[1];
+
+    const BUFFER_SIZE: usize = 64;
+
+    let mut buffer = [0; BUFFER_SIZE];
+
+    while length > BUFFER_SIZE {
+        let Ok(()) = copy_from_user(&mut buffer, str_ptr) else {
+            return 2;
+        };
+
+        let s = match str::from_utf8(&buffer) {
+            Ok(str) => str,
+            Err(err) => unsafe { str::from_utf8_unchecked(&buffer[0..err.valid_up_to()]) },
+        };
+
+        if s.is_empty() {
+            return 1;
+        }
+
+        print!("{s}");
+
+        length -= s.len();
+    }
+
+    let Ok(()) = copy_from_user(&mut buffer[0..length], str_ptr) else {
+        return 2;
+    };
+
+    let Ok(s) = str::from_utf8(&buffer) else {
+        return 1;
+    };
+
+    print!("{s}");
+
     0
 }

@@ -2,7 +2,11 @@ use core::pin::Pin;
 
 use alloc::sync::Arc;
 
-use crate::multitask::{SchedulePolicy, schedulers::Scheduler, task::Task};
+use crate::multitask::{
+    SchedulePolicy,
+    schedulers::Scheduler,
+    task::{Task, TaskArc},
+};
 
 /// IDLE 调度器
 ///
@@ -12,16 +16,16 @@ pub struct IdleScheduler {
 }
 
 impl Scheduler for IdleScheduler {
-    fn add_task(&mut self, _task: Pin<Arc<Task>>) -> Result<(), ()> {
+    fn add_task(&mut self, _task: TaskArc) -> Result<(), ()> {
         Err(())
     }
 
-    fn pick_next(&mut self) -> Option<Pin<Arc<Task>>> {
+    fn pick_next(&mut self) -> Option<TaskArc> {
         // TODO
         None
     }
 
-    fn on_time_interrupt(&mut self, _task: &Task) -> Result<Option<Pin<Arc<Task>>>, ()> {
+    fn on_time_interrupt(&mut self, _task: &Task) -> Result<Option<TaskArc>, ()> {
         Ok(None) // no-op
     }
 }

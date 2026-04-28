@@ -47,6 +47,29 @@ macro_rules! syscall {
             }
         }
         ret
+    }};
+
+    ($nr:expr, $a0:expr, $a1:expr) => {{
+        let ret: usize;
+        unsafe {
+            cfg_select! {
+                target_arch = "riscv64" => core::arch::asm!(
+                    "ecall",
+                    in("a7") $nr,
+                    in("a0") $a0,
+                    in("a1") $a1,
+                    lateout("a0") ret,
+                ),
+                target_arch = "loongarch64" => core::arch::asm!(
+                    "syscall 0",
+                    in("$a7") $nr,
+                    in("$a0") $a0,
+                    in("$a1") $a1,
+                    lateout("$a0") ret,
+                ),
+            }
+        }
+        ret
     }}; // TODO
 }
 

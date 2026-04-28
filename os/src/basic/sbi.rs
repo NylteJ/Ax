@@ -2,6 +2,8 @@
 use core::arch::asm;
 
 #[cfg(target_arch = "loongarch64")]
+use crate::memory::address::PhysAddr;
+#[cfg(target_arch = "loongarch64")]
 use core::ptr::write_volatile;
 
 pub struct SbiError {
@@ -62,7 +64,7 @@ pub fn putchar_ascii(chr: u8) -> Result<(), SbiError> {
             }
         },
         target_arch = "loongarch64" => {
-            unsafe { write_volatile(0x1fe001e0 as *mut u8, chr) };
+            unsafe { write_volatile(PhysAddr(0x1fe001e0).to_virtual_address().0 as *mut u8, chr) };
             Ok(())
         },
     }
@@ -90,7 +92,7 @@ pub fn shutdown(status: ShutdownStatus) -> ! {
         target_arch = "loongarch64" => {
             _ = status; // 没有接口 :(
 
-            unsafe { write_volatile(0x100e001c as *mut u8, 0x34) };
+            unsafe { write_volatile(PhysAddr(0x100e001c).to_virtual_address().0 as *mut u8, 0x34) };
 
             loop {} // LoongArch 这里貌似有延迟，写成 unreachable 的话可能还会往下再 panic 一次
         },
