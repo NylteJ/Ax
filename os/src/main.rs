@@ -108,9 +108,10 @@ pub extern "C" fn _start() {
             "jr t1",
             // OK，现在一切正常了！
             "la sp, boot_stack_top",
-            "j main",
+            "j {main}",
             BOOT_PAGE_TABLE = sym BOOT_PAGE_TABLE,
             LINEAR_MAPPING_OFFSET = const LINEAR_MAPPING_OFFSET,
+            main = sym main,
         ),
         target_arch = "loongarch64" => naked_asm!(
             // 启用 DMW
@@ -121,14 +122,14 @@ pub extern "C" fn _start() {
             // 和 RISC-V 64 的情况不一样，这里 PC 初始就位于高地址，所以接下来不用动了
             // （由于 LoongArch 64 物理地址空间最高不超过 60 位，不启用 DMW 程序貌似也是能正常跑的，多余高位会直接被忽略）
             "la $sp, boot_stack_top",
-            "b main",
+            "b {main}",
             LINEAR_MAPPING_OFFSET = const LINEAR_MAPPING_OFFSET,
+            main = sym main,
         ),
     }
 }
 
 // main 必须不能返回（因为 _start 中用的是无条件跳转）
-#[unsafe(no_mangle)]
 pub extern "C" fn main() -> ! {
     clear_bss();
     trap::trap_handler::init_k();

@@ -215,7 +215,6 @@ const RET_PC_OFFSET: usize = offset_of!(TrapContext, ret_pc);
 #[unsafe(naked)]
 #[unsafe(no_mangle)]
 #[cfg(target_arch = "riscv64")]
-#[unsafe(link_section = ".text.trampoline")]
 pub extern "C" fn trap_handler_raw_from_user() {
     seq!(N in 3..=31 {
         naked_asm!(
@@ -342,7 +341,6 @@ pub extern "C" fn trap_handler_raw_from_user() {
 #[unsafe(naked)]
 #[unsafe(no_mangle)]
 #[cfg(target_arch = "riscv64")]
-#[unsafe(link_section = ".text.trampoline")]
 pub extern "C" fn trap_handler_raw_from_kernel() {
     seq!(N in 3..=31 {
         naked_asm!(

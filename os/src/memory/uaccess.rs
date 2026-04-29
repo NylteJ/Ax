@@ -83,7 +83,7 @@ pub fn copy_to_user(u_dest: *mut u8, k_src: &[u8]) -> Result<(), CopyError> {
 /// 它不会引起段错误，但拿指针在权限允许的范围内乱复制仍然会导致非常坏的结果。不幸的是，内核通常拥有非常大的“权限允许的范围”
 #[unsafe(naked)]
 #[unsafe(link_section = ".text.uaccess")]
-#[unsafe(no_mangle)]
+#[unsafe(no_mangle)] // no_mangle 是将 __copy_uaccess_fault 暴露出来所必需的
 unsafe extern "C" fn __copy_uaccess(to: *mut u8, from: *const u8, len: usize) -> usize {
     cfg_select! {
         target_arch = "riscv64" => naked_asm!(

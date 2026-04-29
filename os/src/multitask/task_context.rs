@@ -25,7 +25,6 @@ pub struct TaskContext {
 ///    特别地，这意味着 `to` **不能**指向自己。
 /// 2. `tp` / `$tp` 寄存器指向当前上下文的 `Task` 结构体（通常内核态下均能满足）
 #[unsafe(naked)]
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn switch_context(to: &TaskContext) {
     const TASK_CONTEXT_SIZE: usize = size_of::<TaskContext>();
     const RA_OFFSET: usize = offset_of!(TaskContext, return_address);
