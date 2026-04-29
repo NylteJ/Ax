@@ -6,23 +6,17 @@ use crate::{
     memory::uaccess::copy_from_user,
     multitask::{current_task, task::TaskArc, task_scheduler::TASK_SCHEDULER},
     print, println, run_program,
-    syscall::Arguments,
 };
 
-// /// 退出应用程序并将返回值告知批处理系统。
-// ///
-// /// # 参数
-// /// - `exit_code`：应用程序的返回值。
-// pub fn exit(exit_code: i32) -> ! {
-//     syscall!(93, exit_code);
-//     unreachable!();
-// }
-
-pub fn exit(args: Arguments) -> ! {
-    println!(
-        "[Kernel] Application exited with code {0} ({0:#x}).",
-        args[0]
-    );
+/// * 功能：触发进程终止，无返回值；
+/// * 输入：终止状态值；
+/// * 返回值：无返回值；
+/// ```c
+/// int ec;
+/// syscall(SYS_exit, ec);
+/// ```
+pub extern "C" fn exit(ec: isize) -> ! {
+    println!("[Kernel] Application exited with code {0} ({0:#x}).", ec);
 
     let cur = current_task();
     unsafe {
@@ -38,7 +32,7 @@ pub fn exit(args: Arguments) -> ! {
     unreachable!();
 }
 
-pub fn yield_(_args: Arguments) -> usize {
+pub extern "C" fn yield_() -> isize {
     println!("[Kernel] Application yielded.");
 
     let mut scheduler = TASK_SCHEDULER.write();
@@ -52,11 +46,7 @@ pub fn yield_(_args: Arguments) -> usize {
 }
 
 // FIXME: 临时
-pub fn print(args: Arguments) -> usize {
-    let str_ptr = args[0] as *const u8;
-
-    let mut length = args[1];
-
+pub extern "C" fn print(str_ptr: *const u8, mut length: usize) -> isize {
     const BUFFER_SIZE: usize = 64;
 
     let mut buffer = [0; BUFFER_SIZE];

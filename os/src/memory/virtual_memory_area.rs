@@ -54,6 +54,7 @@ pub enum VMAType {
     /// 匿名映射，缺页时分配零页。堆、栈、.bss 段等都属于此类别。
     ///
     /// 注意清零内存哪怕对堆和栈来讲也是必须的，一是为了安全，二是 POSIX 要求 mmap 分配的匿名映射“contents are initialized to zero”。
+    /// （TODO：尽管如此目前貌似并没有清零）
     Anonymous,
     /// 文件映射，缺页时从文件中读取数据。
     File(!), // TODO

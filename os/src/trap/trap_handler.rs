@@ -56,12 +56,12 @@ extern "C" fn trap_handler(context: &mut TrapContext) {
             context.ret_pc += 4; // 跳过 `ecall` / `break 0` 指令
 
             let id = context.registers[SYSCALL_ID_REG_INDEX];
-            let args: syscall::Arguments = &context.registers[SYSCALL_ARGS_REG_INDEX_RANGE]
+            let args = &context.registers[SYSCALL_ARGS_REG_INDEX_RANGE]
                 .try_into()
                 .unwrap();
 
             context.registers[SYSCALL_RET_REG_INDEX] = match syscall::TABLE.get(id) {
-                Some(Some(func)) => func(args),
+                Some(Some(func)) => func.call(args) as usize,
                 _ => panic!("不支持的系统调用 ID: {id} ({id:#x})"),
             };
         }
