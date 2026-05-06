@@ -13,6 +13,15 @@
 #![feature(exact_div)]
 #![feature(never_type)]
 #![feature(generic_atomic)]
+#![feature(ptr_metadata)]
+#![feature(bstr)]
+#![feature(unsize)]
+#![feature(coerce_unsized)]
+#![feature(deref_pure_trait)]
+#![feature(debug_closure_helpers)]
+#![feature(try_trait_v2)]
+#![feature(deque_extend_front)]
+#![feature(slice_split_once)]
 //
 #![deny(unused_must_use)]
 
@@ -36,6 +45,7 @@ use crate::multitask::task_context::switch_context;
 use crate::multitask::task_scheduler::TASK_SCHEDULER;
 
 mod basic;
+mod filesystem;
 mod memory;
 mod multitask;
 mod syscall;
@@ -193,6 +203,8 @@ pub extern "C" fn main() -> ! {
         unsafe { asm!("invtlb 0x0, $zero, $zero") };
     }
 
+    filesystem::init_all();
+
     println!("Hello, world!");
     println!("中文也可以！");
     println!();
@@ -210,16 +222,25 @@ pub extern "C" fn main() -> ! {
 
     println!("准备进入用户态...");
 
+    let tmpfs = filesystem::filesystems::get_filesystem_type("tmpfs")
+        .unwrap()
+        .ops
+        .new_fs();
+
+    let root = tmpfs.init_root_dentry.clone();
+
     TASK_SCHEDULER.write().add_task(Task::new(
         multitask::SchedulePolicy::RoundRobin,
         40,
-        user_start::<16, "我应该被打断！\n"> as usize,
+        user_start::<16, "Hello, world!\n"> as usize,
+        root.clone(),
     ));
     seq_macro::seq!(N in 1..=3 {
         TASK_SCHEDULER.write().add_task(Task::new(
-            multitask::SchedulePolicy::FIFO,
+            multitask::SchedulePolicy::RoundRobin,
             40,
-            user_start::<{10 + N}, { concat!("我不该被打断！", N, "\n") }> as usize,
+            user_start::<{10 + N}, { concat!("Hello, world ", N, "!\n") }> as usize,
+            root.clone(),
         ));
     });
 
@@ -232,11 +253,13 @@ pub extern "C" fn main() -> ! {
         multitask::SchedulePolicy::RoundRobin,
         50,
         user_start::<5, "VME50\n"> as usize,
+        root.clone(),
     ));
     TASK_SCHEDULER.write().add_task(Task::new(
         multitask::SchedulePolicy::RoundRobin,
         60,
         user_start::<1, "BOOOOM!\n"> as usize,
+        root,
     ));
 
     // TASK_SCHEDULER.write().add_task(Task::new(multitask::SchedulePolicy::FIFO, 0, just_for_test as usize));
@@ -475,9 +498,123 @@ extern "C" fn save_current_and_run(
 
 fn user_start<const RET: usize, const STR: &'static str>() -> ! {
     fn user_main<const RET: usize, const STR: &'static str>() {
-        for _ in 0..RET {
-            syscall!(233, (STR as *const str).addr(), STR.len());
-            // syscall!(124);
+        // for _ in 0..RET {
+        //     syscall!(233, (STR as *const str).addr(), STR.len());
+        //     // syscall!(124);
+        // }
+        let mut buf = [0u8; 100];
+        let buf2 = syscall!(17, buf.as_mut_ptr(), buf.len());
+        if buf2 != buf.as_ptr().addr() {
+            syscall!(93, 111111);
+        }
+        let Ok(str) = core::ffi::CStr::from_bytes_until_nul(&buf) else {
+            syscall!(93, 111112);
+            unreachable!();
+        };
+        syscall!(233, "CWD:".as_ptr(), "CWD:".len());
+        syscall!(233, str.as_ptr(), str.count_bytes());
+        syscall!(233, "\n".as_ptr(), 1);
+
+        if RET != 1 {
+            let ret = syscall!(
+                56,
+                -100,
+                "MY_FILE\0".as_ptr(),
+                0b10 | (1 << 6) | (1 << 10),
+                0o777
+            ) as i32;
+            if ret < 0 {
+                syscall!(93, 20000 - (ret as isize));
+            }
+            let len = syscall!(64, ret, STR.as_ptr(), STR.len());
+            if len != STR.len() {
+                syscall!(93, 20999);
+            }
+            syscall!(233, "WROTE:".as_ptr(), "WROTE:".len());
+            syscall!(233, STR.as_ptr(), STR.len());
+            syscall!(233, "\n".as_ptr(), 1);
+
+            let ret = syscall!(56, -8, "/MY_FILE\0".as_ptr(), 0b10) as i32;
+            if ret < 0 {
+                syscall!(93, 24000 - (ret as isize));
+            }
+            let mut buffer = [100u8; 100];
+            let bytes = syscall!(63, ret, buffer.as_mut_ptr(), buffer.len());
+            syscall!(233, "DATA:".as_ptr(), "DATA:".len());
+            syscall!(233, buffer.as_ptr(), bytes);
+            syscall!(233, "\n\n".as_ptr(), "\n\n".len());
+        } else {
+            let ret = syscall!(56, -3, "/MY_FILE\0".as_ptr(), 0b10) as i32; // openat
+            if ret < 0 {
+                syscall!(93, 21000 - (ret as isize));
+            }
+            let mut buffer = [100u8; 100];
+            let bytes = syscall!(63, ret, buffer.as_mut_ptr(), buffer.len()); // read
+            syscall!(233, buffer.as_ptr(), bytes);
+            syscall!(233, "\n========\n".as_ptr(), "\n========\n".len());
+            let ret = syscall!(34, -100, "MY_DIR\0".as_ptr(), 0o777) as i32; // mkdirat
+            if ret < 0 {
+                syscall!(93, 22000 - (ret as isize));
+            }
+            let ret = syscall!(34, -100, "./MY_DIR/MY_SUBDIR\0".as_ptr(), 0o777) as i32; // mkdirat
+            if ret < 0 {
+                syscall!(93, 23000 - (ret as isize));
+            }
+            let ret = syscall!(56, -100, "MY_DIR/MY_SUBDIR\0".as_ptr(), 1 << 16, 0o777) as i32; // openat
+            if ret < 0 {
+                syscall!(93, 23500 - (ret as isize));
+            }
+            let ret = syscall!(
+                56,
+                ret,
+                "FFFILE\0".as_ptr(),
+                0b10 | (1 << 6) | (1 << 7),
+                0o777
+            ) as i32; // openat
+            if ret < 0 {
+                syscall!(93, 24000 - (ret as isize));
+            }
+            let fffile = ret;
+            let ret = syscall!(49, "/MY_DIR/MY_SUBDIR/../MY_SUBDIR\0".as_ptr()); // chdir
+            if ret != 0 {
+                syscall!(93, 25000 - ret as isize);
+            }
+            let ret = syscall!(37, -100, "FFFILE\0".as_ptr(), -9, "/S\0".as_ptr()) as isize; // linkat
+            if ret < 0 {
+                syscall!(93, 26000 - (ret as isize));
+            }
+            let ret =
+                syscall!(64, fffile, "1233211234567".as_ptr(), "1233211234567".len()) as isize; // write
+            if ret < 0 {
+                syscall!(93, 27000 - (ret as isize));
+            }
+            let ret = syscall!(35, -100, "FFFILE\0".as_ptr(), 0) as isize; // unlinkat
+            if ret < 0 {
+                syscall!(93, 28000 - (ret as isize));
+            }
+            {
+                let _ = syscall!(17, buf.as_mut_ptr(), buf.len());
+                let Ok(str) = core::ffi::CStr::from_bytes_until_nul(&buf) else {
+                    syscall!(93, 111112);
+                    unreachable!();
+                };
+                syscall!(233, "CWD:".as_ptr(), "CWD:".len());
+                syscall!(233, str.as_ptr(), str.count_bytes());
+                syscall!(233, "\n".as_ptr(), 1);
+            }
+            let ret = syscall!(56, -100, "../../S\0".as_ptr(), 0b10, 0o777) as i32; // openat
+            if ret < 0 {
+                syscall!(93, 29000 - (ret as isize));
+            }
+            let s = ret;
+            syscall!(
+                233,
+                "====== data ======\n".as_ptr(),
+                "====== data ======\n".len()
+            );
+            let bytes = syscall!(63, s, buffer.as_mut_ptr(), buffer.len()); // read
+            syscall!(233, buffer.as_ptr(), bytes);
+            syscall!(233, "\n\n".as_ptr(), 2);
         }
     }
 

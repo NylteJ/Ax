@@ -8,9 +8,12 @@ SECTIONS
     stext = .;
     .text : AT(. - ADDRESS_OFFSET) {
         *(.text.entry)
-        suaccess = .;
-        *(.text.uaccess)
-        euaccess = .;
+        suaccess_copy = .;
+        *(.text.uaccess.copy)
+        euaccess_copy = .;
+        suaccess_strcpy = .;
+        *(.text.uaccess.strcpy)
+        euaccess_strcpy = .;
         *(.text .text.*)
     }
 

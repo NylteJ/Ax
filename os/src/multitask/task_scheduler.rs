@@ -20,7 +20,7 @@ impl TaskScheduler {
         Self {
             schedulers: vec![
                 Box::new(realtime::RealtimeScheduler::new()),
-                Box::new(idle::IdleScheduler::new()),
+                // Box::new(idle::IdleScheduler::new()),
             ],
         }
     }

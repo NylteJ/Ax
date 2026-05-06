@@ -46,7 +46,7 @@ pub extern "C" fn yield_() -> isize {
 }
 
 // FIXME: 临时
-pub extern "C" fn print(str_ptr: *const u8, mut length: usize) -> isize {
+pub extern "C" fn print(mut str_ptr: *const u8, mut length: usize) -> isize {
     const BUFFER_SIZE: usize = 64;
 
     let mut buffer = [0; BUFFER_SIZE];
@@ -68,13 +68,14 @@ pub extern "C" fn print(str_ptr: *const u8, mut length: usize) -> isize {
         print!("{s}");
 
         length -= s.len();
+        str_ptr = unsafe { str_ptr.add(s.len()) };
     }
 
     let Ok(()) = copy_from_user(&mut buffer[0..length], str_ptr) else {
         return 2;
     };
 
-    let Ok(s) = str::from_utf8(&buffer) else {
+    let Ok(s) = str::from_utf8(&buffer[0..length]) else {
         return 1;
     };
 

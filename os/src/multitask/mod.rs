@@ -5,6 +5,8 @@ pub mod task_context;
 pub mod task_manager;
 pub mod task_scheduler;
 
+mod fdtable;
+mod fs_data;
 mod id_allocator;
 mod schedulers;
 

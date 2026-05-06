@@ -11,6 +11,7 @@ use crate::{
     basic::timer::reset_timer_interrupt,
     memory::address::VirtAddr,
     multitask::{current_task, task_scheduler::TASK_SCHEDULER},
+    syscall::ERRORCODE_NOSYS,
     trap::{
         page_fault_type::PageFaultType,
         trap::{Exception, Interrupt, Trap},
@@ -62,7 +63,7 @@ extern "C" fn trap_handler(context: &mut TrapContext) {
 
             context.registers[SYSCALL_RET_REG_INDEX] = match syscall::TABLE.get(id) {
                 Some(Some(func)) => func.call(args) as usize,
-                _ => panic!("不支持的系统调用 ID: {id} ({id:#x})"),
+                _ => ERRORCODE_NOSYS,
             };
         }
         Trap::Interrupt(Interrupt::TimerInterrupt) => {
@@ -192,17 +193,29 @@ fn print_trap_context(context: &TrapContext) {
 }
 
 lazy_static! {
-    static ref FIXUPS: [(Range<usize>, usize); 1] = {
-        let suaccess: usize;
-        let euaccess: usize;
+    static ref FIXUPS: [(Range<usize>, usize); 2] = {
+        let suaccess_copy: usize;
+        let euaccess_copy: usize;
         let __copy_uaccess_fault: usize;
         unsafe {
-            asm!("la {0}, suaccess", out(reg) suaccess);
-            asm!("la {0}, euaccess", out(reg) euaccess);
+            asm!("la {0}, suaccess_copy", out(reg) suaccess_copy);
+            asm!("la {0}, euaccess_copy", out(reg) euaccess_copy);
             asm!("la {0}, __copy_uaccess_fault", out(reg) __copy_uaccess_fault);
         }
 
-        [(suaccess..euaccess, __copy_uaccess_fault)]
+        let suaccess_strcpy: usize;
+        let euaccess_strcpy: usize;
+        let __strcpy_uaccess_fault: usize;
+        unsafe {
+            asm!("la {0}, suaccess_strcpy", out(reg) suaccess_strcpy);
+            asm!("la {0}, euaccess_strcpy", out(reg) euaccess_strcpy);
+            asm!("la {0}, __strcpy_uaccess_fault", out(reg) __strcpy_uaccess_fault);
+        }
+
+        [
+            (suaccess_copy..euaccess_copy, __copy_uaccess_fault),
+            (suaccess_strcpy..euaccess_strcpy, __strcpy_uaccess_fault),
+        ]
     };
 }
 

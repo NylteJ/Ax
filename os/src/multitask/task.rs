@@ -4,6 +4,7 @@ use alloc::sync::Arc;
 
 use crate::{
     basic::{stack::TaskKernelStackPtr, sync::RwLock},
+    filesystem::vfs::DEntryArc,
     memory::{
         PAGE_BYTES,
         address::{VIRTUAL_ADDRESS_LOW_HIGHEST, VirtAddr},
@@ -12,6 +13,8 @@ use crate::{
     },
     multitask::{
         SchedulePolicy, TaskPriority,
+        fdtable::FileDescriptorTable,
+        fs_data::FilesystemData,
         task_context::TaskContext,
         task_manager::{PID_ALLOCATOR, register_task},
     },
@@ -34,6 +37,10 @@ pub struct Task {
 
     pub memory_space: Arc<RwLock<AddressSpace>>,
 
+    // pub exe_file: Pin<Arc<File>>,
+    pub files: Arc<RwLock<FileDescriptorTable>>,
+    pub fs_data: Arc<RwLock<FilesystemData>>,
+
     // FIXME: 这是临时的
     pub ustack: usize,
     pub entry: RwLock<Option<usize>>,
@@ -47,7 +54,12 @@ impl Task {
     /// 创建一个新的 Task 并为它分配内核栈等资源。返回的 Arc 保证具有其独占所有权。
     ///
     /// 不会将其添加到调度器中
-    pub fn new(policy: SchedulePolicy, priority: TaskPriority, entry: usize) -> Pin<Arc<Self>> {
+    pub fn new(
+        policy: SchedulePolicy,
+        priority: TaskPriority,
+        entry: usize,
+        work_dir: DEntryArc,
+    ) -> Pin<Arc<Self>> {
         let pid = PID_ALLOCATOR.lock().allocate().expect("必须能够分配 PID");
 
         let task_ptr_addr = {
@@ -91,6 +103,12 @@ impl Task {
             priority,
 
             memory_space,
+            files: Arc::new(RwLock::new(FileDescriptorTable::new())),
+
+            // FIXME: 后面应该要改
+            fs_data: Arc::new(RwLock::new(FilesystemData {
+                current_work_dir: work_dir,
+            })),
 
             ustack: USER_STACK_HIGHEST,
             entry: RwLock::new(Some(entry)),

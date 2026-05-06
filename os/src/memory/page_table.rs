@@ -68,7 +68,7 @@ impl<const LEVEL: usize> PageTable<LEVEL> {
     unsafe fn as_mut_usize_array(&mut self) -> &mut [usize; PAGE_TABLE_SIZE] {
         let ptr = self as *mut Self as *mut [usize; PAGE_TABLE_SIZE];
 
-        #[allow(dropping_references)] // 这个 drop 并非 “does nothing”，在后面使用 self 会报错
+        #[expect(dropping_references)] // 这个 drop 并非 “does nothing”，在后面使用 self 会报错
         drop(self); // 保证不会同时存在两个可变借用（虽然我有点好奇不同类型的借用会不会产生问题）
 
         unsafe { ptr.as_mut_unchecked() }
@@ -181,7 +181,7 @@ impl PageTable<2> {
 
         if old_flags.contains(PTEFlags::Valid) {
             let ptr = &raw mut page_table[index] as *mut PageTableEntry<LEVEL>;
-            #[allow(dropping_references)]
+            #[expect(dropping_references)]
             drop(page_table); // 保证不会同时存在两个可变借用
             Err(unsafe { ptr.as_mut_unchecked() })
         } else {

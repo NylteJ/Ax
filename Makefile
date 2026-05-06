@@ -162,6 +162,19 @@ run-la: la
 		docker run -it $(DOCKER_ARGS_BASE) $(LA_QEMU_CMD_BASE); \
 	}
 
+.PHONY: clippy-rv
+clippy-rv:
+	@{ \
+		cd os; \
+		cargo clippy --target riscv64gc-unknown-none-elf $(CARGOFLAGS); \
+	}
+.PHONY: clippy-la
+clippy-la:
+	@{ \
+		cd os; \
+		cargo clippy --target loongarch64-unknown-none $(CARGOFLAGS); \
+	}
+
 .PHONY: test
 test: all check
 # TODO

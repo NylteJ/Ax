@@ -3,7 +3,7 @@ use crate::multitask::task::{Task, TaskArc};
 pub mod idle;
 pub mod realtime;
 
-pub trait Scheduler {
+pub trait Scheduler: Send + Sync {
     fn add_task(&mut self, task: TaskArc) -> Result<(), ()>;
 
     fn pick_next(&mut self) -> Option<TaskArc>;
