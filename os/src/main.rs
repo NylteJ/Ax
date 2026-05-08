@@ -214,6 +214,9 @@ pub extern "C" fn main() -> ! {
 
     filesystem::init_all();
 
+    #[cfg(debug_assertions)]
+    basic::debugger::DEBUG_CONTEXT.init();
+
     println!("Hello, world!");
     println!("中文也可以！");
     println!();
@@ -225,6 +228,9 @@ pub extern "C" fn main() -> ! {
                     "下面是一条从很深的地方发出的 stacktrace（尽管 release 模式下会被优化掉）"
                 );
                 backtrace();
+
+                // println!("测试崩溃时的调试信息：");
+                // unsafe { (0 as *const u8).read_volatile() };
             })()
         })()
     })();

@@ -96,8 +96,24 @@ extern "C" fn trap_handler(context: &mut TrapContext) {
                     );
                     context.ret_pc = fixup;
                 } else {
+                    use crate::{print, println};
+
+                    println!("内核态发生 PageFault！");
                     print_trap_context(context);
-                    panic!("内核态发生 PageFault！");
+
+                    println!("============其它上下文信息============");
+                    print!("返回 PC：{:#x}  ", context.ret_pc);
+                    crate::basic::debugger::print_pc_info_if_debug(context.ret_pc);
+                    println!();
+
+                    let fp = cfg_select! {
+                        target_arch = "riscv64" => context.registers[7], // r8
+                        target_arch = "loongarch64" => context.registers[21], // $r22
+                    };
+                    println!("栈帧指针：{:#x}", fp);
+                    crate::basic::debugger::backtrace_at(fp as *const usize);
+
+                    crate::basic::sbi::shutdown(crate::basic::sbi::ShutdownStatus::Error);
                 }
             } else {
                 let current_task = unsafe { current_task().as_ref_unchecked() };

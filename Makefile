@@ -29,6 +29,7 @@ clean:
 		cargo clean; \
 		rm -f ../kernel-rv ../kernel-la; \
 		rm -f ./src/linker_rv.ld ./src/linker_la.ld; \
+		rm -f ./kernel-rv.debug ./kernel-la.debug; \
 		rm -rf ./.cargo; \
 		printf "$(GREEN)清理完毕！$(NC)\n"; \
 	}
@@ -52,6 +53,12 @@ rv: os/.cargo
 		cargo build --target riscv64gc-unknown-none-elf $(CARGOFLAGS) && printf "$(GREEN)RISC-V 版本的内核编译完成！$(NC)\n" || { printf "$(RED)RISC-V 版本的内核编译失败......$(NC)\n"; exit 1; }; \
 		cp target/riscv64gc-unknown-none-elf/$(BUILDDICT)/os ../kernel-rv; \
 		printf "$(GREEN)RISC-V 版本的 ELF 文件已输出到 kernel-rv！$(NC)\n"; \
+		if [ "$(MODE)" = "debug" ]; then \
+			printf "检测到调试版本，正在嵌入调试信息...\n"; \
+			rust-objcopy --only-keep-debug ../kernel-rv ./kernel-rv.debug; \
+			rust-objcopy --update-section .debug_infos=./kernel-rv.debug ../kernel-rv ../kernel-rv; \
+			printf "$(GREEN)调试信息嵌入完毕，最终文件已输出到 kernel-rv！$(NC)\n"; \
+		fi; \
 	}
 
 .PHONY: la
@@ -64,6 +71,12 @@ la: os/.cargo
 		cargo build --target loongarch64-unknown-none $(CARGOFLAGS) && printf "$(GREEN)龙芯版本的内核编译完成！$(NC)\n" || { printf "$(RED)龙芯版本的内核编译失败......$(NC)\n"; exit 1; }; \
 		cp target/loongarch64-unknown-none/$(BUILDDICT)/os ../kernel-la; \
 		printf "$(GREEN)龙芯版本的 ELF 文件已输出到 kernel-la！$(NC)\n"; \
+		if [ "$(MODE)" = "debug" ]; then \
+			printf "检测到调试版本，正在嵌入调试信息...\n"; \
+			rust-objcopy --only-keep-debug ../kernel-la ./kernel-la.debug; \
+			rust-objcopy --update-section .debug_infos=./kernel-la.debug ../kernel-la ../kernel-la; \
+			printf "$(GREEN)调试信息嵌入完毕，最终文件已输出到 kernel-la！$(NC)\n"; \
+		fi; \
 	}
 
 os/.cargo:

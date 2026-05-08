@@ -12,3 +12,6 @@ kernel-la
 private.md
 
 Cargo.lock
+
+os/kernel-rv.debug
+os/kernel-la.debug

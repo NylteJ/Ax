@@ -45,9 +45,11 @@ SECTIONS
 
     . = ALIGN(4K);
     ebss = .;
-    ekernel = .;
-
-    /DISCARD/ : {
-        *(.eh_frame)
+    __debug_data_start = .;
+    .debug_infos : AT(. - ADDRESS_OFFSET) {
     }
+
+    . = ALIGN(4K);
+    __debug_data_end = .;
+    ekernel = .;
 }

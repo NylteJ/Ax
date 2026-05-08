@@ -9,3 +9,7 @@ rustflags = [
 rustflags = [
     "-Clink-arg=-Tsrc/linker_la.ld", "-Cforce-frame-pointers=yes"
 ]
+
+[profile.dev]
+debug = 2
+rustflags = ["-Cdwarf-version=5"]
