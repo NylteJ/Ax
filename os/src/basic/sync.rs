@@ -1,6 +1,7 @@
 #[cfg(debug_assertions)]
 use core::cell::Cell;
 use core::cell::UnsafeCell;
+use core::fmt::Debug;
 use core::hint;
 use core::mem::offset_of;
 use core::ops::Deref;
@@ -162,7 +163,11 @@ impl<T> Mutex<T> {
 impl<T: ?Sized> Mutex<T> {
     #[track_caller]
     pub fn lock(&self) -> MutexGuard<'_, T> {
-        while self.flag.swap(true, Ordering::Acquire) {
+        let guard = loop {
+            if let Some(guard) = self.try_lock() {
+                break guard;
+            }
+
             #[cfg(debug_assertions)]
             panic!(
                 "我们现在还不支持并行，因此一定是发生了死锁。上一个上锁位置:\n{}",
@@ -171,20 +176,32 @@ impl<T: ?Sized> Mutex<T> {
             #[cfg(not(debug_assertions))]
             panic!("我们现在还不支持并行，因此一定是发生了死锁");
             hint::spin_loop();
-        }
+        };
 
         #[cfg(debug_assertions)]
         self.debug_msg
             .set(core::panic::Location::caller().to_string());
 
-        MutexGuard {
-            value: unsafe { NonNull::new_unchecked(self.value.get()) },
-            flag: &self.flag,
-        }
+        guard
     }
 
     pub fn get_mut(&mut self) -> &mut T {
         self.value.get_mut()
+    }
+
+    pub fn try_lock(&self) -> Option<MutexGuard<'_, T>> {
+        if self.flag.swap(true, Ordering::Acquire) {
+            None
+        } else {
+            Some(MutexGuard {
+                value: unsafe { NonNull::new_unchecked(self.value.get()) },
+                flag: &self.flag,
+            })
+        }
+    }
+
+    pub fn as_ptr(&self) -> *mut T {
+        self.value.get()
     }
 }
 
@@ -218,3 +235,17 @@ unsafe impl<T: ?Sized> DerefPure for MutexGuard<'_, T> {}
 // SAFETY: 目前我们不支持并行，故而无需担心数据竞争
 unsafe impl<T: ?Sized + Send> Sync for Mutex<T> {}
 unsafe impl<T: ?Sized + Send> Send for Mutex<T> {}
+
+impl<T: ?Sized + Debug> Debug for Mutex<T> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let mut f = f.debug_struct("Mutex");
+
+        if let Some(guard) = self.try_lock() {
+            f.field("value", &guard.deref());
+        } else {
+            f.field("value", &"<locked>");
+        }
+
+        f.finish()
+    }
+}

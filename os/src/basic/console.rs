@@ -1,7 +1,7 @@
 use core::fmt::Write;
 
 use crate::basic::sbi::SbiError;
-use crate::basic::sync::RwLock;
+use crate::basic::sync::Mutex;
 
 #[derive(Debug)]
 pub enum ConsoleIoError {
@@ -23,7 +23,7 @@ pub fn print_to_console(text: &str) -> Result<(), ConsoleIoError> {
 
 pub struct ConsoleWriter;
 
-pub static CONSOLE_WRITER: RwLock<ConsoleWriter> = RwLock::new(ConsoleWriter);
+pub static CONSOLE_WRITER: Mutex<ConsoleWriter> = Mutex::new(ConsoleWriter);
 
 impl Write for ConsoleWriter {
     fn write_str(&mut self, s: &str) -> core::fmt::Result {
@@ -36,7 +36,7 @@ impl Write for ConsoleWriter {
 macro_rules! print {
     ($fmt: literal $(, $($arg: tt)+)?) => {{
         use core::fmt::Write;
-        write!($crate::basic::console::CONSOLE_WRITER.write(), $fmt $(, $($arg)+)?).unwrap();
+        write!($crate::basic::console::CONSOLE_WRITER.lock(), $fmt $(, $($arg)+)?).unwrap();
     }};
 }
 
@@ -48,6 +48,6 @@ macro_rules! println {
     };
     ($fmt: literal $(, $($arg: tt)+)?) => {{
         use core::fmt::Write;
-        writeln!($crate::basic::console::CONSOLE_WRITER.write(), $fmt $(, $($arg)+)?).unwrap();
+        writeln!($crate::basic::console::CONSOLE_WRITER.lock(), $fmt $(, $($arg)+)?).unwrap();
     }};
 }

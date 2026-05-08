@@ -1,33 +1,41 @@
 use core::{
     bstr::ByteStr,
+    cell::SyncUnsafeCell,
     hash::Hash,
+    mem::MaybeUninit,
     num::NonZero,
+    ops::Deref,
     pin::Pin,
     ptr::{NonNull, addr_eq},
 };
 
 use alloc::{bstr::ByteString, sync::Arc};
+use derive_more::Debug;
 use hashbrown::{Equivalent, HashMap};
 
 use crate::{
     basic::sync::{Mutex, RwLock},
     filesystem::vfs::{
-        DEntry, DEntryArc, DEntryLruNode, DEntryLruPtr, INodeArc, VfsError, VfsResult,
+        DEntry, DEntryArc, DEntryLruNode, DEntryLruPtr, INodeArc, Mount, VfsError, VfsResult,
         dentry_arc::DCacheArc,
     },
 };
 
 /// 描述整个文件系统，对应 Linux 中的超级块（super block）
+#[derive(Debug)]
 pub struct FileSystem<T: ?Sized + FileSystemOps = dyn FileSystemOps> {
     pub(super) dcache: RwLock<HashMap<DCacheKey, DCacheArc>>,
 
     pub root_inode: INodeArc,
     pub init_root_dentry: DEntryArc,
 
+    #[debug(skip)]
     pub lru_sentinel: Mutex<DEntryLruNode>,
 
+    #[debug(skip)]
     _dummy: (),
 
+    #[debug(skip)]
     pub dynamic_data: T,
 }
 
@@ -69,68 +77,6 @@ impl FileSystem {
         Some(DEntryArc::from_cache(cache)) // from_cache 内部会修改 LRU 链表
     }
 
-    /// 查找路径对应的 DEntry。保证不会查到负 DEntry。
-    pub fn walk_path(&self, path: &ByteStr, from: Option<DEntryArc>) -> VfsResult<DEntryArc> {
-        if path.is_empty() {
-            return Err(VfsError::FileNotFound);
-        }
-
-        let (mut current_dentry, skip) = if path.first() == Some(&b'/') {
-            // 绝对路径
-            (self.init_root_dentry.clone(), 1)
-        } else if let Some(from) = from {
-            // 相对路径
-            (from, 0)
-        } else {
-            // 相对路径但没有指定起点，默认为 path 写错了
-            return Err(VfsError::FileNotFound);
-        };
-
-        for name in path.split(|&b| b == b'/').skip(skip) {
-            let name = ByteStr::new(name);
-
-            if name == "." {
-                continue;
-            } else if name == ".." {
-                let tmp = current_dentry
-                    .data
-                    .lock()
-                    .parent
-                    .clone()
-                    .ok_or(VfsError::FileNotFound)?;
-                current_dentry = tmp;
-                continue;
-            }
-
-            let cached = self.find_dentry(NonNull::from_ref(&current_dentry), name);
-
-            if let Some(cached) = cached {
-                current_dentry = cached;
-            } else {
-                let current_inode = current_dentry
-                    .data
-                    .lock()
-                    .inode
-                    .as_ref()
-                    .ok_or(VfsError::FileNotFound)?
-                    .clone();
-                let dentry = current_inode
-                    .data
-                    .read()
-                    .dynamic_data
-                    .lookup(name, current_dentry)?;
-                current_dentry = dentry;
-            }
-
-            if current_dentry.data.lock().inode.is_none() {
-                return Err(VfsError::FileNotFound);
-            }
-        }
-
-        debug_assert!(current_dentry.data.lock().inode.is_some());
-        Ok(current_dentry)
-    }
-
     pub fn gc(&self, max_count: NonZero<usize>) {
         let mut dcache_guard = self.dcache.write();
         let mut lru_guard = self.lru_sentinel.lock();
@@ -168,6 +114,232 @@ impl FileSystem {
     pub fn full_gc(&self) {
         self.gc(NonZero::<usize>::MAX);
     }
+}
+
+#[derive(Debug, Clone)]
+pub struct Path(pub DEntryArc, pub Arc<Mount>);
+
+impl Path {
+    pub fn walk_step_back(&self) -> Self {
+        self.walk_step_back_until_root()
+            .unwrap_or_else(|| self.clone())
+    }
+
+    pub fn walk_step_back_until_root(&self) -> Option<Self> {
+        let parent_fs_path;
+
+        let path = if self.0.addr_eq(&self.1.mount_to) {
+            parent_fs_path = self.1.mount_point.get_parent(); // 注意此时只是得到了父文件系统中的等价节点
+            if parent_fs_path.0.addr_eq(&self.0) {
+                return None;
+            } else {
+                &parent_fs_path
+            }
+        } else {
+            self
+        };
+
+        let parent = path
+            .0
+            .data
+            .lock()
+            .parent
+            .clone()
+            .expect("非挂载点的根 DEntry 不应存在");
+
+        debug_assert!(parent.data.lock().inode.is_some());
+
+        Some(Self(parent, path.1.clone()))
+    }
+}
+
+pub struct RootPath {
+    path: SyncUnsafeCell<MaybeUninit<Path>>,
+}
+
+impl Deref for RootPath {
+    type Target = Path;
+
+    fn deref(&self) -> &Self::Target {
+        unsafe { self.path.get().as_ref_unchecked().assume_init_ref() }
+    }
+}
+
+impl RootPath {
+    pub fn init(&self, path: Path) {
+        unsafe { self.path.get().as_mut_unchecked().write(path) };
+    }
+}
+
+pub static ROOT_PATH: RootPath = RootPath {
+    path: SyncUnsafeCell::new(MaybeUninit::uninit()),
+};
+
+/// 查找路径对应的 DEntry。有可能找到负 DEntry，但找到的负 DEntry 一定是最后一项。
+///
+/// 换言之，对于 `/a/b`，查找 `/a/b` 会是正 DEntry，`/a/b/c` 会是负 DEntry，`/a/b/c/d` 会直接返回错误。
+pub fn walk_path(path: PathToWalk) -> VfsResult<WalkedPath> {
+    let (mut cur_path, pstr) = match path {
+        PathToWalk::Absolute(path) => {
+            debug_assert!(path.first().is_none_or(|&x| x == b'/'));
+
+            match path.len() {
+                0 => return Err(VfsError::FileNotFound),
+                1 => return Ok(WalkedPath::Positive(ROOT_PATH.clone())),
+                _ => (ROOT_PATH.clone(), ByteStr::new(&path[1..])),
+            }
+        }
+        PathToWalk::Relative(pstr, path) => {
+            if pstr.is_empty() {
+                return Err(VfsError::FileNotFound);
+            }
+            (path, pstr)
+        }
+    };
+
+    // 现在两种情况统一为在 `current_dentry` 下查找非空相对路径 `path`
+
+    let (dir, last) = pstr.rsplit_once(|&c| c == b'/').unwrap_or((b"", pstr));
+
+    // `dir` 的部分可能为空且必须找到，`last` 不为空且可以不找到
+
+    fn walk_step(fs: &FileSystem, cur_path: &Path, name: &ByteStr) -> VfsResult<(bool, Path)> {
+        debug_assert_ne!(name, ".");
+
+        if name == ".." {
+            let prev_path = cur_path.walk_step_back();
+            log::trace!(
+                "walk_step: {} --prev--> {}",
+                cur_path.0.data.lock().name,
+                prev_path.0.data.lock().name
+            );
+            return Ok((true, prev_path));
+        }
+
+        let cached = fs.find_dentry(NonNull::from_ref(&cur_path.0), name);
+
+        let dentry = if let Some(cached) = cached {
+            cached
+        } else {
+            let current_inode = cur_path
+                .0
+                .data
+                .lock()
+                .inode
+                .as_ref()
+                .ok_or(VfsError::FileNotFound)?
+                .clone();
+            let dentry = current_inode
+                .data
+                .read()
+                .dynamic_data
+                .lookup(name, cur_path.0.clone())?;
+            dentry
+        };
+
+        let found = dentry.data.lock().inode.is_some();
+
+        log::trace!(
+            "walk_step: current_dentry={} name=`{name}` found={found} fs={:#x}",
+            cur_path.0.data.lock().name,
+            (fs as *const FileSystem).addr()
+        );
+
+        return Ok((found, Path(dentry, cur_path.1.clone())));
+    }
+
+    let mut fs = unsafe { cur_path.0.filesystem.as_ref() };
+
+    if !dir.is_empty() {
+        for name in dir
+            .split(|&c| c == b'/')
+            .map(ByteStr::new)
+            .filter(|&name| name != ".")
+        {
+            let (found, path) = walk_step(fs, &cur_path, name)?;
+
+            if !found {
+                return Err(VfsError::FileNotFound);
+            }
+
+            // 因为我们这不是最后一步，因此如果是挂载点则要转到对应文件系统
+
+            if let Some(mount) = path.0.data.lock().mount {
+                let mnt = unsafe { mount.as_ref() }.get_cur_mount();
+                cur_path = Path(mnt.mount_to.clone(), mnt);
+                fs = unsafe { cur_path.0.filesystem.as_ref() };
+            } else {
+                cur_path = path;
+            }
+        }
+    }
+
+    if last == b"." {
+        return Ok(WalkedPath::Positive(cur_path));
+    }
+
+    let (found, path) = walk_step(&mut fs, &cur_path, ByteStr::new(last))?;
+
+    if found {
+        Ok(WalkedPath::Positive(path))
+    } else {
+        Ok(WalkedPath::Negative(NPath(path)))
+    }
+}
+
+pub enum WalkedPath {
+    /// 正 DEntry，表示存在
+    Positive(Path),
+    /// 负 DEntry，表示最后一级不存在
+    Negative(NPath),
+}
+
+pub struct NPath(pub Path);
+
+impl WalkedPath {
+    pub fn ensure(self) -> VfsResult<Path> {
+        match self {
+            WalkedPath::Positive(dentry) => Ok(dentry),
+            WalkedPath::Negative(_) => Err(VfsError::FileNotFound),
+        }
+    }
+    pub fn ensure_neg(self) -> VfsResult<NPath> {
+        match self {
+            WalkedPath::Positive(_) => Err(VfsError::FileAlreadyExists),
+            WalkedPath::Negative(dentry) => Ok(dentry),
+        }
+    }
+}
+
+impl NPath {
+    #[track_caller]
+    pub fn dir_inode(&self) -> VfsResult<INodeArc> {
+        self.0
+            .0
+            .data
+            .lock()
+            .parent
+            .as_ref()
+            .expect("起初有父节点的的 DEntry 应当一直有父节点（rename 是原子的）")
+            .data
+            .lock()
+            .inode
+            .clone()
+            .ok_or(VfsError::FileNotFound) // 这个确实可能发生，比如试图创建 `/a/b.txt` 结果 `/a` 忽然被删了
+    }
+}
+
+impl Deref for NPath {
+    type Target = Path;
+
+    fn deref(&self) -> &<Self as Deref>::Target {
+        &self.0
+    }
+}
+
+pub enum PathToWalk<'a> {
+    Absolute(&'a ByteStr),
+    Relative(&'a ByteStr, Path),
 }
 
 pub trait FileSystemOps {}

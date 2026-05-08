@@ -22,6 +22,7 @@
 #![feature(try_trait_v2)]
 #![feature(deque_extend_front)]
 #![feature(slice_split_once)]
+#![feature(unique_rc_arc)]
 //
 #![deny(unused_must_use)]
 
@@ -30,11 +31,17 @@ extern crate alloc;
 use core::arch::asm;
 use core::arch::global_asm;
 use core::arch::naked_asm;
+use core::bstr::ByteStr;
 use core::intrinsics::volatile_set_memory;
 
 use crate::basic::debugger::backtrace;
 use crate::basic::global_allocator::init_heap;
+use crate::basic::logger;
 use crate::basic::shared_with_asm::SharedWithAsm;
+use crate::filesystem::vfs;
+use crate::filesystem::vfs::Path;
+use crate::filesystem::vfs::ROOT_PATH;
+use crate::filesystem::vfs::walk_path;
 use crate::memory::address::LINEAR_MAPPING_OFFSET;
 use crate::memory::frame_allocator;
 use crate::multitask::current_task;
@@ -151,6 +158,8 @@ pub extern "C" fn main() -> ! {
 
     frame_allocator::init();
 
+    logger::init();
+
     // 设置 LoongArch 64 下的页表格式
     #[cfg(target_arch = "loongarch64")]
     {
@@ -222,12 +231,36 @@ pub extern "C" fn main() -> ! {
 
     println!("准备进入用户态...");
 
-    let tmpfs = filesystem::filesystems::get_filesystem_type("tmpfs")
-        .unwrap()
-        .ops
-        .new_fs();
+    let root = {
+        let tmpfs_type = filesystem::filesystems::get_filesystem_type("tmpfs").unwrap();
 
-    let root = tmpfs.init_root_dentry.clone();
+        let tmpfs = tmpfs_type.ops.new_fs();
+
+        let root = tmpfs.init_root_dentry.clone();
+
+        // 对于根目录所在的文件系统，其根目录直接挂载到自身
+        let root_circle_mount = unsafe { vfs::MountPoint::mount_root(tmpfs.clone()) };
+        ROOT_PATH.init(Path(root.clone(), root_circle_mount.clone()));
+
+        debug_assert!(root.data.lock().mount.is_some());
+
+        let tmp_1 = walk_path(vfs::PathToWalk::Absolute(ByteStr::new("/tmp")))
+            .unwrap()
+            .ensure_neg()
+            .unwrap();
+        tmpfs
+            .root_inode
+            .data
+            .write()
+            .dynamic_data
+            .mkdir(tmp_1.0.0.clone(), vfs::INodeMode::all())
+            .unwrap();
+
+        let tmpfs_tmp = tmpfs_type.ops.new_fs();
+        let tmp_2 = tmpfs_tmp.init_root_dentry.clone();
+        vfs::MountPoint::mount(tmp_1.0, tmpfs_tmp, tmp_2);
+        Path(root, root_circle_mount)
+    };
 
     TASK_SCHEDULER.write().add_task(Task::new(
         multitask::SchedulePolicy::RoundRobin,
@@ -615,6 +648,23 @@ fn user_start<const RET: usize, const STR: &'static str>() -> ! {
             let bytes = syscall!(63, s, buffer.as_mut_ptr(), buffer.len()); // read
             syscall!(233, buffer.as_ptr(), bytes);
             syscall!(233, "\n\n".as_ptr(), 2);
+            let duped_s = syscall!(23, s); // dup
+            if duped_s < 0 {
+                syscall!(93, 30000 - duped_s as isize);
+            }
+            let dup3_s = syscall!(24, duped_s, 1145); // dup3
+            if dup3_s != 1145 {
+                syscall!(93, 31000 - dup3_s as isize);
+            }
+            let ret = syscall!(56, 1145, "../tmp/tt.txt\0".as_ptr(), 0b10 | (1 << 6), 0o777) as i32; // openat
+            if ret < 0 {
+                syscall!(93, 32000 - (ret as isize));
+            }
+            let tt = ret;
+            let ret = syscall!(56, tt, "../../tmp/../tmp\0".as_ptr(), 0b10, 0o777) as isize; // linkat
+            if ret < 0 {
+                syscall!(93, 33000 - (ret as isize));
+            }
         }
     }
 

@@ -123,6 +123,7 @@ unsafe impl Send for DEntryArc {}
 unsafe impl Sync for DEntryArc {}
 
 /// 本质上存储的还是 `DEntry`，但用于 dcache 中
+#[derive(Debug)]
 pub struct DCacheArc {
     ptr: NonNull<DEntry<dyn DEntryOps>>,
 }

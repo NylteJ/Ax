@@ -9,7 +9,7 @@ use bitflags::bitflags;
 
 use crate::{
     basic::sync::Mutex,
-    filesystem::vfs::{DEntryArc, INode, VfsError, VfsResult},
+    filesystem::vfs::{INode, Path, VfsError, VfsResult},
 };
 
 /// 描述打开的文件，也许类似句柄的概念？
@@ -23,7 +23,7 @@ unsafe impl<T: ?Sized + FileOps> Send for File<T> where Mutex<FileData<T>>: Send
 unsafe impl<T: ?Sized + FileOps> Sync for File<T> where Mutex<FileData<T>>: Send + Sync {}
 
 pub struct FileData<T: ?Sized + FileOps = dyn FileOps> {
-    pub path: DEntryArc,
+    pub path: Path,
     pub flags: FileFlags,
     pub pos: u64,
 
@@ -91,16 +91,11 @@ impl<T: FileOps + 'static> File<T> {
         unsafe { ptr.as_mut() }
     }
 
-    pub fn new(
-        dentry: DEntryArc,
-        inode: &INode,
-        flags: FileFlags,
-        dynamic_data: T,
-    ) -> Pin<Arc<File>> {
+    pub fn new(path: Path, inode: &INode, flags: FileFlags, dynamic_data: T) -> Pin<Arc<File>> {
         Arc::pin(File {
             inode: NonNull::from_ref(inode),
             data: Mutex::new(FileData {
-                path: dentry,
+                path,
                 flags,
                 pos: 0,
                 dynamic_data,

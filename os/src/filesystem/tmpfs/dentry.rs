@@ -4,13 +4,13 @@ use alloc::sync::Arc;
 
 use crate::filesystem::{
     tmpfs::TmpFsFile,
-    vfs::{self, DEntryArc, DEntryOps, FileFlags, VfsError, VfsResult},
+    vfs::{self, DEntryArc, DEntryOps, FileFlags, Mount, Path, VfsError, VfsResult},
 };
 
 pub struct TmpFsDentry {}
 
 impl DEntryOps for TmpFsDentry {
-    fn open(&self, flags: FileFlags) -> VfsResult<Pin<Arc<vfs::File>>> {
+    fn open(&self, mount: Arc<Mount>, flags: FileFlags) -> VfsResult<Pin<Arc<vfs::File>>> {
         let data = vfs::DEntryData::get_data(self);
         let inode = data
             .inode
@@ -19,6 +19,11 @@ impl DEntryOps for TmpFsDentry {
             .deref();
         let dentry =
             unsafe { DEntryArc::from_exists(vfs::DEntry::<TmpFsDentry>::get_dentry(self)) };
-        Ok(vfs::File::new(dentry, inode, flags, TmpFsFile {}))
+        Ok(vfs::File::new(
+            Path(dentry, mount),
+            inode,
+            flags,
+            TmpFsFile {},
+        ))
     }
 }

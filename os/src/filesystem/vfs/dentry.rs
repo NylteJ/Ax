@@ -14,8 +14,8 @@ use alloc::{bstr::ByteString, sync::Arc};
 use crate::{
     basic::sync::Mutex,
     filesystem::vfs::{
-        DCacheKey, DEntryArc, File, FileFlags, FileSystem, INodeArc, VfsResult,
-        dentry_arc::DCacheArc,
+        DCacheKey, DEntryArc, File, FileFlags, FileSystem, INodeArc, Mount, VfsResult,
+        dentry_arc::DCacheArc, mount::MountPoint,
     },
     println,
 };
@@ -23,7 +23,7 @@ use crate::{
 /// DEntry 的多态部分
 pub trait DEntryOps: Send + Sync {
     /// 打开当前 DEntry 对应的文件。
-    fn open(&self, flags: FileFlags) -> VfsResult<Pin<Arc<File>>>;
+    fn open(&self, mount: Arc<Mount>, flags: FileFlags) -> VfsResult<Pin<Arc<File>>>;
 }
 
 #[derive(Clone, Copy)]
@@ -132,6 +132,9 @@ pub struct DEntryData<T: ?Sized + DEntryOps = dyn DEntryOps> {
 
     /// 关联的 INode，为 None 表示该 dentry 是负 dentry（标识文件不存在的 dentry）
     pub inode: Option<INodeArc>,
+
+    /// 挂载点，我们不持有它的所有权，但其保证自己有效
+    pub mount: Option<NonNull<MountPoint>>,
 
     pub dynamic_data: T,
 }
@@ -316,6 +319,7 @@ impl<T: DEntryOps + 'static> DEntry<T> {
                     prev: dangling,
                     _phantom: PhantomPinned,
                 },
+                mount: None,
                 dynamic_data,
             }),
         });
@@ -393,6 +397,7 @@ impl<T: DEntryOps + 'static> DEntry<T> {
                     prev: dangling,
                     _phantom: PhantomPinned,
                 },
+                mount: None,
                 dynamic_data,
             }),
         });

@@ -1,5 +1,6 @@
 use core::{
     any::Any,
+    fmt::Debug,
     marker::Unsize,
     ops::{CoerceUnsized, Deref},
     ptr::NonNull,
@@ -10,7 +11,7 @@ use alloc::boxed::Box;
 
 use crate::filesystem::vfs::{INode, INodeOps, VfsError, VfsResult};
 
-#[derive(Debug)]
+// #[derive(Debug)]
 pub struct INodeArc<Ops: ?Sized + INodeOps = dyn INodeOps> {
     ptr: NonNull<INode<Ops>>,
 }
@@ -63,6 +64,12 @@ impl INodeArc {
     pub unsafe fn get_mut(&mut self) -> &mut INode {
         debug_assert_eq!(self.mem_refcount.load(Ordering::Relaxed), 1);
         unsafe { self.ptr.as_mut() }
+    }
+}
+
+impl<Ops: ?Sized + INodeOps> Debug for INodeArc<Ops> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("INodeArc").field("ptr", &self.ptr).finish()
     }
 }
 

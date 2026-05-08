@@ -1,6 +1,6 @@
-use crate::filesystem::vfs::DEntryArc;
+use crate::filesystem::vfs::Path;
 
 #[derive(Debug)]
 pub struct FilesystemData {
-    pub current_work_dir: DEntryArc,
+    pub current_work_dir: Path,
 }

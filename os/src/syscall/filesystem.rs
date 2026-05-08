@@ -12,7 +12,8 @@ use bitflags::{Flags, bitflags};
 
 use crate::{
     filesystem::vfs::{
-        DEntryArc, FileFlags, FileSystem, INodeArc, INodeMode, IterateDirData, VfsError, VfsResult,
+        DEntryArc, FileFlags, FileSystem, INodeArc, INodeMode, IterateDirData, Path, PathToWalk,
+        VfsError, VfsResult, walk_path,
     },
     memory::uaccess::{copy_from_user_uninit, copy_str_from_user, copy_to_user},
     multitask::current_task,
@@ -53,20 +54,13 @@ pub extern "C" fn getcwd(buf: *mut c_char, size: usize) -> SyscallResult {
     let mut str = VecDeque::<u8>::new();
 
     let mut cwd = cur_task.fs_data.read().current_work_dir.clone();
-    loop {
-        let cwd_data = cwd.data.lock();
-
-        let Some(parent) = cwd_data.parent.clone() else {
-            break;
-        };
-        str.prepend(cwd_data.name.0.clone().into_iter());
-        drop(cwd_data);
-
+    while let Some(parent) = cwd.walk_step_back_until_root() {
+        str.prepend(cwd.0.data.lock().name.0.clone().into_iter());
         str.push_front(b'/');
         cwd = parent;
     }
 
-    debug_assert_eq!(cwd.data.lock().name, b"/");
+    debug_assert_eq!(cwd.0.data.lock().name, b"/");
     if str.is_empty() {
         str.push_back(b'/');
     }
@@ -194,9 +188,14 @@ pub extern "C" fn chdir(path: *const c_char) -> SyscallResult {
 
     let cur_task = unsafe { current_task().as_ref_unchecked() };
 
-    let cwd = cur_task.fs_data.read().current_work_dir.clone();
+    let path_to_walk = if *path.get(0).ok_or(ENOENT)? == b'/' {
+        PathToWalk::Absolute(ByteStr::new(&path))
+    } else {
+        let cwd = cur_task.fs_data.read().current_work_dir.clone();
+        PathToWalk::Relative(ByteStr::new(&path), cwd)
+    };
 
-    let new_cwd = unsafe { cwd.filesystem.as_ref() }.walk_path(ByteStr::new(&path), Some(cwd))?;
+    let new_cwd = walk_path(path_to_walk)?.ensure()?;
 
     cur_task.fs_data.write().current_work_dir = new_cwd;
 
@@ -231,48 +230,43 @@ pub extern "C" fn openat(
 
     let cur_task = unsafe { current_task().as_ref_unchecked() };
 
-    let cwd = cur_task.fs_data.read().current_work_dir.clone();
-    let fs = cwd.get_fs();
-
     let path = copy_str_from_user(filename, FILENAME_LEN_HINT, PATH_LEN_MAX)?;
     let walk_path_from = parse_walk_path_from(fd, path.as_ref())?;
 
+    log::trace!("openat fd: {fd}, path: `{path}`, flags: {flags:#x}, mode: {mode:03o}");
+
     let file = if file_open_flags.contains(FileOpenFlags::O_CREAT) {
-        let (dentry, dir_inode) = walk_path_mayneg(fs, path.as_ref(), walk_path_from.clone())?;
-
-        let mut dentry_data_guard = dentry.data.lock();
-
-        if let Some(old_inode) = &dentry_data_guard.inode {
-            if file_open_flags.contains(FileOpenFlags::O_EXCL) {
-                return EEXIST;
+        match walk_path(walk_path_from)? {
+            crate::filesystem::vfs::WalkedPath::Positive(Path(dentry, mount)) => {
+                if file_open_flags.contains(FileOpenFlags::O_EXCL) {
+                    return EEXIST;
+                }
+                dentry.data.lock().dynamic_data.open(mount, file_flags)?
             }
+            crate::filesystem::vfs::WalkedPath::Negative(neg) => {
+                if !file_open_flags.contains(FileOpenFlags::O_CREAT) {
+                    return ENOENT;
+                }
 
-            dentry_data_guard.dynamic_data.open(file_flags)?
-        } else {
-            drop(dentry_data_guard);
+                let mode = INodeMode::from_bits(mode as u16).ok_or(EINVAL)?;
 
-            if !file_open_flags.contains(FileOpenFlags::O_CREAT) {
-                return ENOENT;
+                let new_inode = neg
+                    .dir_inode()?
+                    .data
+                    .write()
+                    .dynamic_data
+                    .create(mode, neg.0.0.clone())?;
+                neg.0.0.data.lock().dynamic_data.open(neg.0.1, file_flags)?
             }
-
-            let mode = INodeMode::from_bits(mode as u16).ok_or(EINVAL)?;
-
-            let new_inode = dir_inode
-                .data
-                .write()
-                .dynamic_data
-                .create(mode, dentry.clone())?;
-            dentry.data.lock().dynamic_data.open(file_flags)?
         }
     } else {
-        fs.walk_path(path.as_ref(), walk_path_from)?
-            .data
-            .lock()
-            .dynamic_data
-            .open(file_flags)?
+        let path = walk_path(walk_path_from)?.ensure()?;
+
+        path.0.data.lock().dynamic_data.open(path.1, file_flags)?
     };
 
     let fd = cur_task.files.write().insert(file);
+    log::trace!("openat success, fd: {fd}");
     SyscallResult::success(fd)
 }
 
@@ -352,7 +346,7 @@ fn parse_file_open_flag(flag: isize) -> VfsResult<(FileOpenFlags, FileFlags)> {
     Ok((open_flags, file_flags))
 }
 
-fn parse_walk_path_from(fd: isize, path: &ByteStr) -> Result<Option<DEntryArc>, SyscallResult> {
+fn parse_walk_path_from(fd: isize, path: &ByteStr) -> Result<PathToWalk<'_>, SyscallResult> {
     if path.is_empty() {
         return Err(ENOENT);
     }
@@ -361,54 +355,23 @@ fn parse_walk_path_from(fd: isize, path: &ByteStr) -> Result<Option<DEntryArc>, 
     let cur_task = unsafe { current_task().as_ref_unchecked() };
 
     Ok(if !is_abs_path {
-        match fd {
-            AT_FDCWD => Some(cur_task.fs_data.read().current_work_dir.clone()),
+        let dentry = match fd {
+            AT_FDCWD => cur_task.fs_data.read().current_work_dir.clone(),
             ..0 => return Err(EBADF),
             0.. => cur_task
                 .files
                 .read()
                 .get(fd.cast_unsigned())
-                .map(|file| file.data.lock().path.clone()),
-        }
+                .ok_or(EBADF)?
+                .data
+                .lock()
+                .path
+                .clone(),
+        };
+        PathToWalk::Relative(ByteStr::new(path), dentry)
     } else {
-        None
+        PathToWalk::Absolute(path)
     })
-}
-
-/// 返回值：找到的项的 DEntry 和它所在目录的 INode。
-fn walk_path_mayneg(
-    fs: &FileSystem,
-    path: &ByteStr,
-    walk_path_from: Option<DEntryArc>,
-) -> VfsResult<(DEntryArc, INodeArc)> {
-    let (dir, filename) = match path.rsplit_once(|&x| x == b'/') {
-        Some((rest, filename)) => {
-            let dir = if rest.is_empty() {
-                // `/xxx`（或 `/`，但这种情况会在后面报错）
-                fs.init_root_dentry.clone()
-            } else {
-                fs.walk_path(ByteStr::new(rest), walk_path_from)?
-            };
-
-            (dir, ByteStr::new(filename))
-        }
-        None => {
-            // 相对路径且只有文件名
-            debug_assert_ne!(path[0], b'/');
-
-            (walk_path_from.unwrap(), ByteStr::new(&path))
-        }
-    };
-
-    let dir_inode = dir.data.lock().inode.as_ref().cloned().unwrap();
-    Ok((
-        if let Some(dcache) = fs.find_dentry(dir.ptr(), filename) {
-            dcache
-        } else {
-            dir_inode.data.read().dynamic_data.lookup(filename, dir)?
-        },
-        dir_inode,
-    ))
 }
 
 /// 功能：关闭一个文件描述符；
@@ -606,26 +569,18 @@ pub extern "C" fn linkat(
 ) -> SyscallResult {
     let cur_task = unsafe { current_task().as_ref_unchecked() };
 
-    let cwd = cur_task.fs_data.read().current_work_dir.clone();
-    let fs = cwd.get_fs();
-
     let oldpath = copy_str_from_user(oldpath, FILENAME_LEN_HINT, PATH_LEN_MAX)?;
     let old_wpf = parse_walk_path_from(olddirfd, oldpath.as_ref())?;
-    let old_dentry = fs.walk_path(oldpath.as_ref(), old_wpf)?;
+    let old_dentry = walk_path(old_wpf)?.ensure()?.0;
 
     let newpath = copy_str_from_user(newpath, FILENAME_LEN_HINT, PATH_LEN_MAX)?;
     let new_wpf = parse_walk_path_from(newdirfd, newpath.as_ref())?;
-    let (new_dentry, dir_inode) = walk_path_mayneg(fs, newpath.as_ref(), new_wpf)?;
+    let new_dentry = walk_path(new_wpf)?.ensure_neg()?;
 
-    if new_dentry.data.lock().inode.is_some() {
-        return EEXIST;
-    }
-
-    dir_inode
-        .data
-        .write()
-        .dynamic_data
-        .link(new_dentry, old_dentry.data.lock().inode.as_ref().unwrap())?;
+    new_dentry.dir_inode()?.data.write().dynamic_data.link(
+        new_dentry.0.0,
+        old_dentry.data.lock().inode.as_ref().unwrap(),
+    )?;
 
     SyscallResult::success(0)
 }
@@ -649,12 +604,20 @@ const AT_REMOVEDIR: usize = 0x200;
 pub extern "C" fn unlinkat(dirfd: isize, path: *const c_char, flags: usize) -> SyscallResult {
     let cur_task = unsafe { current_task().as_ref_unchecked() };
 
-    let cwd = cur_task.fs_data.read().current_work_dir.clone();
-    let fs = cwd.get_fs();
-
     let path = copy_str_from_user(path, FILENAME_LEN_HINT, PATH_LEN_MAX)?;
     let walk_path_from = parse_walk_path_from(dirfd, path.as_ref())?;
-    let (dentry, dir_inode) = walk_path_mayneg(fs, path.as_ref(), walk_path_from)?;
+    let dentry = walk_path(walk_path_from)?.ensure()?.0;
+    let dir_inode = dentry
+        .data
+        .lock()
+        .parent
+        .as_ref()
+        .ok_or(EBUSY)? // 根目录不允许被删除（无论是哪个文件系统的根目录，也无论是否为空）
+        .data
+        .lock()
+        .inode
+        .clone()
+        .ok_or(ENOENT)?;
 
     if flags & AT_REMOVEDIR == 0 {
         dir_inode.data.write().dynamic_data.unlink(&dentry)?;
@@ -682,19 +645,17 @@ pub extern "C" fn unlinkat(dirfd: isize, path: *const c_char, flags: usize) -> S
 pub extern "C" fn mkdirat(dirfd: isize, path: *const c_char, mode: usize) -> SyscallResult {
     let cur_task = unsafe { current_task().as_ref_unchecked() };
 
-    let cwd = cur_task.fs_data.read().current_work_dir.clone();
-    let fs = cwd.get_fs();
-
     let path = copy_str_from_user(path, FILENAME_LEN_HINT, PATH_LEN_MAX)?;
     let walk_path_from = parse_walk_path_from(dirfd, path.as_ref())?;
-    let (dentry, dir_inode) = walk_path_mayneg(fs, path.as_ref(), walk_path_from)?;
-
-    if dentry.data.lock().inode.is_some() {
-        return EEXIST;
-    }
+    let dentry = walk_path(walk_path_from)?.ensure_neg()?;
 
     let mode = INodeMode::from_bits(mode as u16).ok_or(EINVAL)?;
-    dir_inode.data.write().dynamic_data.mkdir(dentry, mode)?;
+    let dir_inode = dentry.dir_inode()?;
+    dir_inode
+        .data
+        .write()
+        .dynamic_data
+        .mkdir(dentry.0.0, mode)?;
     SyscallResult::success(0)
 }
 

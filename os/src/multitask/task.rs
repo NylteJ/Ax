@@ -4,7 +4,7 @@ use alloc::sync::Arc;
 
 use crate::{
     basic::{stack::TaskKernelStackPtr, sync::RwLock},
-    filesystem::vfs::DEntryArc,
+    filesystem::vfs::Path,
     memory::{
         PAGE_BYTES,
         address::{VIRTUAL_ADDRESS_LOW_HIGHEST, VirtAddr},
@@ -58,7 +58,7 @@ impl Task {
         policy: SchedulePolicy,
         priority: TaskPriority,
         entry: usize,
-        work_dir: DEntryArc,
+        work_dir: Path,
     ) -> Pin<Arc<Self>> {
         let pid = PID_ALLOCATOR.lock().allocate().expect("必须能够分配 PID");
 
