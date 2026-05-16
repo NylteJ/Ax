@@ -1,5 +1,6 @@
 use crate::memory::{PAGE_BYTES, PAGE_SHIFTS, page::PageTableEntry};
 
+#[repr(transparent)]
 #[derive(Copy, Clone, Ord, PartialOrd, Eq, PartialEq, Debug)]
 pub struct PhysAddr(pub usize);
 

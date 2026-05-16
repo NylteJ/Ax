@@ -2,6 +2,7 @@ use core::{
     mem::{MaybeUninit, offset_of},
     pin::Pin,
     ptr::NonNull,
+    sync::atomic::Ordering,
 };
 
 use alloc::{bstr::ByteString, sync::Arc};
@@ -9,7 +10,7 @@ use bitflags::bitflags;
 
 use crate::{
     basic::sync::Mutex,
-    filesystem::vfs::{INode, Path, VfsError, VfsResult},
+    filesystem::vfs::{INode, INodeDirtyState, Path, VfsError, VfsResult},
 };
 
 /// 描述打开的文件，也许类似句柄的概念？
@@ -27,7 +28,7 @@ pub struct FileData<T: ?Sized + FileOps = dyn FileOps> {
     pub flags: FileFlags,
     pub pos: u64,
 
-    pub dynamic_data: T,
+    pub ops: T,
 }
 
 bitflags! {
@@ -76,7 +77,7 @@ impl<T: FileOps + 'static> File<T> {
         unsafe {
             Mutex::from_value(
                 NonNull::from_ref(this)
-                    .byte_sub(offset_of!(FileData<T>, dynamic_data))
+                    .byte_sub(offset_of!(FileData<T>, ops))
                     .cast::<FileData<T>>(),
             )
             .byte_sub(offset_of!(File<T>, data))
@@ -91,14 +92,14 @@ impl<T: FileOps + 'static> File<T> {
         unsafe { ptr.as_mut() }
     }
 
-    pub fn new(path: Path, inode: &INode, flags: FileFlags, dynamic_data: T) -> Pin<Arc<File>> {
+    pub fn new(path: Path, inode: &INode, flags: FileFlags, ops: T) -> Pin<Arc<File>> {
         Arc::pin(File {
             inode: NonNull::from_ref(inode),
             data: Mutex::new(FileData {
                 path,
                 flags,
                 pos: 0,
-                dynamic_data,
+                ops,
             }),
         })
     }
@@ -131,7 +132,7 @@ impl<T: ?Sized + FileOps> FileData<T> {
             name,
             next_pos,
             inode_id,
-        }) = self.dynamic_data.get_dir(self.pos + count)?
+        }) = self.ops.get_dir(self.pos + count)?
         {
             let dirent_size = size_of::<DirentHead>() + name.len() + 1; // 注意要带末尾的 '\0
             let start_off = k_buffer_ptr.align_offset(DIRENT_ALIGNMENT);
@@ -179,4 +180,59 @@ impl<T: ?Sized + FileOps> FileData<T> {
             count,
         ))
     }
+
+    /// 从文件的当前位置开始读取最多 `len` 字节的数据到用户空间地址 `user_buf` 中。
+    ///
+    /// 返回成功读取的字节数，若用户提供的缓冲区无效则返回 Err（即便已经读取了部分字节）。
+    pub fn read(&mut self, user_buf: *mut u8, len: u64) -> VfsResult<u64> {
+        self.ops.read(user_buf, len)
+    }
+    /// 从文件的当前位置开始写入 `len` 字节的来自用户的数据。
+    ///
+    /// 返回成功写入的字节数，若用户提供的缓冲区无效则返回 Err（即便已经写入了部分字节）。
+    pub fn write(&mut self, user_data: *const u8, len: u64) -> VfsResult<u64> {
+        let ret = self.ops.write(user_data, len)?;
+
+        let inode = self.path.0.data.lock().inode.as_ref().unwrap().clone();
+        let prev = inode
+            .dirty_state
+            .fetch_or(INodeDirtyState::Dirty.bits(), Ordering::Relaxed);
+        if INodeDirtyState::from_bits_retain(prev).is_pure_clean() {
+            unsafe {
+                inode
+                    .fs
+                    .as_ref()
+                    .dirty_sent
+                    .lock()
+                    .lru_add(&inode, offset_of!(INode, dirty))
+            };
+            log::trace!(
+                "INode {} ({:#x}) 变脏，已加入脏页链表",
+                inode.id,
+                inode.addr()
+            );
+        }
+
+        Ok(ret)
+    }
+}
+
+pub fn default_fseek<T: FileOps + 'static>(this: &mut T, seek_from: SeekFrom) -> VfsResult<u64> {
+    let inode = File::from_dyn(this).inode;
+    let pos = &mut File::from_dyn_mut(this).data.get_mut().pos;
+    match seek_from {
+        SeekFrom::Start(new_pos) => *pos = new_pos,
+        SeekFrom::Current(offset) => {
+            *pos = pos
+                .checked_add_signed(offset)
+                .ok_or(VfsError::InvalidArguments("文件位置偏移量溢出"))?
+        }
+        SeekFrom::End(offset) => {
+            let file_size = unsafe { inode.as_ref() }.data.read().file_size;
+            *pos = file_size
+                .checked_add_signed(offset)
+                .ok_or(VfsError::InvalidArguments("文件位置偏移量溢出"))?
+        }
+    }
+    Ok(*pos)
 }

@@ -12,12 +12,11 @@ use core::{
 use alloc::{bstr::ByteString, sync::Arc};
 
 use crate::{
-    basic::sync::Mutex,
+    basic::{lru::LruNode, sync::Mutex},
     filesystem::vfs::{
         DCacheKey, DEntryArc, File, FileFlags, FileSystem, INodeArc, Mount, VfsResult,
-        dentry_arc::DCacheArc, mount::MountPoint,
+        cache::CachedValue, dentry_arc::DCacheArc, mount::MountPoint,
     },
-    println,
 };
 
 /// DEntry 的多态部分
@@ -74,55 +73,6 @@ pub struct DEntryLinkedListNode {
     pub _phantom: PhantomPinned,
 }
 
-#[derive(Clone, Copy)]
-pub struct DEntryLruPtr {
-    ptr: NonNull<DEntryLruNode>,
-    metadata: Option<DynMetadata<dyn DEntryOps>>,
-}
-
-impl DEntryLruPtr {
-    pub fn from_dentry(dentry: NonNull<DEntry>) -> Self {
-        let (ptr, metadata) = dentry.to_raw_parts();
-        Self {
-            ptr: unsafe { ptr.byte_add(offset_of!(DEntry, lru)) }.cast(),
-            metadata: Some(metadata),
-        }
-    }
-
-    pub fn from_sentinel(sentinel: &mut DEntryLruNode) -> Self {
-        Self {
-            ptr: sentinel.into(),
-            metadata: None,
-        }
-    }
-
-    pub fn dangling() -> Self {
-        Self {
-            ptr: NonNull::dangling(),
-            metadata: None,
-        }
-    }
-
-    pub fn as_dentry(&self) -> NonNull<DEntry> {
-        debug_assert!(self.metadata.is_some());
-        let ptr = unsafe { self.ptr.byte_sub(offset_of!(DEntry, lru)) };
-        NonNull::from_raw_parts(ptr, unsafe { self.metadata.unwrap_unchecked() })
-    }
-    pub fn as_node(&self) -> NonNull<DEntryLruNode> {
-        self.ptr
-    }
-
-    pub fn addr_eq(&self, other: &Self) -> bool {
-        addr_eq(self.ptr.as_ptr(), other.ptr.as_ptr())
-    }
-}
-
-pub struct DEntryLruNode {
-    pub next: DEntryLruPtr,
-    pub prev: DEntryLruPtr,
-    pub _phantom: PhantomPinned,
-}
-
 pub struct DEntryData<T: ?Sized + DEntryOps = dyn DEntryOps> {
     pub parent: Option<DEntryArc>,
     pub name: ByteString,
@@ -136,7 +86,7 @@ pub struct DEntryData<T: ?Sized + DEntryOps = dyn DEntryOps> {
     /// 挂载点，我们不持有它的所有权，但其保证自己有效
     pub mount: Option<NonNull<MountPoint>>,
 
-    pub dynamic_data: T,
+    pub ops: T,
 }
 
 /// 目录项，对应 Linux VFS 中的 dentry
@@ -153,13 +103,13 @@ pub struct DEntry<T: ?Sized + DEntryOps = dyn DEntryOps> {
     pub(super) mem_refcount: AtomicU32,
     /// 是否位于 dcache 中，若不位于则行为退化为普通引用计数，否则引用计数归零时其仅会被放入 LRU 链表
     ///
-    /// 常量。这意味着它要么永远位于 dcache 中，要么永远不位于 dcache 中（例如根节点）。
-    pub(super) in_dcache: bool,
+    /// 其值由 DCache 锁保护。
+    pub(super) in_dcache: SyncUnsafeCell<bool>,
 
-    /// LRU 链表中，指向上一个/下一个节点的指针
-    ///
-    /// 和 `peer` 类似，它受 LRU 锁保护
-    pub(super) lru: SyncUnsafeCell<DEntryLruNode>,
+    /// LRU 链表中，指向上一个/下一个节点的指针，受 LRU 锁保护
+    pub(super) lru: LruNode<DEntry>,
+    /// 指示其是否位于 LRU 链表中，受 LRU 锁保护
+    pub(super) in_lru: SyncUnsafeCell<bool>,
 
     /// 所属的文件系统，其保证有效且不会改变
     pub filesystem: NonNull<FileSystem>,
@@ -241,12 +191,18 @@ impl<T: ?Sized + DEntryOps> DEntry<T> {
 
 impl<T: ?Sized + DEntryOps> Drop for DEntry<T> {
     fn drop(&mut self) {
-        unsafe { self.remove_from_parent() };
-        println!(
-            "DEntry {:p} ({}) dropped",
-            self as *const Self,
-            self.data.get_mut().name
+        let my_ptr = self as *const Self;
+        let my_data = self.data.get_mut();
+        log::trace!(
+            "DEntry {:#x} ({}, parent {:#x}, INode {:#x}) dropped",
+            my_ptr.addr(),
+            my_data.name,
+            my_data.parent.as_ref().map_or(0x0721, |p| p.addr()),
+            my_data.inode.as_ref().map_or(0x0721, |ino| ino.addr()),
         );
+        if my_data.parent.is_some() {
+            unsafe { self.remove_from_parent() };
+        }
     }
 }
 
@@ -292,7 +248,7 @@ impl<T: DEntryOps + 'static> DEntry<T> {
         name: ByteString,
         inode: Option<INodeArc>,
         filesystem: &FileSystem,
-        dynamic_data: T,
+        ops: T,
     ) -> DEntryArc {
         let dangling = DEntryLinkedListPtr::dangling::<T>();
 
@@ -302,13 +258,10 @@ impl<T: DEntryOps + 'static> DEntry<T> {
                 prev: dangling,
                 _phantom: PhantomPinned,
             }),
-            lru: SyncUnsafeCell::new(DEntryLruNode {
-                next: DEntryLruPtr::dangling(),
-                prev: DEntryLruPtr::dangling(),
-                _phantom: PhantomPinned,
-            }),
+            lru: LruNode::new_unlinked(),
+            in_lru: SyncUnsafeCell::new(false),
             mem_refcount: AtomicU32::new(1),
-            in_dcache: true,
+            in_dcache: SyncUnsafeCell::new(true),
             filesystem: NonNull::from_ref(filesystem),
             data: Mutex::new(DEntryData {
                 parent: Some(parent),
@@ -320,7 +273,7 @@ impl<T: DEntryOps + 'static> DEntry<T> {
                     _phantom: PhantomPinned,
                 },
                 mount: None,
-                dynamic_data,
+                ops,
             }),
         });
 
@@ -370,7 +323,7 @@ impl<T: DEntryOps + 'static> DEntry<T> {
         name: ByteString,
         inode: INodeArc,
         filesystem: NonNull<FileSystem>,
-        dynamic_data: T,
+        ops: T,
     ) -> DEntryArc {
         let dangling = DEntryLinkedListPtr::dangling::<T>();
 
@@ -380,13 +333,10 @@ impl<T: DEntryOps + 'static> DEntry<T> {
                 prev: dangling,
                 _phantom: PhantomPinned,
             }),
-            lru: SyncUnsafeCell::new(DEntryLruNode {
-                next: DEntryLruPtr::dangling(),
-                prev: DEntryLruPtr::dangling(),
-                _phantom: PhantomPinned,
-            }),
+            lru: LruNode::new_unlinked(),
+            in_lru: SyncUnsafeCell::new(false),
             mem_refcount: AtomicU32::new(1),
-            in_dcache: false, // 根节点不在 dcache 中
+            in_dcache: SyncUnsafeCell::new(false), // 根节点不在 dcache 中
             filesystem,
             data: Mutex::new(DEntryData {
                 parent: None,
@@ -398,7 +348,7 @@ impl<T: DEntryOps + 'static> DEntry<T> {
                     _phantom: PhantomPinned,
                 },
                 mount: None,
-                dynamic_data,
+                ops,
             }),
         });
 
@@ -453,42 +403,12 @@ impl<T: ?Sized + DEntryOps> DEntry<T> {
     }
 }
 
-impl DEntry {
-    pub unsafe fn lru_drop(&self, _sentinel: &DEntryLruNode) {
-        let lru = unsafe { self.lru.get().as_ref_unchecked() };
-
-        let my_prev = lru.prev;
-        let my_next = lru.next;
-
-        // SAFETY: 和上面不同，它们不可能是当前 LRU 节点的别名
-        unsafe { my_prev.as_node().as_mut() }.next = my_next;
-        unsafe { my_next.as_node().as_mut() }.prev = my_prev;
-    }
-    pub unsafe fn lru_add(&self, sentinel: &mut DEntryLruNode) {
-        let lru = unsafe { self.lru.get().as_mut_unchecked() };
-
-        lru.prev = DEntryLruPtr::from_sentinel(sentinel);
-        lru.next = sentinel.next;
-
-        let sent_next = replace(
-            &mut sentinel.next,
-            DEntryLruPtr::from_dentry(NonNull::from_ref(self)),
-        );
-
-        drop(sentinel);
-
-        // SAFETY: 它可能和 sentinel 别名，但 sentinel 已经 dropped 了
-        unsafe { sent_next.as_node().as_mut() }.prev =
-            DEntryLruPtr::from_dentry(NonNull::from_ref(self));
-    }
-}
-
 impl<T: DEntryOps> DEntryData<T> {
     pub fn get_data(dynamic: &T) -> &DEntryData<T> {
         let dynamic = NonNull::from_ref(dynamic);
         unsafe {
             dynamic
-                .byte_sub(offset_of!(DEntryData<T>, dynamic_data))
+                .byte_sub(offset_of!(DEntryData<T>, ops))
                 .cast()
                 .as_ref()
         }
@@ -503,5 +423,46 @@ impl<T: DEntryOps> DEntry<T> {
                 .cast()
                 .as_ref()
         }
+    }
+}
+
+unsafe impl CachedValue for DEntry {
+    const DEBUG_NAME: &'static str = "DEntry";
+
+    fn mem_refcount(&self) -> &AtomicU32 {
+        &self.mem_refcount
+    }
+
+    fn in_cache(&self) -> *mut bool {
+        self.in_dcache.get()
+    }
+
+    fn my_lru(&self) -> &LruNode<Self> {
+        &self.lru
+    }
+
+    fn in_lru(&self) -> *mut bool {
+        self.in_lru.get()
+    }
+
+    fn lru_sent_lock(&self) -> impl Deref<Target = LruNode<Self>> + DerefMut {
+        self.get_fs().dlru_sent.lock()
+    }
+
+    type CacheKey = DCacheKey;
+
+    type CacheValue = DCacheArc;
+
+    fn cache_wlock(
+        &self,
+    ) -> impl Deref<Target = hashbrown::HashMap<Self::CacheKey, Self::CacheValue>> + DerefMut {
+        self.get_fs().dcache.write()
+    }
+
+    fn remove_from_cache(
+        &self,
+        cache: &mut hashbrown::HashMap<Self::CacheKey, Self::CacheValue>,
+    ) -> Self::CacheValue {
+        unsafe { super::FileSystem::remove_dcache_entry(cache, &self.data.lock()) }
     }
 }

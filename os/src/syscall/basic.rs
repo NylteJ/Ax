@@ -1,5 +1,6 @@
 use crate::{
     basic::{
+        cleanup_and_shutdown,
         sbi::{ShutdownStatus, shutdown},
         shared_with_asm::SharedWithAsm,
     },
@@ -19,14 +20,15 @@ pub extern "C" fn exit(ec: isize) -> ! {
     println!("[Kernel] Application exited with code {0} ({0:#x}).", ec);
 
     let cur = current_task();
-    unsafe {
-        TaskArc::drop_asm(cur);
-    };
 
     let Some(next_task) = TASK_SCHEDULER.write().pick_next() else {
         println!("所有用户程序运行完毕，关机");
-        shutdown(ShutdownStatus::Normal);
+        cleanup_and_shutdown();
     };
+
+    // 注意只在不关机时 drop 当前任务，因为现在使用的页表还是当前任务的页表，drop 掉了其内存就可能被重用，
+    // 导致清理任务出现各种问题。不关机时因为下一步就是 run_program，它不进行内存分配，所以没问题
+    unsafe { TaskArc::drop_asm(cur) };
 
     run_program(next_task);
     unreachable!();

@@ -33,6 +33,13 @@ pub fn backtrace_at(mut frame_pointer: *const usize) {
     }
 
     for depth in 0..100 {
+        use crate::memory::address::LINEAR_MAPPING_OFFSET;
+
+        if !frame_pointer.is_aligned() {
+            println!("帧指针未对齐，帧数据很可能已损坏，终止回溯...");
+            return;
+        }
+
         let pc = unsafe { *frame_pointer.sub(1) };
         let fp = unsafe { *frame_pointer.sub(2) };
 
@@ -52,6 +59,10 @@ pub fn backtrace_at(mut frame_pointer: *const usize) {
         print_pc_info_if_debug(pc);
         println!();
 
+        if pc <= LINEAR_MAPPING_OFFSET {
+            break;
+        }
+
         frame_pointer = fp as *const usize;
     }
 }
@@ -66,9 +77,9 @@ pub fn print_pc_info_if_debug(pc: usize) {
                 if let Some(start) = file.find("/os/src/") {
                     file = &file[start + 1..];
                 }
-                print!("  {file}");
+                print!("{file}");
             } else {
-                print!("  <No file>");
+                print!("<No file>");
             }
             if let Some(line) = location.line {
                 print!(":{line}");
@@ -86,12 +97,8 @@ pub fn print_pc_info_if_debug(pc: usize) {
 
 #[cfg(debug_assertions)]
 pub struct DebugContext(
-    core::cell::SyncUnsafeCell<
-        core::mem::MaybeUninit<
-            addr2line::Context<
-                addr2line::gimli::EndianSlice<'static, addr2line::gimli::LittleEndian>,
-            >,
-        >,
+    super::sync::OnceInited<
+        addr2line::Context<addr2line::gimli::EndianSlice<'static, addr2line::gimli::LittleEndian>>,
     >,
 );
 
@@ -102,9 +109,7 @@ unsafe impl Send for DebugContext {}
 unsafe impl Sync for DebugContext {}
 
 #[cfg(debug_assertions)]
-pub static DEBUG_CONTEXT: DebugContext = DebugContext(core::cell::SyncUnsafeCell::new(
-    core::mem::MaybeUninit::uninit(),
-));
+pub static DEBUG_CONTEXT: DebugContext = DebugContext(super::sync::OnceInited::new());
 
 #[cfg(debug_assertions)]
 impl DebugContext {
@@ -140,8 +145,9 @@ impl DebugContext {
         )
         .unwrap();
 
-        unsafe { self.0.get().as_mut_unchecked() }
-            .write(addr2line::Context::from_dwarf(file).unwrap());
+        unsafe {
+            super::sync::OnceInited::init(&self.0, addr2line::Context::from_dwarf(file).unwrap())
+        }
     }
 }
 
@@ -151,7 +157,7 @@ impl core::ops::Deref for DebugContext {
         addr2line::Context<addr2line::gimli::EndianSlice<'static, addr2line::gimli::LittleEndian>>;
 
     fn deref(&self) -> &Self::Target {
-        unsafe { self.0.get().as_ref_unchecked().assume_init_ref() }
+        self.0.deref()
     }
 }
 

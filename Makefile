@@ -30,6 +30,7 @@ clean:
 		rm -f ../kernel-rv ../kernel-la; \
 		rm -f ./src/linker_rv.ld ./src/linker_la.ld; \
 		rm -f ./kernel-rv.debug ./kernel-la.debug; \
+		rm -f ./disk.img; \
 		rm -rf ./.cargo; \
 		printf "$(GREEN)清理完毕！$(NC)\n"; \
 	}
@@ -122,10 +123,10 @@ RV_QEMU_CMD_BASE := \
 		-device virtio-net-device,netdev=net \
 		-netdev user,id=net \
 		-rtc base=utc \
+		-drive file=/repo/disk.img,if=none,format=raw,id=x0 \
+		-device virtio-blk-device,drive=x0,bus=virtio-mmio-bus.0 \
 # 		-drive file=disk.img,if=none,format=raw,id=x1 \
 # 		-device virtio-blk-device,drive=x1,bus=virtio-mmio-bus.1 \
-# 		-drive file={fs},if=none,format=raw,id=x0 \
-# 		-device virtio-blk-device,drive=x0,bus=virtio-mmio-bus.0 \
 
 LA_QEMU_CMD_BASE := \
 	qemu-system-loongarch64 \
@@ -133,14 +134,15 @@ LA_QEMU_CMD_BASE := \
 		-m $(MEMORY) \
 		-nographic \
 		-smp $(SMP) \
+		-drive file=/repo/disk.img,if=none,format=raw,id=x0 \
+ 		-device virtio-blk-pci,drive=x0 \
 		-no-reboot \
 		-device virtio-net-pci,netdev=net0 \
 		-netdev user,id=net0,hostfwd=tcp::5555-:5555,hostfwd=udp::5555-:5555 \
 		-rtc base=utc \
+# 		-device virtio-blk-pci,drive=x0,bus=virtio-mmio-bus.0 \
 # 		-drive file=disk-la.img,if=none,format=raw,id=x1 \
 # 		-device virtio-blk-pci,drive=x1,bus=virtio-mmio-bus.1 \
-# 		-drive file={fs},if=none,format=raw,id=x0 \
-# 		-device virtio-blk-pci,drive=x0,bus=virtio-mmio-bus.0 \
 
 DOCKER_ARGS_BASE := --rm -v .:/repo -p 1234:1234 zhouzhouyi/os-contest:20260104
 
@@ -187,6 +189,22 @@ clippy-la:
 		cd os; \
 		cargo clippy --target loongarch64-unknown-none $(CARGOFLAGS); \
 	}
+
+disk.img:
+	mkfs.ext4 -F -d ./disk_img disk.img 1M
+
+.PHONY: regen-disk
+regen-disk:
+	rm -f disk.img
+	$(MAKE) disk.img
+
+.PHONY: mount-disk
+mount-disk: disk.img
+	mount -o ro,loop disk.img ./disk_img
+
+.PHONY: umount-disk
+umount-disk:
+	umount ./disk_img
 
 .PHONY: test
 test: all check

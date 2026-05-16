@@ -26,12 +26,56 @@ pub enum VfsError {
     InvalidUserPointer(uaccess::CopyError),
     /// 目标对象支持该操作，但输入参数无效（如果其它更具体的类型能满足要求，请使用其他类型）
     InvalidArguments(&'static str),
+    /// I/O 过程中发生异常
+    IoError,
     Other(&'static str),
 }
 
 impl From<uaccess::CopyError> for VfsError {
     fn from(value: uaccess::CopyError) -> Self {
         VfsError::InvalidUserPointer(value)
+    }
+}
+
+impl From<ext4_rs::Ext4Error> for VfsError {
+    // 我恨孤儿规则
+    fn from(value: ext4_rs::Ext4Error) -> Self {
+        use VfsError::*;
+        use ext4_rs::Errno::*;
+        let msg = value.msg.unwrap_or("Unknown ext4 error");
+        match value.error() {
+            EPERM => todo!(),
+            ENOENT => FileNotFound,
+            EINTR => todo!(),
+            EIO => IoError,
+            ENXIO => todo!(),
+            E2BIG => todo!(),
+            EBADF => todo!(),
+            EAGAIN => todo!(),
+            ENOMEM => todo!(),
+            EACCES => todo!(),
+            EFAULT => InvalidUserPointer(uaccess::CopyError::BadAccess),
+            ENOTBLK => todo!(),
+            EBUSY => todo!(),
+            EEXIST => FileAlreadyExists,
+            EXDEV => todo!(),
+            ENODEV => todo!(),
+            ENOTDIR => NotADirectory,
+            EISDIR => IsADirectory,
+            EINVAL => InvalidArguments(msg),
+            ENFILE => todo!(),
+            EMFILE => todo!(),
+            ENOTTY => todo!(),
+            ETXTBSY => todo!(),
+            EFBIG => todo!(),
+            ENOSPC => todo!(),
+            ESPIPE => todo!(),
+            EROFS => todo!(),
+            EMLINK => todo!(),
+            EPIPE => todo!(),
+            ENAMETOOLONG => todo!(),
+            ENOTSUP => OperationNotSupported,
+        }
     }
 }
 

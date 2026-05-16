@@ -1,19 +1,15 @@
-use core::{
-    any::Any,
-    fmt::Debug,
-    marker::Unsize,
-    ops::{CoerceUnsized, Deref},
-    ptr::NonNull,
-    sync::atomic::{self, Ordering},
-};
+use core::{any::Any, fmt::Debug, ops::Deref, ptr::NonNull, sync::atomic::Ordering};
 
 use alloc::boxed::Box;
 
-use crate::filesystem::vfs::{INode, INodeOps, VfsError, VfsResult};
+use crate::filesystem::vfs::{
+    INode, INodeDirtyState, INodeOps, VfsError, VfsResult,
+    cache::{CachedValueArc, drop_cached_varc},
+};
 
 // #[derive(Debug)]
-pub struct INodeArc<Ops: ?Sized + INodeOps = dyn INodeOps> {
-    ptr: NonNull<INode<Ops>>,
+pub struct INodeArc {
+    ptr: NonNull<INode>,
 }
 
 impl INodeArc {
@@ -24,23 +20,8 @@ impl INodeArc {
         }
     }
 
-    pub fn downcast<T: INodeOps>(self) -> Result<INodeArc<T>, Self> {
-        if (&self.data.read().dynamic_data as &dyn Any).is::<T>() {
-            Ok(INodeArc::<T> {
-                ptr: self.ptr.cast(),
-            })
-        } else {
-            Err(self)
-        }
-    }
-
-    pub fn downcast_or_vfserr<T: INodeOps>(self) -> VfsResult<INodeArc<T>> {
-        self.downcast::<T>()
-            .map_err(|_| VfsError::FilesystemMismatch)
-    }
-
     pub fn downcast_ref<T: INodeOps>(&self) -> Option<&INode<T>> {
-        if (&self.data.read().dynamic_data as &dyn Any).is::<T>() {
+        if (&self.data.read().ops as &dyn Any).is::<T>() {
             Some(unsafe { self.ptr.cast().as_ref() })
         } else {
             None
@@ -67,48 +48,92 @@ impl INodeArc {
     }
 }
 
-impl<Ops: ?Sized + INodeOps> Debug for INodeArc<Ops> {
+impl Debug for INodeArc {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("INodeArc").field("ptr", &self.ptr).finish()
     }
 }
 
-impl<T: ?Sized + INodeOps + Unsize<U>, U: ?Sized + INodeOps> CoerceUnsized<INodeArc<U>>
-    for INodeArc<T>
-{
-}
-
-impl<Ops: ?Sized + INodeOps> Clone for INodeArc<Ops> {
+impl Clone for INodeArc {
     fn clone(&self) -> Self {
         self.mem_refcount.fetch_add(1, Ordering::Relaxed);
         Self { ptr: self.ptr }
     }
 }
 
-impl<Ops: ?Sized + INodeOps> Drop for INodeArc<Ops> {
+impl Drop for INodeArc {
     fn drop(&mut self) {
-        if self.mem_refcount.fetch_sub(1, Ordering::Release) != 1 {
-            return;
-        }
-
-        atomic::fence(Ordering::Acquire);
-
-        let my_data = unsafe { self.ptr.as_mut() }.data.get_mut();
-
-        if my_data.dynamic_data.should_drop_when_mem_refcount_zero() {
-            drop(unsafe { Box::from_raw(self.ptr.as_ptr()) });
-        } else {
-            // todo!();
-            // FIXME
-            crate::println!("[TODO] INodeArc {:p} leaked", self.ptr.as_ptr());
-        }
+        unsafe {
+            drop_cached_varc(self, |inode| {
+                INodeDirtyState::from_bits_truncate(inode.dirty_state.load(Ordering::Relaxed))
+                    .is_pure_clean()
+                    && inode.data.write().ops.evictable_when_mem_ref_zero()
+            })
+        };
     }
 }
 
-impl<Ops: ?Sized + INodeOps> Deref for INodeArc<Ops> {
-    type Target = INode<Ops>;
+impl Deref for INodeArc {
+    type Target = INode;
 
     fn deref(&self) -> &Self::Target {
         unsafe { self.ptr.as_ref() }
     }
 }
+
+unsafe impl Send for INodeArc {}
+unsafe impl Sync for INodeArc {}
+
+impl CachedValueArc for INodeArc {
+    unsafe fn from_exists_unchecked(cache: &Self::Target) -> Self {
+        Self {
+            ptr: NonNull::from_ref(cache),
+        }
+    }
+
+    unsafe fn drop_inner_unchecked(&self) {
+        drop(unsafe { Box::from_raw(self.ptr.as_ptr()) });
+    }
+}
+
+#[derive(Debug)]
+pub struct ICacheArc {
+    ptr: NonNull<INode>,
+}
+
+impl ICacheArc {
+    pub fn from_new(inode: &INodeArc) -> Self {
+        Self { ptr: inode.ptr }
+    }
+
+    pub unsafe fn drop_manually(inode: &INode) {
+        drop(Self {
+            ptr: NonNull::from_ref(inode),
+        });
+    }
+}
+
+impl Deref for ICacheArc {
+    type Target = INode;
+
+    fn deref(&self) -> &<Self as Deref>::Target {
+        unsafe { self.ptr.as_ref() }
+    }
+}
+
+impl Drop for ICacheArc {
+    fn drop(&mut self) {
+        // 其它地方负责约束 ICacheArc 一定在引用计数归零时由回收进程在持有 ICache 写锁 + LRU 锁的情况下析构
+        // 因此这里直接清理即可，而且不需要动 LRU
+
+        debug_assert!(unsafe { *self.in_icache.get() });
+
+        let barrier = self.mem_refcount.load(Ordering::Acquire);
+        debug_assert_eq!(barrier, 0);
+
+        drop(unsafe { Box::from_raw(self.ptr.as_ptr()) });
+    }
+}
+
+unsafe impl Send for ICacheArc {}
+unsafe impl Sync for ICacheArc {}

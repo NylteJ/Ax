@@ -22,7 +22,7 @@ impl log::Log for Logger {
 
         if let Some((file, line)) = record.file().zip(record.line()) {
             let file = file.strip_prefix("src/").unwrap_or(file);
-            println!("{level}[{file:>16}:{line:<3}] {}", record.args());
+            println!("{level}[{file}:{line:>3}] {}", record.args());
         } else {
             println!("{level} {}", record.args());
         }
@@ -41,5 +41,5 @@ pub fn init() {
     };
 
     unsafe { log::set_logger_racy(&Logger) }.unwrap();
-    unsafe { log::set_max_level(MAX_LEVEL) };
+    log::set_max_level(MAX_LEVEL);
 }

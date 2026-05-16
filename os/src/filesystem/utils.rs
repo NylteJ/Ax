@@ -1,8 +1,10 @@
-use core::mem::MaybeUninit;
+use core::{mem::MaybeUninit, sync::atomic::Ordering};
+
+use intrusive_collections::UnsafeRef;
 
 use crate::{
     filesystem::vfs::{PageCache, VfsResult},
-    memory::PAGE_BYTES,
+    memory::{PAGE_BYTES, page_meta::PageFlags},
 };
 
 pub enum FileIoPgCacheMissResult {
@@ -11,10 +13,11 @@ pub enum FileIoPgCacheMissResult {
 }
 
 pub fn file_io_common(
+    write: bool,
     pos: &mut u64,
     page_cache: &PageCache,
     len: u64,
-    mut op: impl FnMut(&[MaybeUninit<u8>]) -> VfsResult<()>,
+    mut op: impl FnMut(&mut [MaybeUninit<u8>]) -> VfsResult<()>,
     mut when_pgcache_miss: impl FnMut(&PageCache, u64) -> VfsResult<FileIoPgCacheMissResult>,
 ) -> VfsResult<u64> {
     let ret = 'do_op_and_get_ret: {
@@ -55,9 +58,25 @@ pub fn file_io_common(
                 PAGE_BYTES as u64
             };
 
-            let k_mem = page.visit_memory_off(from as usize, to as usize);
+            op(unsafe { page.visit_memory_mut_off(from as usize, to as usize) })?;
 
-            op(k_mem)?;
+            if write {
+                let old_flags = page
+                    .flags
+                    .fetch_or(PageFlags::Dirty.bits(), Ordering::Acquire);
+                let old_flags = PageFlags::from_bits_retain(old_flags);
+                if !old_flags.intersects(PageFlags::Dirty | PageFlags::WritingBack) {
+                    log::trace!(
+                        "INode {:#x} Page {page_index} become Dirty",
+                        page_cache.inode.addr()
+                    );
+                    page_cache
+                        .data
+                        .write()
+                        .dirty_sent
+                        .push_front(unsafe { UnsafeRef::from_raw(page) });
+                }
+            }
         }
 
         len

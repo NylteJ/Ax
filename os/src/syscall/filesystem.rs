@@ -241,7 +241,7 @@ pub extern "C" fn openat(
                 if file_open_flags.contains(FileOpenFlags::O_EXCL) {
                     return EEXIST;
                 }
-                dentry.data.lock().dynamic_data.open(mount, file_flags)?
+                dentry.data.lock().ops.open(mount, file_flags)?
             }
             crate::filesystem::vfs::WalkedPath::Negative(neg) => {
                 if !file_open_flags.contains(FileOpenFlags::O_CREAT) {
@@ -254,15 +254,14 @@ pub extern "C" fn openat(
                     .dir_inode()?
                     .data
                     .write()
-                    .dynamic_data
                     .create(mode, neg.0.0.clone())?;
-                neg.0.0.data.lock().dynamic_data.open(neg.0.1, file_flags)?
+                neg.0.0.data.lock().ops.open(neg.0.1, file_flags)?
             }
         }
     } else {
         let path = walk_path(walk_path_from)?.ensure()?;
 
-        path.0.data.lock().dynamic_data.open(path.1, file_flags)?
+        path.0.data.lock().ops.open(path.1, file_flags)?
     };
 
     let fd = cur_task.files.write().insert(file);
@@ -502,11 +501,7 @@ pub extern "C" fn read(fd: isize, buf: *mut c_void, count: usize) -> SyscallResu
 
     let file = cur_task.files.read().get(fd).ok_or(EBADF)?.clone();
 
-    let len = file
-        .data
-        .lock()
-        .dynamic_data
-        .read(buf as *mut u8, count as u64)?;
+    let len = file.data.lock().read(buf as *mut u8, count as u64)?;
 
     SyscallResult::success(len as usize)
 }
@@ -535,11 +530,7 @@ pub extern "C" fn write(fd: isize, buf: *const c_void, count: usize) -> SyscallR
 
     let file = cur_task.files.read().get(fd).ok_or(EBADF)?.clone();
 
-    let len = file
-        .data
-        .lock()
-        .dynamic_data
-        .write(buf as *const u8, count as u64)?;
+    let len = file.data.lock().write(buf as *const u8, count as u64)?;
 
     SyscallResult::success(len as usize)
 }
@@ -577,7 +568,7 @@ pub extern "C" fn linkat(
     let new_wpf = parse_walk_path_from(newdirfd, newpath.as_ref())?;
     let new_dentry = walk_path(new_wpf)?.ensure_neg()?;
 
-    new_dentry.dir_inode()?.data.write().dynamic_data.link(
+    new_dentry.dir_inode()?.data.write().link(
         new_dentry.0.0,
         old_dentry.data.lock().inode.as_ref().unwrap(),
     )?;
@@ -620,9 +611,11 @@ pub extern "C" fn unlinkat(dirfd: isize, path: *const c_char, flags: usize) -> S
         .ok_or(ENOENT)?;
 
     if flags & AT_REMOVEDIR == 0 {
-        dir_inode.data.write().dynamic_data.unlink(&dentry)?;
+        dir_inode.data.write().unlink(&dentry)?;
+        log::trace!("unlinked, fd={dirfd}, {path}");
     } else {
-        dir_inode.data.write().dynamic_data.rmdir(&dentry)?;
+        dir_inode.data.write().rmdir(&dentry)?;
+        log::trace!("rmdired, fd={dirfd}, {path}");
     }
 
     SyscallResult::success(0)
@@ -651,11 +644,7 @@ pub extern "C" fn mkdirat(dirfd: isize, path: *const c_char, mode: usize) -> Sys
 
     let mode = INodeMode::from_bits(mode as u16).ok_or(EINVAL)?;
     let dir_inode = dentry.dir_inode()?;
-    dir_inode
-        .data
-        .write()
-        .dynamic_data
-        .mkdir(dentry.0.0, mode)?;
+    dir_inode.data.write().mkdir(dentry.0.0, mode)?;
     SyscallResult::success(0)
 }
 

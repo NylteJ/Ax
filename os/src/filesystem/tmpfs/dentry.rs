@@ -4,7 +4,7 @@ use alloc::sync::Arc;
 
 use crate::filesystem::{
     tmpfs::TmpFsFile,
-    vfs::{self, DEntryArc, DEntryOps, FileFlags, Mount, Path, VfsError, VfsResult},
+    vfs::{self, DEntryOps, FileFlags, Mount, Path, VfsResult},
 };
 
 pub struct TmpFsDentry {}
@@ -15,10 +15,12 @@ impl DEntryOps for TmpFsDentry {
         let inode = data
             .inode
             .as_ref()
-            .ok_or(VfsError::InvalidArguments("无法在负 DEntry 上打开文件"))?
+            .expect("VFS 层永远不应在负 DEntry 上调用 open")
             .deref();
-        let dentry =
-            unsafe { DEntryArc::from_exists(vfs::DEntry::<TmpFsDentry>::get_dentry(self)) };
+
+        let dentry: &vfs::DEntry = vfs::DEntry::<TmpFsDentry>::get_dentry(self);
+        let dentry = unsafe { vfs::get_varc_from_value(dentry) };
+
         Ok(vfs::File::new(
             Path(dentry, mount),
             inode,

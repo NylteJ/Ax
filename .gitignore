@@ -15,3 +15,5 @@ Cargo.lock
 
 os/kernel-rv.debug
 os/kernel-la.debug
+
+disk.img

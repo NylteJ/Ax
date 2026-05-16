@@ -9,6 +9,7 @@ use core::{
 };
 
 use bitflags::bitflags;
+use intrusive_collections::LinkedListLink;
 
 use crate::{
     basic::shared_with_asm::SharedWithAsm,
@@ -24,9 +25,9 @@ pub struct PageMeta {
     /// 引用计数
     ref_count: AtomicU32,
     /// 页标志
-    flags: Atomic<PageFlagsUnderlying>,
+    pub flags: Atomic<PageFlagsUnderlying>,
     /// 页类型，注意它在整个页的生命周期内为常量，因此不必是原子的
-    page_type: PageType,
+    pub page_type: PageType,
 
     _pin: PhantomPinned, // 这个结构体不能被移动，因为它的地址就是它的 ID
 }
@@ -41,12 +42,13 @@ pub static PAGE_METADATAS: PageMetas = PageMetas {
     pages: [const { SyncUnsafeCell::new(MaybeUninit::uninit()) }; MEMORY_SIZE / PAGE_BYTES],
 };
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub enum PageType {
     Anonymous,
     File {
         page_cache: NonNull<PageCache>,
         page_index: u64,
+        dirty: LinkedListLink,
     },
 }
 
@@ -56,9 +58,11 @@ unsafe impl Sync for PageType {}
 type PageFlagsUnderlying = u8;
 
 bitflags! {
-    struct PageFlags: PageFlagsUnderlying {
+    pub struct PageFlags: PageFlagsUnderlying {
         /// 此页为脏页，其内容自创建以来被修改过
         const Dirty = 1 << 0;
+        /// 此页正在回写中；只对文件页有效
+        const WritingBack = 1 << 2;
     }
 }
 
@@ -91,19 +95,30 @@ impl PageMeta {
 
                     crate::println!("Page {physical_page_num:#x} released");
                 }
-                _ => todo!(),
+                PageType::File { .. } => todo!(),
             }
         }
     }
 
-    pub fn visit_memory(&self) -> &[MaybeUninit<u8>; PAGE_BYTES] {
+    pub fn get_addr(&self) -> usize {
         let page_num = PhysPageNum::<0>(self.get_index() + METAS_ARRAY_OFFSET);
-        let addr = PhysAddr::from(page_num).to_virtual_address().0;
-        unsafe { (addr as *const [MaybeUninit<u8>; PAGE_BYTES]).as_ref_unchecked() }
+        PhysAddr::from(page_num).to_virtual_address().0
+    }
+
+    pub fn visit_memory(&self) -> &[MaybeUninit<u8>; PAGE_BYTES] {
+        unsafe { (self.get_addr() as *const [MaybeUninit<u8>; PAGE_BYTES]).as_ref_unchecked() }
     }
     pub fn visit_memory_off(&self, begin: usize, end: usize) -> &[MaybeUninit<u8>] {
         let page_mem = self.visit_memory();
         &page_mem[begin..end]
+    }
+
+    pub unsafe fn visit_memory_mut(&self) -> &mut [MaybeUninit<u8>; PAGE_BYTES] {
+        unsafe { (self.get_addr() as *mut [MaybeUninit<u8>; PAGE_BYTES]).as_mut_unchecked() }
+    }
+    pub unsafe fn visit_memory_mut_off(&self, begin: usize, end: usize) -> &mut [MaybeUninit<u8>] {
+        let page_mem = unsafe { self.visit_memory_mut() };
+        &mut page_mem[begin..end]
     }
 }
 

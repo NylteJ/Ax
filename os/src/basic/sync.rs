@@ -9,12 +9,11 @@ use core::ops::DerefMut;
 use core::ops::DerefPure;
 use core::ptr::NonNull;
 use core::sync::atomic::AtomicBool;
+use core::sync::atomic::AtomicU8;
 use core::sync::atomic::AtomicU32;
 use core::sync::atomic::Ordering;
 
-#[cfg(debug_assertions)]
-use alloc::string::String;
-use alloc::string::ToString;
+use crate::basic::UnsafeInited;
 
 #[derive(Debug)]
 pub struct RwLock<T: ?Sized> {
@@ -137,7 +136,7 @@ unsafe impl<T: ?Sized + Send> Send for RwLock<T> {}
 pub struct Mutex<T: ?Sized> {
     flag: AtomicBool,
     #[cfg(debug_assertions)]
-    debug_msg: Cell<String>,
+    debug_msg: Cell<Option<&'static core::panic::Location<'static>>>,
     value: UnsafeCell<T>,
 }
 
@@ -147,7 +146,7 @@ impl<T> Mutex<T> {
             flag: AtomicBool::new(false),
             value: UnsafeCell::new(value),
             #[cfg(debug_assertions)]
-            debug_msg: Cell::new(String::new()),
+            debug_msg: Cell::new(None),
         }
     }
 
@@ -170,7 +169,7 @@ impl<T: ?Sized> Mutex<T> {
 
             #[cfg(debug_assertions)]
             panic!(
-                "我们现在还不支持并行，因此一定是发生了死锁。上一个上锁位置:\n{}",
+                "我们现在还不支持并行，因此一定是发生了死锁。上一个上锁位置:\n{:?}",
                 self.debug_msg.take()
             );
             #[cfg(not(debug_assertions))]
@@ -179,8 +178,7 @@ impl<T: ?Sized> Mutex<T> {
         };
 
         #[cfg(debug_assertions)]
-        self.debug_msg
-            .set(core::panic::Location::caller().to_string());
+        self.debug_msg.set(Some(core::panic::Location::caller()));
 
         guard
     }
@@ -247,5 +245,52 @@ impl<T: ?Sized + Debug> Debug for Mutex<T> {
         }
 
         f.finish()
+    }
+}
+
+/// 安全版本的 [`UnsafeInited`]，只能初始化一次且初始化期间不能被访问。能任意并发访问。
+///
+/// 虽然其正确实现了 [`Drop`]，但其主要设计用途依旧是用作全局静态变量
+pub struct OnceInited<T> {
+    inited: AtomicU8,
+    value: UnsafeInited<T>,
+}
+
+impl<T> Deref for OnceInited<T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        if self.inited.load(Ordering::Acquire) != 2 {
+            panic!("OnceInited 还未被初始化");
+        }
+
+        self.value.deref()
+    }
+}
+
+impl<T> OnceInited<T> {
+    pub const fn new() -> Self {
+        Self {
+            inited: AtomicU8::new(0),
+            value: unsafe { UnsafeInited::uninit() },
+        }
+    }
+
+    pub fn init(this: &Self, value: T) {
+        this.inited
+            .compare_exchange(0, 1, Ordering::Acquire, Ordering::Relaxed)
+            .expect("OnceInited 只能被初始化一次");
+
+        unsafe { UnsafeInited::init_unsafe(&this.value, value) };
+
+        this.inited.store(2, Ordering::Release);
+    }
+}
+
+impl<T> Drop for OnceInited<T> {
+    fn drop(&mut self) {
+        if *self.inited.get_mut() == 2 {
+            unsafe { UnsafeInited::drop(&mut self.value) };
+        }
     }
 }

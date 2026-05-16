@@ -298,6 +298,7 @@ impl FromResidual<Result<Infallible, VfsError>> for SyscallResult {
             VfsError::OutOfRange => ERANGE,
             VfsError::InvalidUserPointer(copy_error) => Self::from_residual(Err(copy_error)),
             VfsError::InvalidArguments(_) => EINVAL,
+            VfsError::IoError => EIO,
             VfsError::Other(_) => EINVAL,
         }
     }

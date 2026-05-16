@@ -15,14 +15,16 @@
 #![feature(generic_atomic)]
 #![feature(ptr_metadata)]
 #![feature(bstr)]
-#![feature(unsize)]
-#![feature(coerce_unsized)]
 #![feature(deref_pure_trait)]
 #![feature(debug_closure_helpers)]
 #![feature(try_trait_v2)]
 #![feature(deque_extend_front)]
 #![feature(slice_split_once)]
 #![feature(unique_rc_arc)]
+#![feature(sized_hierarchy)]
+#![feature(get_mut_unchecked)]
+#![feature(const_type_name)]
+#![feature(offset_of_enum)]
 //
 #![deny(unused_must_use)]
 
@@ -33,16 +35,22 @@ use core::arch::global_asm;
 use core::arch::naked_asm;
 use core::bstr::ByteStr;
 use core::intrinsics::volatile_set_memory;
+use core::ops::Deref;
+
+use flat_device_tree::Fdt;
 
 use crate::basic::debugger::backtrace;
 use crate::basic::global_allocator::init_heap;
 use crate::basic::logger;
 use crate::basic::shared_with_asm::SharedWithAsm;
+use crate::devices::BLOCK_DEVICES;
+use crate::devices::pci::scan_pci_devices;
+use crate::devices::virtio::scan_virtio_devices;
 use crate::filesystem::vfs;
-use crate::filesystem::vfs::Path;
 use crate::filesystem::vfs::ROOT_PATH;
 use crate::filesystem::vfs::walk_path;
 use crate::memory::address::LINEAR_MAPPING_OFFSET;
+use crate::memory::address::PhysAddr;
 use crate::memory::frame_allocator;
 use crate::multitask::current_task;
 use crate::multitask::task::Task;
@@ -52,6 +60,7 @@ use crate::multitask::task_context::switch_context;
 use crate::multitask::task_scheduler::TASK_SCHEDULER;
 
 mod basic;
+mod devices;
 mod filesystem;
 mod memory;
 mod multitask;
@@ -91,6 +100,9 @@ static BOOT_PAGE_TABLE: BootPageTable = const {
     // 但程序实际跑在低地址，特别是刚启动时，直接使用的就是物理地址。为了 pc 还能用，必须暂时映射低地址。
     entries[2] = PhysPageNum::<2>(2).mask() | VX;
     entries[256 + 2] = PhysPageNum::<2>(2).mask() | VRWX;
+
+    // 然后，由于 VirtIO 设备普遍使用 0x10000000 附近的地址，我们将这部分也进行映射
+    entries[256 + 0] = PhysPageNum::<2>(0).mask() | VRWX;
 
     BootPageTable(entries)
 };
@@ -139,6 +151,9 @@ pub extern "C" fn _start() {
             // 和 RISC-V 64 的情况不一样，这里 PC 初始就位于高地址，所以接下来不用动了
             // （由于 LoongArch 64 物理地址空间最高不超过 60 位，不启用 DMW 程序貌似也是能正常跑的，多余高位会直接被忽略）
             "la $sp, boot_stack_top",
+            // LoongArch 64 支持设备树，但不会像 RISC-V 64 那样自动通过寄存器传参，而是始终为定值
+            // 这里我们手动传给 main
+            "li.d $a1, 0x100000",
             "b {main}",
             LINEAR_MAPPING_OFFSET = const LINEAR_MAPPING_OFFSET,
             main = sym main,
@@ -147,7 +162,7 @@ pub extern "C" fn _start() {
 }
 
 // main 必须不能返回（因为 _start 中用的是无条件跳转）
-pub extern "C" fn main() -> ! {
+pub extern "C" fn main(_: usize, dtb: PhysAddr) -> ! {
     clear_bss();
     trap::trap_handler::init_k();
 
@@ -212,10 +227,30 @@ pub extern "C" fn main() -> ! {
         unsafe { asm!("invtlb 0x0, $zero, $zero") };
     }
 
-    filesystem::init_all();
+    filesystem::register_all();
 
     #[cfg(debug_assertions)]
     basic::debugger::DEBUG_CONTEXT.init();
+
+    log::debug!("设备树物理地址：{:#x}", dtb.0);
+    let fdt = unsafe { Fdt::from_ptr(dtb.to_virtual_address().0 as *const u8) }.unwrap();
+
+    scan_virtio_devices(&fdt);
+    scan_pci_devices(&fdt);
+
+    log::info!("设备树扫描完毕！");
+    for device in BLOCK_DEVICES.deref() {
+        log::info!(
+            "识别到块设备: {name}, 块大小 {block_size} 字节, 总大小 {block_size} * {block_count} 字节",
+            name = match &device.device_id() {
+                Ok(x) if x.is_empty() => "<无名>",
+                Ok(other) => other,
+                Err(_) => "<读取过程中发生错误>",
+            },
+            block_size = device.block_size(),
+            block_count = device.block_count(),
+        );
+    }
 
     println!("Hello, world!");
     println!("中文也可以！");
@@ -235,51 +270,47 @@ pub extern "C" fn main() -> ! {
         })()
     })();
 
-    println!("准备进入用户态...");
-
-    let root = {
+    // 初始化文件系统
+    {
+        let ext4_type = filesystem::filesystems::get_filesystem_type("ext4").unwrap();
         let tmpfs_type = filesystem::filesystems::get_filesystem_type("tmpfs").unwrap();
 
-        let tmpfs = tmpfs_type.ops.new_fs();
+        filesystem::init_root(ext4_type);
 
-        let root = tmpfs.init_root_dentry.clone();
+        let root_fs = ROOT_PATH.1.sub_fs.clone();
 
-        // 对于根目录所在的文件系统，其根目录直接挂载到自身
-        let root_circle_mount = unsafe { vfs::MountPoint::mount_root(tmpfs.clone()) };
-        ROOT_PATH.init(Path(root.clone(), root_circle_mount.clone()));
+        let tmp_1 = match walk_path(vfs::PathToWalk::Absolute(ByteStr::new("/tmp"))).unwrap() {
+            vfs::WalkedPath::Positive(path) => path,
+            vfs::WalkedPath::Negative(npath) => {
+                root_fs
+                    .root_inode
+                    .data
+                    .write()
+                    .mkdir(npath.0.0.clone(), vfs::INodeMode::all_permitted())
+                    .unwrap();
+                npath.0
+            }
+        };
 
-        debug_assert!(root.data.lock().mount.is_some());
+        let tmp_fs = tmpfs_type.ops.new_fs();
+        let tmp_2 = tmp_fs.init_root_dentry.clone();
+        vfs::MountPoint::mount(tmp_1, tmp_fs, tmp_2);
+    }
 
-        let tmp_1 = walk_path(vfs::PathToWalk::Absolute(ByteStr::new("/tmp")))
-            .unwrap()
-            .ensure_neg()
-            .unwrap();
-        tmpfs
-            .root_inode
-            .data
-            .write()
-            .dynamic_data
-            .mkdir(tmp_1.0.0.clone(), vfs::INodeMode::all())
-            .unwrap();
-
-        let tmpfs_tmp = tmpfs_type.ops.new_fs();
-        let tmp_2 = tmpfs_tmp.init_root_dentry.clone();
-        vfs::MountPoint::mount(tmp_1.0, tmpfs_tmp, tmp_2);
-        Path(root, root_circle_mount)
-    };
+    println!("准备进入用户态...");
 
     TASK_SCHEDULER.write().add_task(Task::new(
         multitask::SchedulePolicy::RoundRobin,
         40,
         user_start::<16, "Hello, world!\n"> as usize,
-        root.clone(),
+        ROOT_PATH.clone(),
     ));
     seq_macro::seq!(N in 1..=3 {
         TASK_SCHEDULER.write().add_task(Task::new(
             multitask::SchedulePolicy::RoundRobin,
             40,
             user_start::<{10 + N}, { concat!("Hello, world ", N, "!\n") }> as usize,
-            root.clone(),
+            ROOT_PATH.clone(),
         ));
     });
 
@@ -292,13 +323,13 @@ pub extern "C" fn main() -> ! {
         multitask::SchedulePolicy::RoundRobin,
         50,
         user_start::<5, "VME50\n"> as usize,
-        root.clone(),
+        ROOT_PATH.clone(),
     ));
     TASK_SCHEDULER.write().add_task(Task::new(
         multitask::SchedulePolicy::RoundRobin,
         60,
         user_start::<1, "BOOOOM!\n"> as usize,
-        root,
+        ROOT_PATH.clone(),
     ));
 
     // TASK_SCHEDULER.write().add_task(Task::new(multitask::SchedulePolicy::FIFO, 0, just_for_test as usize));
@@ -627,9 +658,27 @@ fn user_start<const RET: usize, const STR: &'static str>() -> ! {
             if ret < 0 {
                 syscall!(93, 27000 - (ret as isize));
             }
+            let ret = syscall!(35, -100, "FFFILE\0".as_ptr(), 0x200) as isize; // unlinkat
+            if ret != -20 {
+                // ENOTDIR
+                syscall!(93, 28000 - (ret as isize));
+            }
             let ret = syscall!(35, -100, "FFFILE\0".as_ptr(), 0) as isize; // unlinkat
             if ret < 0 {
-                syscall!(93, 28000 - (ret as isize));
+                syscall!(93, 28300 - (ret as isize));
+            }
+            let ret = syscall!(
+                64,
+                fffile,
+                "\nafter_unlink".as_ptr(),
+                "\nafter_unlink".len()
+            ) as isize; // write
+            if ret < 0 {
+                syscall!(93, 28500 - (ret as isize));
+            }
+            let ret = syscall!(56, 0, "/MY_DIR/MY_SUBDIR/FFFILE\0".as_ptr(), 0b10, 0o777) as i32; // openat
+            if ret >= 0 {
+                syscall!(93, 28700 - (ret as isize));
             }
             {
                 let _ = syscall!(17, buf.as_mut_ptr(), buf.len());
@@ -655,7 +704,7 @@ fn user_start<const RET: usize, const STR: &'static str>() -> ! {
             syscall!(233, buffer.as_ptr(), bytes);
             syscall!(233, "\n\n".as_ptr(), 2);
             let duped_s = syscall!(23, s); // dup
-            if duped_s < 0 {
+            if (duped_s as isize) < 0 {
                 syscall!(93, 30000 - duped_s as isize);
             }
             let dup3_s = syscall!(24, duped_s, 1145); // dup3
@@ -670,6 +719,15 @@ fn user_start<const RET: usize, const STR: &'static str>() -> ! {
             let ret = syscall!(56, tt, "../../tmp/../tmp\0".as_ptr(), 0b10, 0o777) as isize; // linkat
             if ret < 0 {
                 syscall!(93, 33000 - (ret as isize));
+            }
+            let ret = syscall!(35, tt, "/MY_DIR\0".as_ptr(), 0x200) as isize; // unlinkat
+            if ret != -39 {
+                // ENOTEMPTY
+                syscall!(93, 34000 - (ret as isize));
+            }
+            let ret = syscall!(35, tt, "/MY_DIR/MY_SUBDIR\0".as_ptr(), 0x200) as isize; // unlinkat
+            if ret < 0 {
+                syscall!(93, 35000 - (ret as isize));
             }
         }
     }

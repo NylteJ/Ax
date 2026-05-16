@@ -1,5 +1,6 @@
 use core::{ops::Deref, ptr::NonNull};
 
+use intrusive_collections::{LinkedListLink, UnsafeRef, intrusive_adapter};
 use xarray::XArray;
 
 use crate::{
@@ -15,7 +16,11 @@ use crate::{
 pub struct PageCacheData {
     /// 实际页缓存
     pub pages: XArray<PageMetaGuard>,
+    /// 脏页链表头
+    pub dirty_sent: intrusive_collections::LinkedList<PageMetaAdapter>,
 }
+
+intrusive_adapter!(pub PageMetaAdapter = UnsafeRef<PageMeta>: PageMeta { page_type.File.dirty => LinkedListLink });
 
 pub struct PageCache {
     /// 对应 INode 指针，永远有效且不会改变
@@ -24,13 +29,20 @@ pub struct PageCache {
 }
 
 impl PageCache {
-    pub fn new(inode: &INode) -> Self {
-        PageCache {
-            inode: NonNull::from_ref(inode),
+    pub unsafe fn init(inode: &mut INode) {
+        let inode_ptr = NonNull::from_mut(inode);
+
+        let page_cache = &mut inode.data.get_mut().page_cache;
+
+        let old_page_cache = page_cache.replace(PageCache {
+            inode: inode_ptr,
             data: RwLock::new(PageCacheData {
                 pages: XArray::new(),
+                dirty_sent: intrusive_collections::LinkedList::new(PageMetaAdapter::new()),
             }),
-        }
+        });
+
+        debug_assert!(old_page_cache.is_none());
     }
 
     pub fn get<'a>(&'a self, page_index: u64) -> Option<&'a PageMeta> {
@@ -47,19 +59,7 @@ impl PageCache {
     }
 
     pub fn alloc<'a>(&'a self, page_index: u64) -> &'a PageMeta {
-        let phys_page = PhysPageNum(
-            FRAME_ALLOCATOR
-                .lock()
-                .alloc(1)
-                .expect("应当能分配物理页作为缓存"), // TODO: 回收机制（可以为每个 FRAME_ALLOCATOR 的对应调用都加上）
-        );
-
-        let page_type = PageType::File {
-            page_cache: NonNull::from_ref(self),
-            page_index,
-        };
-
-        let guard = unsafe { PAGE_METADATAS.mark_new_page(phys_page, page_type) };
+        let guard = self.alloc_without_insert(page_index);
 
         // SAFETY: 见 Self::get
         let meta_ref = unsafe { extend_lifetime::<'a>(guard.deref()) };
@@ -72,5 +72,22 @@ impl PageCache {
     pub fn get_or_alloc(&self, page_index: u64) -> &PageMeta {
         self.get(page_index)
             .unwrap_or_else(|| self.alloc(page_index))
+    }
+
+    pub fn alloc_without_insert(&self, page_index: u64) -> PageMetaGuard {
+        let phys_page = PhysPageNum(
+            FRAME_ALLOCATOR
+                .lock()
+                .alloc(1)
+                .expect("应当能分配物理页作为缓存"), // TODO: 回收机制（可以为每个 FRAME_ALLOCATOR 的对应调用都加上）
+        );
+
+        let page_type = PageType::File {
+            page_cache: NonNull::from_ref(self),
+            page_index,
+            dirty: LinkedListLink::new(),
+        };
+
+        unsafe { PAGE_METADATAS.mark_new_page(phys_page, page_type) }
     }
 }

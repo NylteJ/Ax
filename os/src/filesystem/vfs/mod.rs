@@ -1,4 +1,4 @@
-mod arc;
+mod cache;
 mod dentry;
 mod dentry_arc;
 mod file;
@@ -19,3 +19,5 @@ pub use result::*;
 
 pub use dentry_arc::DEntryArc;
 pub use inode_arc::INodeArc;
+
+pub(super) use cache::get_varc_from_value;

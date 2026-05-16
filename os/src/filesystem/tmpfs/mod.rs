@@ -22,7 +22,7 @@ struct TmpFsType {}
 impl FileSystemTypeOps for TmpFsType {
     fn new_fs(&self) -> Pin<Arc<vfs::FileSystem>> {
         vfs::FileSystem::new(
-            |fs| {
+            |fs, _| {
                 let root_inode = TmpFsINode::new_root(fs);
                 let init_root_dentry = DEntry::new_root(
                     ByteStr::new("/").to_owned(),

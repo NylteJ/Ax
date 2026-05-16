@@ -9,7 +9,7 @@ use alloc::vec::Vec;
 use crate::filesystem::tmpfs::{TmpFs, TmpFsDentry};
 use crate::filesystem::vfs::{
     INodeArc, INodeMode, INodeOps, INodeRenameFlags, VfsError, VfsResult,
-    default_should_drop_when_mem_refcount_zero,
+    default_evictable_when_mem_ref_zero,
 };
 
 use crate::filesystem::vfs;
@@ -38,21 +38,16 @@ impl INodeOps for TmpFsINode {
             return Err(VfsError::FileAlreadyExists);
         };
 
-        let inode = map
+        Ok(map
             .insert_mut(
                 pos,
                 (
                     name,
-                    Self::new_normal(unsafe { fs.as_ref() }, INodeType::File, mode),
+                    Self::new_normal(unsafe { fs.as_ref() }, mode | INodeMode::RegularFile),
                 ),
             )
             .1
-            .clone();
-
-        let old_inode = dentry.data.lock().inode.replace(inode.clone());
-        debug_assert!(old_inode.is_none());
-
-        Ok(inode)
+            .clone())
     }
 
     fn lookup(&self, name: &ByteStr, dentry: vfs::DEntryArc) -> VfsResult<vfs::DEntryArc> {
@@ -72,8 +67,13 @@ impl INodeOps for TmpFsINode {
     }
 
     fn link(&mut self, dentry: vfs::DEntryArc, target: &vfs::INodeArc) -> VfsResult<()> {
-        let target = target.clone().downcast_or_vfserr::<TmpFsINode>()?;
-        if let INodeType::Directory(_) = target.data.read().dynamic_data.inode_type {
+        if let INodeType::Directory(_) = target
+            .downcast_ref_or_vfserr::<TmpFsINode>()?
+            .data
+            .read()
+            .ops
+            .inode_type
+        {
             return Err(VfsError::IsADirectory);
         }
 
@@ -86,7 +86,7 @@ impl INodeOps for TmpFsINode {
 
         target.data.write().hard_links += 1;
         map.insert(pos, (name, target.clone()));
-        dentry.data.lock().inode.replace(target);
+        dentry.data.lock().inode.replace(target.clone());
         Ok(())
     }
 
@@ -98,17 +98,17 @@ impl INodeOps for TmpFsINode {
             return Err(VfsError::FileNotFound);
         };
 
-        let arc = map[pos].1.clone().downcast_or_vfserr::<TmpFsINode>()?;
+        let arc = map[pos].1.clone();
+        let rf = arc.downcast_ref_or_vfserr::<TmpFsINode>()?;
 
-        let mut data = arc.data.write();
+        let mut data = rf.data.write();
 
-        if let INodeType::Directory(_) = data.dynamic_data.inode_type {
+        if let INodeType::Directory(_) = data.ops.inode_type {
             return Err(VfsError::IsADirectory);
         }
 
         map.remove(pos);
         data.hard_links -= 1;
-        dentry.data.lock().inode.take();
         Ok(())
         // arc 在此处才销毁，若此时引用计数归零则硬链接数能正常获取
     }
@@ -128,17 +128,12 @@ impl INodeOps for TmpFsINode {
                 pos,
                 (
                     name,
-                    Self::new_normal(
-                        unsafe { fs.as_ref() },
-                        INodeType::Directory(Default::default()),
-                        mode,
-                    ),
+                    Self::new_normal(unsafe { fs.as_ref() }, mode | INodeMode::Directory),
                 ),
             )
             .1
             .clone();
         vfs::INodeData::get_data_mut(self).hard_links += 1; // 子目录的 `..`
-        dentry.data.lock().inode.replace(ret.clone());
         Ok(ret)
     }
 
@@ -154,7 +149,7 @@ impl INodeOps for TmpFsINode {
 
         let mut data = node.data.write();
 
-        let INodeType::Directory(children) = &data.dynamic_data.inode_type else {
+        let INodeType::Directory(children) = &data.ops.inode_type else {
             return Err(VfsError::NotADirectory);
         };
 
@@ -169,7 +164,6 @@ impl INodeOps for TmpFsINode {
         map.remove(pos);
 
         vfs::INodeData::get_data_mut(self).hard_links -= 1; // 子目录的 `..`
-        dentry.data.lock().inode.take();
         Ok(())
     }
 
@@ -202,7 +196,7 @@ impl INodeOps for TmpFsINode {
         //     let new = new.as_deref();
 
         //     fn is_directory(node: &vfs::INodeData<TmpFsINode>) -> bool {
-        //         matches!(node.dynamic_data.inode_type, INodeType::Directory(_))
+        //         matches!(node.ops.inode_type, INodeType::Directory(_))
         //     }
 
         //     if exchange {
@@ -235,7 +229,7 @@ impl INodeOps for TmpFsINode {
         //                     ));
         //                 }
 
-        //                 if let INodeType::Directory(map) = &new.dynamic_data.inode_type
+        //                 if let INodeType::Directory(map) = &new.ops.inode_type
         //                     && !map.is_empty()
         //                 {
         //                     return Err(VfsError::DirectoryNotEmpty);
@@ -261,7 +255,7 @@ impl INodeOps for TmpFsINode {
         // fn dec_nlink_of_replaced(replaced: &mut INodeArc) {
         //     let replaced = unsafe { replaced.downcast_ref::<TmpFsINode>().unwrap_unchecked() };
         //     let mut data = replaced.data.write();
-        //     if matches!(data.dynamic_data.inode_type, INodeType::Directory(_)) {
+        //     if matches!(data.ops.inode_type, INodeType::Directory(_)) {
         //         debug_assert_eq!(data.hard_links, 2);
         //         data.hard_links = 0;
         //     } else {
@@ -280,7 +274,7 @@ impl INodeOps for TmpFsINode {
 
         // if let Some(new_node) = new_node {
         //     // 由于不用顾虑 Rust 的别名规则，跨目录的路径反而好写一些，entry 会为我们管理好状态
-        //     let new_node = (&mut new_node.dynamic_data as &mut dyn Any)
+        //     let new_node = (&mut new_node.ops as &mut dyn Any)
         //         .downcast_mut::<TmpFsINode>()
         //         .ok_or(VfsError::FilesystemMismatch)?;
         //     let new_map = new_node.as_directory_mut()?;
@@ -364,22 +358,14 @@ impl INodeOps for TmpFsINode {
         // Ok(())
     }
 
-    fn kernel_read(&self, _offset: u64, _buf: &mut [u8]) -> VfsResult<usize> {
-        panic!("tmpfs 的 kernel_read 函数不应被调用，其操作理应只停留在页缓存层级")
-    }
-
-    fn kernel_write(&mut self, _offset: u64, _buf: &[u8]) -> VfsResult<usize> {
-        panic!("tmpfs 的 kernel_write 函数不应被调用，其操作理应只停留在页缓存层级")
-    }
-
-    fn should_drop_when_mem_refcount_zero(&mut self) -> bool {
-        default_should_drop_when_mem_refcount_zero(self)
+    fn evictable_when_mem_ref_zero(&mut self) -> bool {
+        default_evictable_when_mem_ref_zero(self)
     }
 }
 
 impl TmpFsINode {
     pub fn new_root(fs: NonNull<vfs::FileSystem>) -> vfs::INodeArc {
-        let mut ret = vfs::INode::new(
+        vfs::INode::new_raw(
             0,
             fs,
             vfs::INodeData {
@@ -387,39 +373,35 @@ impl TmpFsINode {
                 hard_links: 2,
                 mode: INodeMode::from_bits(0o777).unwrap(),
                 page_cache: None,
-                dynamic_data: TmpFsINode {
+                ops: TmpFsINode {
                     inode_type: INodeType::Directory(Default::default()),
                 },
             },
-        );
-
-        unsafe { ret.get_mut() }.data.get_mut().page_cache = Some(vfs::PageCache::new(&ret));
-
-        ret
+        )
     }
 
-    fn new_normal(
-        fs: &vfs::FileSystem<TmpFs>,
-        inode_type: INodeType,
-        mode: INodeMode,
-    ) -> vfs::INodeArc {
+    fn new_normal(fs: &vfs::FileSystem<TmpFs>, mode: INodeMode) -> vfs::INodeArc {
+        let is_dir = mode.contains(INodeMode::Directory);
+
         let mut ret = vfs::INode::new(
-            fs.dynamic_data.inode_id.fetch_add(1, Ordering::Relaxed),
+            fs.ops.inode_id.fetch_add(1, Ordering::Relaxed),
             NonNull::from_ref(fs),
             vfs::INodeData {
                 file_size: 0,
-                hard_links: if let INodeType::Directory(_) = &inode_type {
-                    2
-                } else {
-                    1
-                },
+                hard_links: if is_dir { 2 } else { 1 },
                 mode,
                 page_cache: None,
-                dynamic_data: TmpFsINode { inode_type },
+                ops: TmpFsINode {
+                    inode_type: if is_dir {
+                        INodeType::Directory(Default::default())
+                    } else {
+                        INodeType::File
+                    },
+                },
             },
         );
 
-        unsafe { ret.get_mut() }.data.get_mut().page_cache = Some(vfs::PageCache::new(&ret));
+        unsafe { vfs::PageCache::init(ret.get_mut()) };
 
         ret
     }
