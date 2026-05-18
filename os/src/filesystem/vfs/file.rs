@@ -9,8 +9,9 @@ use alloc::{bstr::ByteString, sync::Arc};
 use bitflags::bitflags;
 
 use crate::{
-    basic::sync::Mutex,
+    basic::{extend_lifetime, sync::Mutex},
     filesystem::vfs::{INode, INodeDirtyState, Path, VfsError, VfsResult},
+    memory::PAGE_BYTES,
 };
 
 /// 描述打开的文件，也许类似句柄的概念？
@@ -92,7 +93,7 @@ impl<T: FileOps + 'static> File<T> {
         unsafe { ptr.as_mut() }
     }
 
-    pub fn new(path: Path, inode: &INode, flags: FileFlags, ops: T) -> Pin<Arc<File>> {
+    pub fn new(path: Path, inode: &INode, flags: FileFlags, ops: T) -> FileArc {
         Arc::pin(File {
             inode: NonNull::from_ref(inode),
             data: Mutex::new(FileData {
@@ -104,6 +105,8 @@ impl<T: FileOps + 'static> File<T> {
         })
     }
 }
+
+pub type FileArc = Pin<Arc<File>>;
 
 impl<T: ?Sized + FileOps> FileData<T> {
     /// 从当前目录当前位置开始读取数据到内核态缓冲区 `k_buffer_uninit` 中，返回读取完毕部分的 slice 以及条目数。
@@ -235,4 +238,42 @@ pub fn default_fseek<T: FileOps + 'static>(this: &mut T, seek_from: SeekFrom) ->
         }
     }
     Ok(*pos)
+}
+
+impl File {
+    pub unsafe fn kernel_read_page(inode: &INode, page_index: u64) -> VfsResult<&[u8]> {
+        let inode_data_rguard = inode.data.read();
+        let page_cache = inode_data_rguard
+            .page_cache
+            .as_ref()
+            .expect("读取的文件必须有页缓存");
+
+        let bytes;
+
+        let page = match page_cache.get(page_index) {
+            Some(cache_page) => {
+                bytes = inode_data_rguard.file_size as usize - page_index as usize * PAGE_BYTES;
+
+                cache_page
+            }
+            None => {
+                let fs = unsafe { inode.fs.as_ref() };
+                let page_guard = page_cache.alloc_without_insert(page_index);
+
+                bytes = fs
+                    .ops
+                    .read_to_page(&inode, page_index, unsafe { page_guard.visit_memory_mut() })?;
+
+                page_cache.insert(page_index, page_guard)
+            }
+        };
+
+        Ok(unsafe { extend_lifetime(page.visit_memory()[..bytes].assume_init_ref()) })
+    }
+}
+
+impl<T: ?Sized + FileOps> File<T> {
+    pub fn get_inode(&self) -> &INode {
+        unsafe { self.inode.as_ref() }
+    }
 }

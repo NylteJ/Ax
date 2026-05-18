@@ -1,12 +1,12 @@
-use core::{fmt::Debug, pin::Pin};
+use core::fmt::Debug;
 
-use alloc::{sync::Arc, vec::Vec};
+use alloc::vec::Vec;
 use bitvec::prelude::*;
 
-use crate::filesystem::vfs::File;
+use crate::filesystem::vfs::FileArc;
 
 pub struct FileDescriptorTable {
-    entries: Vec<Option<Pin<Arc<File>>>>,
+    entries: Vec<Option<FileArc>>,
     free: Vec<usize>,
 }
 
@@ -18,7 +18,7 @@ impl FileDescriptorTable {
         }
     }
 
-    pub fn insert(&mut self, file: Pin<Arc<File>>) -> usize {
+    pub fn insert(&mut self, file: FileArc) -> usize {
         let free = self.free.view_bits_mut::<LocalBits>();
 
         if let Some(index) = free.first_one() {
@@ -35,17 +35,17 @@ impl FileDescriptorTable {
         }
     }
 
-    pub fn get(&self, fd: usize) -> Option<&Pin<Arc<File>>> {
+    pub fn get(&self, fd: usize) -> Option<&FileArc> {
         self.entries.get(fd)?.as_ref()
     }
-    pub fn get_mut(&mut self, fd: usize) -> Option<&mut Pin<Arc<File>>> {
+    pub fn get_mut(&mut self, fd: usize) -> Option<&mut FileArc> {
         self.entries.get_mut(fd)?.as_mut()
     }
 
     /// 设置给定文件描述符的 File 指针，若原先该描述符空缺则会发生分配。若不空缺则返回原值。
     ///
     /// 最坏情况下其会浪费大量内存，小心使用！
-    pub fn set(&mut self, fd: usize, file: Pin<Arc<File>>) -> Option<Pin<Arc<File>>> {
+    pub fn set(&mut self, fd: usize, file: FileArc) -> Option<FileArc> {
         let old_len = self.entries.len();
         if fd >= old_len {
             self.entries.resize(fd + 1, None);
@@ -56,7 +56,7 @@ impl FileDescriptorTable {
         self.entries[fd].replace(file)
     }
 
-    pub fn remove(&mut self, fd: usize) -> Option<Pin<Arc<File>>> {
+    pub fn remove(&mut self, fd: usize) -> Option<FileArc> {
         let free = self.free.view_bits_mut::<LocalBits>();
 
         let entry = self.entries.get_mut(fd)?;

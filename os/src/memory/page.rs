@@ -47,8 +47,6 @@ bitflags! {
         const Global = 1 << 5;
         const Accessed = 1 << 6;
         const Dirty = 1 << 7;
-
-        const _ = !0;
     }
 }
 
@@ -66,8 +64,6 @@ bitflags! {
 
         const NRead = 1 << (usize::BITS - 3);
         const NExecute = 1 << (usize::BITS - 2);
-
-        const _ = !0;
     }
 
     #[derive(Debug, Clone, Copy)]
@@ -80,8 +76,6 @@ bitflags! {
         const Read = 1 << (usize::BITS - 3);
         const Execute = 1 << (usize::BITS - 2);
         const Write = PTEFlags::Dirty.bits(); // LoongArch 64 没有单独的 Write 位，但可以用 Dirty 位在语义上替代
-
-        const _ = !0;
     }
 }
 

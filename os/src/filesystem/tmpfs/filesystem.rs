@@ -1,7 +1,7 @@
 use core::sync::atomic::AtomicU32;
 
 use crate::{
-    filesystem::vfs::{self, FileSystemOps, VfsResult},
+    filesystem::vfs::{self, FileSystemOps, VfsError, VfsResult},
     memory::PAGE_BYTES,
 };
 
@@ -17,5 +17,15 @@ impl FileSystemOps for TmpFs {
         _page_data: &[u8; PAGE_BYTES],
     ) -> VfsResult<()> {
         Ok(())
+    }
+
+    fn read_to_page(
+        &self,
+        _inode: &vfs::INode,
+        _page_index: u64,
+        _buffer: &mut [core::mem::MaybeUninit<u8>; PAGE_BYTES],
+    ) -> VfsResult<usize> {
+        debug_assert!(false, "TmpFS 永远不应该有页缓存未命中");
+        Err(VfsError::OperationNotSupported)
     }
 }

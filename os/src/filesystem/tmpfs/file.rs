@@ -74,8 +74,9 @@ impl vfs::FileOps for TmpFsFile {
 
     fn get_dir(&self, pos: u64) -> VfsResult<Option<IterateDirData>> {
         let this = vfs::File::from_dyn(self);
+
         let inode = this.inode;
-        debug_assert!((&unsafe { inode.as_ref() }.data.read().ops as &dyn Any).is::<TmpFsINode>());
+        debug_assert!((&this.get_inode().data.read().ops as &dyn Any).is::<TmpFsINode>());
         let inode = unsafe { inode.cast::<vfs::INode<TmpFsINode>>().as_ref() };
 
         let inode_data_guard = inode.data.read();

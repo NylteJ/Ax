@@ -48,6 +48,35 @@ impl FileSystemOps for Ext4Fs {
 
         Ok(())
     }
+
+    fn read_to_page(
+        &self,
+        inode: &vfs::INode,
+        page_index: u64,
+        buffer: &mut [core::mem::MaybeUninit<u8>; PAGE_BYTES],
+    ) -> VfsResult<usize> {
+        debug_assert!((&inode.data.read().ops as &dyn Any).is::<Ext4INode>());
+
+        let ino_data_rguard = inode.data.read();
+
+        let mut inode_ref = ext4_rs::ext4_defs::Ext4InodeRef {
+            inode_num: inode.id,
+            inode: unsafe {
+                (&raw const ino_data_rguard.ops)
+                    .cast::<Ext4INode>()
+                    .as_ref_unchecked()
+            }
+            .inode,
+        };
+
+        drop(ino_data_rguard);
+
+        Ok(self
+            .ext4
+            .read_at_2(&mut inode_ref, page_index as usize * PAGE_BYTES, unsafe {
+                buffer.assume_init_mut()
+            })?)
+    }
 }
 
 impl Ext4Fs {

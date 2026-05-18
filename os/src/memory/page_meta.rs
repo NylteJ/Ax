@@ -1,5 +1,6 @@
 use core::{
     cell::SyncUnsafeCell,
+    hint::cold_path,
     marker::{PhantomData, PhantomPinned},
     mem::{ManuallyDrop, MaybeUninit},
     ops::Deref,
@@ -44,12 +45,17 @@ pub static PAGE_METADATAS: PageMetas = PageMetas {
 
 #[derive(Debug, Clone)]
 pub enum PageType {
+    /// 此页是匿名页，没有后备存储
     Anonymous,
+    /// 此页是文件页
     File {
-        page_cache: NonNull<PageCache>,
+        page_cache: NonNull<PageCache>, // FIXME: 我们真的还需要它吗？
         page_index: u64,
         dirty: LinkedListLink,
     },
+
+    /// 此页是虚设页，其不仅没有后备存储，也不实际占用任何资源。其析构是空操作
+    Phantom,
 }
 
 unsafe impl Send for PageType {}
@@ -88,20 +94,27 @@ impl PageMeta {
 
         if old == 1 {
             match self.page_type {
-                PageType::Anonymous => {
+                PageType::Anonymous | PageType::File { .. } => {
                     let physical_page_num = self.get_index() + METAS_ARRAY_OFFSET;
 
                     FRAME_ALLOCATOR.lock().dealloc(physical_page_num, 1);
 
-                    crate::println!("Page {physical_page_num:#x} released");
+                    crate::println!(
+                        "Page {physical_page_num:#x} released (type: {:?})",
+                        self.page_type
+                    );
                 }
-                PageType::File { .. } => todo!(),
+
+                PageType::Phantom => cold_path(), // 什么都不做，下一个减少引用计数的会将其回绕到 MAX
             }
         }
     }
 
+    pub fn get_page_num(&self) -> PhysPageNum<0> {
+        PhysPageNum::<0>(self.get_index() + METAS_ARRAY_OFFSET)
+    }
     pub fn get_addr(&self) -> usize {
-        let page_num = PhysPageNum::<0>(self.get_index() + METAS_ARRAY_OFFSET);
+        let page_num = self.get_page_num();
         PhysAddr::from(page_num).to_virtual_address().0
     }
 
@@ -119,6 +132,10 @@ impl PageMeta {
     pub unsafe fn visit_memory_mut_off(&self, begin: usize, end: usize) -> &mut [MaybeUninit<u8>] {
         let page_mem = unsafe { self.visit_memory_mut() };
         &mut page_mem[begin..end]
+    }
+
+    pub unsafe fn ref_count(&self) -> &AtomicU32 {
+        &self.ref_count
     }
 }
 
@@ -139,11 +156,13 @@ impl PageMetas {
         let index = page_num.0 - METAS_ARRAY_OFFSET;
         let item_ptr = self.pages[index].get();
 
+        let page_is_phantom = matches!(page_type, PageType::Phantom);
+
         // SAFETY: 调用方保证了唯一性，因此此处的可变性是安全的。至于非空，.get() 保证了这点。
         let item = unsafe { item_ptr.as_mut_unchecked() };
 
         let raw_ref = item.write(PageMeta {
-            ref_count: AtomicU32::new(1),
+            ref_count: AtomicU32::new(if page_is_phantom { u32::MAX } else { 1 }),
             flags: Atomic::<PageFlagsUnderlying>::new(PageFlags::empty().bits()),
             page_type,
             _pin: PhantomPinned,
@@ -160,6 +179,12 @@ impl PageMetas {
 
 pub struct PageMetaGuard {
     pub(self) reference: Pin<&'static PageMeta>,
+}
+
+impl PageMetaGuard {
+    pub fn is_unique_ref(&self) -> bool {
+        return self.ref_count.load(Ordering::Acquire) == 1;
+    }
 }
 
 impl Deref for PageMetaGuard {

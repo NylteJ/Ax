@@ -14,7 +14,7 @@ use alloc::{bstr::ByteString, sync::Arc};
 use crate::{
     basic::{lru::LruNode, sync::Mutex},
     filesystem::vfs::{
-        DCacheKey, DEntryArc, File, FileFlags, FileSystem, INodeArc, Mount, VfsResult,
+        DCacheKey, DEntryArc, FileArc, FileFlags, FileSystem, INodeArc, Mount, VfsResult,
         cache::CachedValue, dentry_arc::DCacheArc, mount::MountPoint,
     },
 };
@@ -22,7 +22,7 @@ use crate::{
 /// DEntry 的多态部分
 pub trait DEntryOps: Send + Sync {
     /// 打开当前 DEntry 对应的文件。
-    fn open(&self, mount: Arc<Mount>, flags: FileFlags) -> VfsResult<Pin<Arc<File>>>;
+    fn open(&self, mount: Arc<Mount>, flags: FileFlags) -> VfsResult<FileArc>;
 }
 
 #[derive(Clone, Copy)]

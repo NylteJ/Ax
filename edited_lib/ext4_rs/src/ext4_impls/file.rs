@@ -160,6 +160,12 @@ impl Ext4 {
     /// Returns:
     /// `Result<usize>` - number of bytes read
     pub fn read_at(&self, inode: u32, offset: usize, read_buf: &mut [u8]) -> Result<usize> {
+        let mut inode_ref = self.get_inode_ref(inode);
+
+        self.read_at_2(&mut inode_ref, offset, read_buf)
+    }
+
+    pub fn read_at_2(&self, inode_ref: &mut Ext4InodeRef, offset: usize, read_buf: &mut [u8]) -> Result<usize> {
         // read buf is empty, return 0
         let mut read_buf_len = read_buf.len();
         if read_buf_len == 0 {
@@ -167,8 +173,9 @@ impl Ext4 {
             return Ok(0);
         }
 
+        let inode = inode_ref.inode_num;
+        
         // get the inode reference
-        let inode_ref = self.get_inode_ref(inode);
         let file_size = inode_ref.inode.size();
         let total_blocks = (file_size + BLOCK_SIZE as u64 - 1) / BLOCK_SIZE as u64;
 
@@ -266,6 +273,7 @@ impl Ext4 {
 
         Ok(total_bytes_read)
     }
+
 
     /// Write data to a file at a given offset
     ///

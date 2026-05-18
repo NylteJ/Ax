@@ -48,3 +48,15 @@ const MEMORY_START: usize = 0x90000000;
 const MEMORY_SIZE: usize = 0x30000000;
 
 const MEMORY_END: usize = MEMORY_START + MEMORY_SIZE;
+
+#[repr(C)]
+#[repr(align(4096))]
+pub struct Page([u8; PAGE_BYTES]);
+static_assertions::const_assert_eq!(align_of::<Page>(), PAGE_BYTES);
+static_assertions::const_assert_eq!(size_of::<Page>(), PAGE_BYTES);
+
+/// 全零只读物理页，用于零页在不写入时的优化
+///
+/// 例如，对于 .bss 段等自动置零的段，只要不发生写入，就总可以把所有虚拟页都映射到这个页
+// 它不能为 const，因为 Rust 中的 const 很大程度上其实是 C/C++ 的宏（没有固定地址，总是内联展开），很坑……
+pub static ZERO_PAGE: Page = Page([0; PAGE_BYTES]);

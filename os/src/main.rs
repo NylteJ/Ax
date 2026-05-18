@@ -11,7 +11,6 @@
 #![feature(adt_const_params)]
 #![feature(unsized_const_params)]
 #![feature(exact_div)]
-#![feature(never_type)]
 #![feature(generic_atomic)]
 #![feature(ptr_metadata)]
 #![feature(bstr)]
@@ -25,6 +24,7 @@
 #![feature(get_mut_unchecked)]
 #![feature(const_type_name)]
 #![feature(offset_of_enum)]
+#![feature(const_result_unwrap_unchecked)]
 //
 #![deny(unused_must_use)]
 
@@ -49,15 +49,14 @@ use crate::devices::virtio::scan_virtio_devices;
 use crate::filesystem::vfs;
 use crate::filesystem::vfs::ROOT_PATH;
 use crate::filesystem::vfs::walk_path;
+use crate::memory::ZERO_PAGE;
 use crate::memory::address::LINEAR_MAPPING_OFFSET;
 use crate::memory::address::PhysAddr;
+use crate::memory::address::VirtAddr;
 use crate::memory::frame_allocator;
-use crate::multitask::current_task;
+use crate::memory::page_meta::PAGE_METADATAS;
 use crate::multitask::task::Task;
 use crate::multitask::task::TaskArc;
-use crate::multitask::task_context::TaskContext;
-use crate::multitask::task_context::switch_context;
-use crate::multitask::task_scheduler::TASK_SCHEDULER;
 
 mod basic;
 mod devices;
@@ -98,7 +97,7 @@ static BOOT_PAGE_TABLE: BootPageTable = const {
     // 将低地址的 0x80000000~... 和高地址的都映射到同一个位置
     // 这是因为 Rust 编译器认为自己位于高地址，因此各种全局变量都会从高地址拿数据
     // 但程序实际跑在低地址，特别是刚启动时，直接使用的就是物理地址。为了 pc 还能用，必须暂时映射低地址。
-    entries[2] = PhysPageNum::<2>(2).mask() | VX;
+    entries[2] = PhysPageNum::<2>(2).mask() | VRWX; // FIXME
     entries[256 + 2] = PhysPageNum::<2>(2).mask() | VRWX;
 
     // 然后，由于 VirtIO 设备普遍使用 0x10000000 附近的地址，我们将这部分也进行映射
@@ -297,64 +296,42 @@ pub extern "C" fn main(_: usize, dtb: PhysAddr) -> ! {
         vfs::MountPoint::mount(tmp_1, tmp_fs, tmp_2);
     }
 
+    let zero_page_num = unsafe {
+        PAGE_METADATAS
+            .mark_new_page(
+                VirtAddr::from_ptr(&ZERO_PAGE).to_physical_address().into(),
+                memory::page_meta::PageType::Phantom,
+            )
+            .into_asm()
+    };
+    log::info!("零页 {:#x} 初始化完毕", zero_page_num.0);
+
+    // FIXME
+
     println!("准备进入用户态...");
-
-    TASK_SCHEDULER.write().add_task(Task::new(
-        multitask::SchedulePolicy::RoundRobin,
-        40,
-        user_start::<16, "Hello, world!\n"> as usize,
-        ROOT_PATH.clone(),
-    ));
-    seq_macro::seq!(N in 1..=3 {
-        TASK_SCHEDULER.write().add_task(Task::new(
-            multitask::SchedulePolicy::RoundRobin,
-            40,
-            user_start::<{10 + N}, { concat!("Hello, world ", N, "!\n") }> as usize,
-            ROOT_PATH.clone(),
-        ));
-    });
-
-    // TASK_SCHEDULER.write().add_task(Task::new(
-    //     multitask::SchedulePolicy::RoundRobin,
-    //     50,
-    //     (|| loop {}) as fn() as usize,
-    // ));
-    TASK_SCHEDULER.write().add_task(Task::new(
-        multitask::SchedulePolicy::RoundRobin,
-        50,
-        user_start::<5, "VME50\n"> as usize,
-        ROOT_PATH.clone(),
-    ));
-    TASK_SCHEDULER.write().add_task(Task::new(
-        multitask::SchedulePolicy::RoundRobin,
-        60,
-        user_start::<1, "BOOOOM!\n"> as usize,
-        ROOT_PATH.clone(),
-    ));
-
-    // TASK_SCHEDULER.write().add_task(Task::new(multitask::SchedulePolicy::FIFO, 0, just_for_test as usize));
-
-    let task = TASK_SCHEDULER.write().pick_next().unwrap();
-    let task = unsafe { task.into_asm().as_ref_unchecked() };
-    let entry = task.entry.write().take().unwrap();
 
     // trap::set_global_interrupts_enable(true);
     trap::enable_timer_interrupt();
     basic::timer::start_timer_tick_tock();
 
-    // 注意这个不能写进下面的函数调用，否则神必的 Rust 编译器不会析构 ref
-    let page_table_reg = task
-        .memory_space
-        .read()
-        .get_page_table()
-        .to_native_register();
+    const INIT_PATH: &str = cfg_select! {
+        target_arch = "riscv64" => "/rv",
+        target_arch = "loongarch64" => "/la",
+    };
 
-    run_user_program(
-        entry - OFFSET,
-        task.ustack,
-        task.kstack.get_addr(),
-        page_table_reg,
-    );
+    let rv = vfs::walk_path(vfs::PathToWalk::Absolute(ByteStr::new(INIT_PATH)))
+        .unwrap()
+        .ensure()
+        .unwrap();
+
+    let file =
+        rv.0.data
+            .lock()
+            .ops
+            .open(rv.1, vfs::FileFlags::Read)
+            .unwrap();
+
+    Task::execute_init(multitask::SchedulePolicy::FIFO, 50, file, ROOT_PATH.clone());
 }
 
 fn clear_bss() {
@@ -376,6 +353,8 @@ const OFFSET: usize = cfg_select! {
 
 // FIXME: temp
 fn run_program(task: TaskArc) {
+    panic!()
+    /*
     let task = unsafe { task.into_asm().as_ref_unchecked() };
 
     if core::ptr::eq(task, current_task()) {
@@ -416,7 +395,7 @@ fn run_program(task: TaskArc) {
 
         // 注意这个不能写进下面的函数调用，否则神必的 Rust 编译器不会析构 ref
         let page_table_reg = task
-            .memory_space
+            .address_space
             .read()
             .get_page_table()
             .to_native_register();
@@ -431,60 +410,9 @@ fn run_program(task: TaskArc) {
         drop(ent);
         unsafe { switch_context(task.get_context().as_ref_unchecked()) };
     }
+    */
 }
-
-/// 从内核态切换到用户态，执行给定代码。
-///
-/// 不会清理通用寄存器。
-fn run_user_program(entry: usize, stack: usize, kstack: usize, page_table_reg: usize) -> ! {
-    cfg_select! {
-        target_arch = "riscv64" => unsafe {
-            use riscv::register::sstatus;
-
-            sstatus::set_spp(sstatus::SPP::User);
-
-            asm!(
-                "csrw stvec, {trap_handler_raw_from_user}",
-                "csrw satp, {satp}",
-                "csrw sscratch, {stack}",
-                "csrw sepc, {entry}",
-                "csrrw sp, sscratch, {kstack}",
-                "sret",
-                trap_handler_raw_from_user = in(reg) trap::trap_handler::trap_handler_raw_from_user,
-                satp = in(reg) page_table_reg,
-                stack = in(reg) stack,
-                entry = in(reg) entry,
-                kstack = in(reg) kstack,
-                options(noreturn),
-            );
-        },
-        target_arch = "loongarch64" => unsafe {
-            use bit_field::BitField;
-
-            let mut prmd: usize;
-            asm!("csrrd {0}, 0x0", out(reg) prmd); // CRMD
-            prmd.set_bits(0..2, 3);
-            prmd.set_bit(2, true);
-            asm!("csrwr {0}, 0x1", in(reg) prmd);
-
-            asm!(
-                "csrwr {trap_handler_raw_from_user}, 0xc",
-                "csrwr {pgdl}, 0x19",
-                "csrwr {entry}, 0x6",
-                "csrwr {kstack}, 0x30",
-                "move $sp, {stack}",
-                "ertn",
-                trap_handler_raw_from_user = in(reg) trap::trap_handler::trap_handler_raw_from_user,
-                pgdl = in(reg) page_table_reg,
-                entry = in(reg) entry,
-                stack = in(reg) stack,
-                kstack = in(reg) kstack,
-                options(noreturn),
-            );
-        },
-    }
-}
-
+/*
 #[unsafe(naked)]
 extern "C" fn save_current_and_run(
     entry: usize,
@@ -565,181 +493,4 @@ extern "C" fn save_current_and_run(
         )}),
     }
 }
-
-fn user_start<const RET: usize, const STR: &'static str>() -> ! {
-    fn user_main<const RET: usize, const STR: &'static str>() {
-        // for _ in 0..RET {
-        //     syscall!(233, (STR as *const str).addr(), STR.len());
-        //     // syscall!(124);
-        // }
-        let mut buf = [0u8; 100];
-        let buf2 = syscall!(17, buf.as_mut_ptr(), buf.len());
-        if buf2 != buf.as_ptr().addr() {
-            syscall!(93, 111111);
-        }
-        let Ok(str) = core::ffi::CStr::from_bytes_until_nul(&buf) else {
-            syscall!(93, 111112);
-            unreachable!();
-        };
-        syscall!(233, "CWD:".as_ptr(), "CWD:".len());
-        syscall!(233, str.as_ptr(), str.count_bytes());
-        syscall!(233, "\n".as_ptr(), 1);
-
-        if RET != 1 {
-            let ret = syscall!(
-                56,
-                -100,
-                "MY_FILE\0".as_ptr(),
-                0b10 | (1 << 6) | (1 << 10),
-                0o777
-            ) as i32;
-            if ret < 0 {
-                syscall!(93, 20000 - (ret as isize));
-            }
-            let len = syscall!(64, ret, STR.as_ptr(), STR.len());
-            if len != STR.len() {
-                syscall!(93, 20999);
-            }
-            syscall!(233, "WROTE:".as_ptr(), "WROTE:".len());
-            syscall!(233, STR.as_ptr(), STR.len());
-            syscall!(233, "\n".as_ptr(), 1);
-
-            let ret = syscall!(56, -8, "/MY_FILE\0".as_ptr(), 0b10) as i32;
-            if ret < 0 {
-                syscall!(93, 24000 - (ret as isize));
-            }
-            let mut buffer = [100u8; 100];
-            let bytes = syscall!(63, ret, buffer.as_mut_ptr(), buffer.len());
-            syscall!(233, "DATA:".as_ptr(), "DATA:".len());
-            syscall!(233, buffer.as_ptr(), bytes);
-            syscall!(233, "\n\n".as_ptr(), "\n\n".len());
-        } else {
-            let ret = syscall!(56, -3, "/MY_FILE\0".as_ptr(), 0b10) as i32; // openat
-            if ret < 0 {
-                syscall!(93, 21000 - (ret as isize));
-            }
-            let mut buffer = [100u8; 100];
-            let bytes = syscall!(63, ret, buffer.as_mut_ptr(), buffer.len()); // read
-            syscall!(233, buffer.as_ptr(), bytes);
-            syscall!(233, "\n========\n".as_ptr(), "\n========\n".len());
-            let ret = syscall!(34, -100, "MY_DIR\0".as_ptr(), 0o777) as i32; // mkdirat
-            if ret < 0 {
-                syscall!(93, 22000 - (ret as isize));
-            }
-            let ret = syscall!(34, -100, "./MY_DIR/MY_SUBDIR\0".as_ptr(), 0o777) as i32; // mkdirat
-            if ret < 0 {
-                syscall!(93, 23000 - (ret as isize));
-            }
-            let ret = syscall!(56, -100, "MY_DIR/MY_SUBDIR\0".as_ptr(), 1 << 16, 0o777) as i32; // openat
-            if ret < 0 {
-                syscall!(93, 23500 - (ret as isize));
-            }
-            let ret = syscall!(
-                56,
-                ret,
-                "FFFILE\0".as_ptr(),
-                0b10 | (1 << 6) | (1 << 7),
-                0o777
-            ) as i32; // openat
-            if ret < 0 {
-                syscall!(93, 24000 - (ret as isize));
-            }
-            let fffile = ret;
-            let ret = syscall!(49, "/MY_DIR/MY_SUBDIR/../MY_SUBDIR\0".as_ptr()); // chdir
-            if ret != 0 {
-                syscall!(93, 25000 - ret as isize);
-            }
-            let ret = syscall!(37, -100, "FFFILE\0".as_ptr(), -9, "/S\0".as_ptr()) as isize; // linkat
-            if ret < 0 {
-                syscall!(93, 26000 - (ret as isize));
-            }
-            let ret =
-                syscall!(64, fffile, "1233211234567".as_ptr(), "1233211234567".len()) as isize; // write
-            if ret < 0 {
-                syscall!(93, 27000 - (ret as isize));
-            }
-            let ret = syscall!(35, -100, "FFFILE\0".as_ptr(), 0x200) as isize; // unlinkat
-            if ret != -20 {
-                // ENOTDIR
-                syscall!(93, 28000 - (ret as isize));
-            }
-            let ret = syscall!(35, -100, "FFFILE\0".as_ptr(), 0) as isize; // unlinkat
-            if ret < 0 {
-                syscall!(93, 28300 - (ret as isize));
-            }
-            let ret = syscall!(
-                64,
-                fffile,
-                "\nafter_unlink".as_ptr(),
-                "\nafter_unlink".len()
-            ) as isize; // write
-            if ret < 0 {
-                syscall!(93, 28500 - (ret as isize));
-            }
-            let ret = syscall!(56, 0, "/MY_DIR/MY_SUBDIR/FFFILE\0".as_ptr(), 0b10, 0o777) as i32; // openat
-            if ret >= 0 {
-                syscall!(93, 28700 - (ret as isize));
-            }
-            {
-                let _ = syscall!(17, buf.as_mut_ptr(), buf.len());
-                let Ok(str) = core::ffi::CStr::from_bytes_until_nul(&buf) else {
-                    syscall!(93, 111112);
-                    unreachable!();
-                };
-                syscall!(233, "CWD:".as_ptr(), "CWD:".len());
-                syscall!(233, str.as_ptr(), str.count_bytes());
-                syscall!(233, "\n".as_ptr(), 1);
-            }
-            let ret = syscall!(56, -100, "../../S\0".as_ptr(), 0b10, 0o777) as i32; // openat
-            if ret < 0 {
-                syscall!(93, 29000 - (ret as isize));
-            }
-            let s = ret;
-            syscall!(
-                233,
-                "====== data ======\n".as_ptr(),
-                "====== data ======\n".len()
-            );
-            let bytes = syscall!(63, s, buffer.as_mut_ptr(), buffer.len()); // read
-            syscall!(233, buffer.as_ptr(), bytes);
-            syscall!(233, "\n\n".as_ptr(), 2);
-            let duped_s = syscall!(23, s); // dup
-            if (duped_s as isize) < 0 {
-                syscall!(93, 30000 - duped_s as isize);
-            }
-            let dup3_s = syscall!(24, duped_s, 1145); // dup3
-            if dup3_s != 1145 {
-                syscall!(93, 31000 - dup3_s as isize);
-            }
-            let ret = syscall!(56, 1145, "../tmp/tt.txt\0".as_ptr(), 0b10 | (1 << 6), 0o777) as i32; // openat
-            if ret < 0 {
-                syscall!(93, 32000 - (ret as isize));
-            }
-            let tt = ret;
-            let ret = syscall!(56, tt, "../../tmp/../tmp\0".as_ptr(), 0b10, 0o777) as isize; // linkat
-            if ret < 0 {
-                syscall!(93, 33000 - (ret as isize));
-            }
-            let ret = syscall!(35, tt, "/MY_DIR\0".as_ptr(), 0x200) as isize; // unlinkat
-            if ret != -39 {
-                // ENOTEMPTY
-                syscall!(93, 34000 - (ret as isize));
-            }
-            let ret = syscall!(35, tt, "/MY_DIR/MY_SUBDIR\0".as_ptr(), 0x200) as isize; // unlinkat
-            if ret < 0 {
-                syscall!(93, 35000 - (ret as isize));
-            }
-        }
-    }
-
-    user_main::<RET, STR>();
-
-    if RET == 1 {
-        if syscall!(233, 0, 2333) != 2 {
-            syscall!(93, 999999);
-        }
-    }
-
-    syscall!(93, RET);
-    unreachable!();
-}
+*/

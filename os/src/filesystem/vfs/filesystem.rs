@@ -2,7 +2,7 @@ use core::{
     bstr::ByteStr,
     hash::Hash,
     hint::unreachable_unchecked,
-    mem::{forget, offset_of, replace},
+    mem::{MaybeUninit, forget, offset_of, replace},
     num::NonZero,
     ops::Deref,
     pin::Pin,
@@ -526,6 +526,16 @@ pub trait FileSystemOps: Send + Sync {
         page_index: u64,
         page_data: &[u8; 4096],
     ) -> VfsResult<()>;
+
+    /// 从底层设备读取到文件。此操作刻意设计成不持有任何锁，底层文件系统可以视情况同步，但其始终可以假设 page_data 无其它引用
+    ///
+    /// 此函数保证只在页缓存未命中时调用。实现必须从首个字节开始写入，并返回实际写入的字节数。
+    fn read_to_page(
+        &self,
+        inode: &INode,
+        page_index: u64,
+        buffer: &mut [MaybeUninit<u8>; 4096],
+    ) -> VfsResult<usize>;
 }
 
 static_assertions::const_assert_eq!(PAGE_BYTES, 4096); // 见 writeback_page 定义。这是 Rust 编译器的神奇妙妙小错误

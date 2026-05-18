@@ -1,5 +1,5 @@
 // TODO: 重构此部分
-use core::{fmt::Debug, marker::PhantomPinned, pin::Pin};
+use core::{arch::asm, fmt::Debug, marker::PhantomPinned, pin::Pin};
 
 use alloc::boxed::Box;
 
@@ -57,9 +57,7 @@ impl<const LEVEL: usize> PageTable<LEVEL> {
         )
     }
 
-    /// # Safety:
-    /// 所有修改必须保持类不变量
-    unsafe fn as_usize_array(&self) -> &[usize; PAGE_TABLE_SIZE] {
+    fn as_usize_array(&self) -> &[usize; PAGE_TABLE_SIZE] {
         let ptr = self as *const Self as *const [usize; PAGE_TABLE_SIZE];
         unsafe { ptr.as_ref_unchecked() }
     }
@@ -95,22 +93,16 @@ impl PageTable<2> {
         // FIXME：真正的用户程序加载我打算推迟到和文件系统一起，所以现在暂时直接映射低地址
         //        由于用户栈被放在了用户地址空间的最高处，虚拟内存管理的相关代码还是能得到一些测试的
         #[cfg(target_arch = "riscv64")]
-        ret.map_local(
-            2,
-            PageTableEntry::new(PhysPageNum(2), flags | PTEFlags::User),
-        );
+        ret.map_local(2, PageTableEntry::new(PhysPageNum(2), flags));
         #[cfg(target_arch = "loongarch64")]
         {
             let ekernel: usize;
             unsafe { core::arch::asm!("la {0}, ekernel", out(reg) ekernel) };
             let ekernel = PhysPageNum::<0>::from(VirtAddr(ekernel).to_physical_address()).0;
             for i in 0x90000..ekernel {
-                ret.map(
-                    VirtPageNum::<0>(i),
-                    PhysPageNum::<0>(i),
-                    flags | PTEFlags::User,
-                )
-                .unwrap();
+                unsafe { Pin::new_unchecked(&mut ret) }
+                    .map(VirtPageNum::<0>(i), PhysPageNum::<0>(i), flags)
+                    .unwrap();
             }
         }
 
@@ -125,13 +117,35 @@ impl PageTable<2> {
         }
     }
 
+    pub unsafe fn switch_to(native_register: usize) {
+        cfg_select! {
+            target_arch = "riscv64" => unsafe {
+                asm!(
+                    "csrw satp, {reg}",
+                    "sfence.vma",
+                    reg = in(reg) native_register,
+                )
+            },
+            target_arch = "loongarch64" => unsafe {
+                asm!(
+                    "csrwr {reg}, 0x19",
+                    "invtlb 0x0, $zero, $zero",
+                    reg = in(reg) native_register,
+                )
+            },
+        }
+    }
+    pub fn activitate(&self) {
+        unsafe { PageTable::switch_to(self.to_native_register()) }
+    }
+
     /// 将 `from` 映射到 `to`，标志为 `flags`（自动添加 Valid 和 User），支持大页
     ///
     /// 如果已经存在同地址的映射，则返回 Err，包含该映射的页表项的可变引用
     ///
     /// 不刷新 TLB，请手动刷新
     pub fn map<'a, const LEVEL: usize>(
-        &'a mut self,
+        self: Pin<&'a mut Self>,
         from: VirtPageNum<LEVEL>,
         to: PhysPageNum<LEVEL>,
         flags: PTEFlags,
@@ -139,7 +153,7 @@ impl PageTable<2> {
         let flags = PTEFlagsNative::from(flags | PTEFlags::Valid | PTEFlags::User);
         let vaddr: VirtAddr = from.into();
 
-        let mut page_table = unsafe { self.as_mut_usize_array() };
+        let mut page_table = unsafe { self.get_unchecked_mut().as_mut_usize_array() };
         let mut level = 2;
         while level > LEVEL {
             let index = (vaddr.0 >> PAGE_SHIFTS[level]) % PAGE_TABLE_SIZE;
@@ -181,13 +195,62 @@ impl PageTable<2> {
 
         if old_flags.contains(PTEFlags::Valid) {
             let ptr = &raw mut page_table[index] as *mut PageTableEntry<LEVEL>;
-            #[expect(dropping_references)]
-            drop(page_table); // 保证不会同时存在两个可变借用
             Err(unsafe { ptr.as_mut_unchecked() })
         } else {
             page_table[index] = to.mask() | flags.bits();
+            // log::trace!("mapped: {:#x} => {:#x}", VirtAddr::from(from).0, PhysAddr::from(to).0);
             Ok(())
         }
+    }
+
+    pub fn at<'a, const LEVEL: usize>(
+        &'a self,
+        index: VirtPageNum<LEVEL>,
+    ) -> Option<&'a PageTableEntry<LEVEL>> {
+        Self::get_ptr(self.as_usize_array(), index).map(|ptr| unsafe { ptr.as_ref_unchecked() })
+    }
+    pub fn at_mut<'a, const LEVEL: usize>(
+        self: Pin<&'a mut Self>,
+        index: VirtPageNum<LEVEL>,
+    ) -> Option<&'a mut PageTableEntry<LEVEL>> {
+        Self::get_ptr(self.as_usize_array(), index)
+            .map(|ptr| unsafe { (ptr as *mut PageTableEntry<LEVEL>).as_mut_unchecked() })
+    }
+
+    pub fn get_ptr<const LEVEL: usize>(
+        mut page_table: &[usize; 512],
+        index: VirtPageNum<LEVEL>,
+    ) -> Option<*const PageTableEntry<LEVEL>> {
+        let vaddr: VirtAddr = index.into();
+
+        let mut level = 2;
+        while level >= LEVEL {
+            let index = (vaddr.0 >> PAGE_SHIFTS[level]) % PAGE_TABLE_SIZE;
+            let entry = page_table[index];
+            let entry_flags: PTEFlags = PTEFlagsNative::from_bits_truncate(entry).into();
+
+            if !entry_flags.contains(PTEFlags::Valid) {
+                return None;
+            }
+
+            if level == LEVEL {
+                return Some((&raw const page_table[index]).cast());
+            }
+
+            debug_assert!(
+                !entry_flags.contains(PTEFlags::Read | PTEFlags::Write | PTEFlags::Execute)
+            );
+            let new_paddr: PhysAddr = PhysPageNum::<0>::from_pte(&PageTableEntry {
+                bits: page_table[index],
+            })
+            .into();
+            let new_vaddr = new_paddr.to_virtual_address().0;
+
+            page_table = unsafe { (new_vaddr as *const [usize; 512]).as_ref_unchecked() };
+            level -= 1;
+        }
+
+        None
     }
 
     /// 取消映射 `[start, end)` 范围内的页表项，支持大页，自动忽略无效项

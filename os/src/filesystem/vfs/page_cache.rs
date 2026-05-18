@@ -54,19 +54,17 @@ impl PageCache {
         Some(unsafe { extend_lifetime::<'a>(page_meta) })
     }
 
-    pub fn insert(&self, page_index: u64, page_meta_guard: PageMetaGuard) {
+    pub fn insert<'a>(&'a self, page_index: u64, page_meta_guard: PageMetaGuard) -> &'a PageMeta {
+        // SAFETY: 见 Self::get
+        let meta_ref = unsafe { extend_lifetime::<'a>(page_meta_guard.deref()) };
+
         self.data.write().pages.store(page_index, page_meta_guard);
+
+        meta_ref
     }
 
     pub fn alloc<'a>(&'a self, page_index: u64) -> &'a PageMeta {
-        let guard = self.alloc_without_insert(page_index);
-
-        // SAFETY: 见 Self::get
-        let meta_ref = unsafe { extend_lifetime::<'a>(guard.deref()) };
-
-        self.insert(page_index, guard);
-
-        meta_ref
+        self.insert(page_index, self.alloc_without_insert(page_index))
     }
 
     pub fn get_or_alloc(&self, page_index: u64) -> &PageMeta {

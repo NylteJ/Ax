@@ -4,7 +4,7 @@ use intrusive_collections::UnsafeRef;
 
 use crate::{
     filesystem::vfs::{PageCache, VfsResult},
-    memory::{PAGE_BYTES, page_meta::PageFlags},
+    memory::page_meta::PageFlags,
 };
 
 pub enum FileIoPgCacheMissResult {
@@ -23,10 +23,12 @@ pub fn file_io_common(
     let ret = 'do_op_and_get_ret: {
         let pos = *pos;
 
-        let begin_page_index = pos / PAGE_BYTES as u64;
-        let end_page_index = (pos + len).div_ceil(PAGE_BYTES as u64);
+        const PAGE_BYTES: u64 = crate::memory::PAGE_BYTES as u64;
 
-        for page_index in begin_page_index..end_page_index {
+        let first_page_index = pos / PAGE_BYTES;
+        let last_page_index = (pos + len).div_ceil(PAGE_BYTES);
+
+        for page_index in first_page_index..last_page_index {
             let page = loop {
                 if let Some(page) = page_cache.get(page_index) {
                     break page;
@@ -35,27 +37,28 @@ pub fn file_io_common(
                 match when_pgcache_miss(page_cache, page_index)? {
                     FileIoPgCacheMissResult::Retry => (),
                     FileIoPgCacheMissResult::Break => {
-                        if page_index == begin_page_index {
+                        if page_index == first_page_index {
                             break 'do_op_and_get_ret 0;
                         } else {
-                            let bytes = (page_index - begin_page_index) * PAGE_BYTES as u64
-                                - pos % PAGE_BYTES as u64;
+                            let bytes =
+                                (page_index - first_page_index) * PAGE_BYTES - pos % PAGE_BYTES;
                             break 'do_op_and_get_ret bytes;
                         }
                     }
                 }
             };
 
-            let from = if page_index == begin_page_index {
-                pos % PAGE_BYTES as u64
+            let from = if page_index == first_page_index {
+                pos % PAGE_BYTES
             } else {
                 0
             };
 
-            let to = if page_index == end_page_index - 1 {
-                (pos + len) % PAGE_BYTES as u64
+            let to = if page_index == last_page_index - 1 {
+                let raw = (pos + len) % PAGE_BYTES;
+                if raw == 0 { PAGE_BYTES } else { raw }
             } else {
-                PAGE_BYTES as u64
+                PAGE_BYTES
             };
 
             op(unsafe { page.visit_memory_mut_off(from as usize, to as usize) })?;

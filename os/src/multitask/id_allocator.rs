@@ -46,4 +46,13 @@ impl<const N: usize> IdAllocatorImpl<N> {
 
         assert!(old, "ID {id} 被释放了两次");
     }
+
+    /// 分配指定 ID，如果该 ID 已经被分配则返回 `false`，否则分配并返回 `true`
+    ///
+    /// # Panics
+    /// 如果 ID 不在 [0, N) 范围内，则会 panic。
+    #[must_use]
+    pub fn allocate_specific(&mut self, id: usize) -> bool {
+        !self.bitmap.replace(id, true)
+    }
 }

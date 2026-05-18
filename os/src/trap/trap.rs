@@ -75,11 +75,11 @@ pub enum Exception {
     StoreFault = 7,
     SupervisorEnvCall = 9,
     MachineEnvCall = 11,
-    InstructionPageFault = 12,
 
     Syscall = 8, // 即 UserEnvCall
     LoadPageFault = 13,
     StorePageFault = 15,
+    InstructionPageFault = 12,
 }
 
 #[cfg(target_arch = "loongarch64")]
@@ -106,7 +106,6 @@ pub enum Interrupt {
 #[derive(Debug, Clone, Copy, TryFromPrimitive)]
 #[repr(usize)]
 pub enum Exception {
-    PageInvalidFetch = 0x3,
     PageModifyFault = 0x4,
     PageNonReadableFault = 0x5,
     PageNonExecutableFault = 0x6,
@@ -119,7 +118,21 @@ pub enum Exception {
     InstructionPrivilegeIllegal = 0xE,
     FloatingPointUnavailable = 0xF,
 
-    LoadPageFault = 0x1,  // 即 PageInvalidLoad
-    StorePageFault = 0x2, // 即 PageInvalidStore
+    LoadPageFault = 0x1,        // 即 PageInvalidLoad
+    StorePageFault = 0x2,       // 即 PageInvalidStore
+    InstructionPageFault = 0x3, // 即 PageInvalidFetch
     Syscall = 0xB,
+}
+
+impl Exception {
+    pub fn is_page_fault(&self) -> bool {
+        let v1 = matches!(
+            self,
+            Self::LoadPageFault | Self::StorePageFault | Self::InstructionPageFault
+        );
+        cfg_select! {
+            target_arch = "riscv64" => v1,
+            target_arch = "loongarch64" => v1 || matches!(self, Self::PageModifyFault | Self::PageNonReadableFault | Self::PageNonExecutableFault),
+        }
+    }
 }
