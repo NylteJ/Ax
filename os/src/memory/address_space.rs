@@ -240,10 +240,7 @@ impl AddressSpace {
 
                     page_flag.remove(PTEFlags::Write);
 
-                    self.page_table
-                        .as_mut()
-                        .map(virt_page_num, ppn, page_flag)
-                        .unwrap();
+                    self.page_table.map(virt_page_num, ppn, page_flag).unwrap();
                 } else {
                     // TODO: 为唯一引用时写时复制可以不用复制
                     let physical_memory =
@@ -262,7 +259,6 @@ impl AddressSpace {
                     debug_assert!(asm_handle == physical_memory);
 
                     self.page_table
-                        .as_mut()
                         .map(virt_page_num, physical_memory, page_flag)
                         .unwrap_or_else(|old_entry| {
                             // 写时复制
@@ -364,7 +360,6 @@ impl AddressSpace {
                 unsafe { cache_page.ref_count().fetch_add(1, Ordering::Relaxed) };
 
                 self.page_table
-                    .as_mut()
                     .map(virt_page_num, cache_page.get_page_num(), page_flag)
                     .unwrap();
             }

@@ -35,15 +35,12 @@ seq_macro::seq!(N in 0..3 {
 
 impl<const LEVEL: usize> PageTable<LEVEL> {
     pub fn new() -> Pin<Box<Self>> {
-        // TODO: 改善栈内存使用
-        Box::pin(Self {
-            frames: [PageTableEntry::new_invalid(); PAGE_TABLE_SIZE],
-            _pinned: PhantomPinned,
-        })
+        debug_assert_eq!(PageTableEntry::<LEVEL>::new_invalid().bits, 0);
+        unsafe { Pin::new_unchecked(Box::new_zeroed().assume_init()) }
     }
 
-    pub fn map_local(&mut self, index: usize, entry: PageTableEntry<LEVEL>) {
-        self.frames[index] = entry;
+    pub fn map_local(self: &mut Pin<Box<Self>>, index: usize, entry: PageTableEntry<LEVEL>) {
+        unsafe { self.as_mut().get_unchecked_mut() }.frames[index] = entry;
     }
 
     pub fn to_entry(&self, flags: PTEFlags) -> PageTableEntry<{ LEVEL + 1 }> {
@@ -75,10 +72,7 @@ impl<const LEVEL: usize> PageTable<LEVEL> {
 
 impl PageTable<2> {
     pub fn new_table() -> Pin<Box<Self>> {
-        let mut ret = Self {
-            frames: [PageTableEntry::new_invalid(); PAGE_TABLE_SIZE],
-            _pinned: PhantomPinned,
-        };
+        let mut ret = Self::new();
 
         // 布局详见 mod.rs
 
@@ -90,23 +84,7 @@ impl PageTable<2> {
             ret.map_local(256 + i, PageTableEntry::new(PhysPageNum(i), flags));
         }
 
-        // FIXME：真正的用户程序加载我打算推迟到和文件系统一起，所以现在暂时直接映射低地址
-        //        由于用户栈被放在了用户地址空间的最高处，虚拟内存管理的相关代码还是能得到一些测试的
-        #[cfg(target_arch = "riscv64")]
-        ret.map_local(2, PageTableEntry::new(PhysPageNum(2), flags));
-        #[cfg(target_arch = "loongarch64")]
-        {
-            let ekernel: usize;
-            unsafe { core::arch::asm!("la {0}, ekernel", out(reg) ekernel) };
-            let ekernel = PhysPageNum::<0>::from(VirtAddr(ekernel).to_physical_address()).0;
-            for i in 0x90000..ekernel {
-                unsafe { Pin::new_unchecked(&mut ret) }
-                    .map(VirtPageNum::<0>(i), PhysPageNum::<0>(i), flags)
-                    .unwrap();
-            }
-        }
-
-        Box::pin(ret)
+        ret
     }
 
     pub fn to_native_register(&self) -> usize {
@@ -145,7 +123,7 @@ impl PageTable<2> {
     ///
     /// 不刷新 TLB，请手动刷新
     pub fn map<'a, const LEVEL: usize>(
-        self: Pin<&'a mut Self>,
+        self: &'a mut Pin<Box<Self>>,
         from: VirtPageNum<LEVEL>,
         to: PhysPageNum<LEVEL>,
         flags: PTEFlags,
@@ -153,7 +131,7 @@ impl PageTable<2> {
         let flags = PTEFlagsNative::from(flags | PTEFlags::Valid | PTEFlags::User);
         let vaddr: VirtAddr = from.into();
 
-        let mut page_table = unsafe { self.get_unchecked_mut().as_mut_usize_array() };
+        let mut page_table = unsafe { self.as_mut().get_unchecked_mut().as_mut_usize_array() };
         let mut level = 2;
         while level > LEVEL {
             let index = (vaddr.0 >> PAGE_SHIFTS[level]) % PAGE_TABLE_SIZE;

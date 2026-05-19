@@ -69,7 +69,7 @@ impl Task {
         work_dir: Path,
     ) -> ! {
         let success = PID_ALLOCATOR.lock().allocate_specific(INIT_PID);
-        debug_assert!(success, "必须能够为 init 进程分配 PID {INIT_PID}");
+        assert!(success, "必须能够为 init 进程分配 PID {INIT_PID}");
 
         let (kstack, task_ptr_ptr) = Self::alloc_kstack();
         let kstack_sp = task_ptr_ptr as usize;

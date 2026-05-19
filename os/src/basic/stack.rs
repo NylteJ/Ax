@@ -52,5 +52,5 @@ impl<const BYTES: usize> Debug for KernelStackPtr<BYTES> {
     }
 }
 
-/// 每个任务独占的内核栈的指针（这个值不能设得太小，因为缺页中断时可能直接往栈上堆页表）
-pub type TaskKernelStackPtr = KernelStackPtr<65536>;
+/// 每个任务独占的内核栈的指针
+pub type TaskKernelStackPtr = KernelStackPtr<32768>;

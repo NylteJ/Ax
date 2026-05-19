@@ -97,7 +97,7 @@ static BOOT_PAGE_TABLE: BootPageTable = const {
     // 将低地址的 0x80000000~... 和高地址的都映射到同一个位置
     // 这是因为 Rust 编译器认为自己位于高地址，因此各种全局变量都会从高地址拿数据
     // 但程序实际跑在低地址，特别是刚启动时，直接使用的就是物理地址。为了 pc 还能用，必须暂时映射低地址。
-    entries[2] = PhysPageNum::<2>(2).mask() | VRWX; // FIXME
+    entries[2] = PhysPageNum::<2>(2).mask() | VX;
     entries[256 + 2] = PhysPageNum::<2>(2).mask() | VRWX;
 
     // 然后，由于 VirtIO 设备普遍使用 0x10000000 附近的地址，我们将这部分也进行映射
