@@ -78,6 +78,13 @@ impl VirtAddr {
         Self(ptr as usize)
     }
 
+    pub fn as_ptr<T>(&self) -> *const T {
+        self.0 as *const T
+    }
+    pub fn as_mut_ptr<T>(&self) -> *mut T {
+        self.0 as *mut T
+    }
+
     pub fn floor_to_page(&self) -> Self {
         Self(self.0 / PAGE_BYTES * PAGE_BYTES)
     }

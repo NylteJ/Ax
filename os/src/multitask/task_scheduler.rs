@@ -3,7 +3,7 @@ use alloc::{boxed::Box, vec::Vec};
 use alloc::vec;
 use lazy_static::lazy_static;
 
-use crate::basic::sync::RwLock;
+use crate::basic::sync::Mutex;
 use crate::multitask::{
     schedulers::Scheduler,
     task::{Task, TaskArc},
@@ -59,5 +59,5 @@ impl TaskScheduler {
 }
 
 lazy_static! {
-    pub static ref TASK_SCHEDULER: RwLock<TaskScheduler> = RwLock::new(TaskScheduler::new());
+    pub static ref TASK_SCHEDULER: Mutex<TaskScheduler> = Mutex::new(TaskScheduler::new());
 }

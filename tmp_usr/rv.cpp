@@ -66,6 +66,32 @@ static void exit(long code) {
     __builtin_unreachable();
 }
 
+static long fork() {
+    long ret;
+
+#ifdef __riscv
+    asm volatile (
+        "li   a7, 220\n"
+        "ecall\n"
+        "mv   %0, a0\n"
+        : "=r"(ret)
+        :
+        : "a0", "a7"
+    );
+#else
+    asm volatile (
+        "li.d   $a7, 220\n"
+        "syscall 0\n"
+        "move   %0, $a0\n"
+        : "=r"(ret)
+        :
+        : "$a0", "$a7"
+    );
+#endif
+
+    return ret;
+}
+
 #define assert(...) static_cast<void>(static_cast<bool>(__VA_ARGS__) || ((print("Assertion failed: " #__VA_ARGS__ "\nPos: " __FILE__ "（行号请见返回值）\n") && (exit(-100000), true)) || (exit(-__LINE__), true)))
 
 long long zeros[16384 + 777];
@@ -98,15 +124,23 @@ extern "C" [[noreturn]] void _start() {
     assert(zeros2[7777778] == 78);
     assert(zeros2[7777779] == 0);
 
-    print("很好，现在我要做一些非常邪恶的事情了！\n");
+    for (int i = 0; i < 260; ++i) {
+        const char c = i % 26 + ((i / 26) % 2 ? 'a' : 'A'); // 我们甚至意外地发现了一个（极大概率的）GCC bug！
+        print(&c, 1uz);
+    }
 
-    print("向系统调用传递非法地址：\n");
-    const auto evil_print_ret = print(reinterpret_cast<const char*>(0x123), 0x456uz);
-    assert(evil_print_ret != 0);
+    print("很好，下面试试 fork\n");
 
-    print("直接访问非法地址：\n");
-    *reinterpret_cast<volatile int*>(0x777) = 999;
-    assert(false && "为什么我还活着？");
+    fork();
+    fork();
+    const auto last_fork_ret = fork();
+    
+    for (int i = 0; i < 260; ++i) {
+        const char c = i % 26 + ((i / 26) % 2 ? 'a' : 'A');
+        print(&c, 1uz);
+    }
+
+    exit(last_fork_ret);
 }
 
 // 它存在的意义只是给代码段加点东西（也因此不能是 static）

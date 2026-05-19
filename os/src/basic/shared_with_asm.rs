@@ -1,4 +1,4 @@
-use core::pin::Pin;
+use core::{mem::forget_unsized, pin::Pin};
 
 use alloc::{boxed::Box, sync::Arc};
 
@@ -6,7 +6,7 @@ use alloc::{boxed::Box, sync::Arc};
 ///
 /// 这意味着它在某些时候可能完全不在 Rust 端可达。换言之，其所有权会在 Rust 端和汇编端之间转移。
 pub unsafe trait SharedWithAsm {
-    type AsmType;
+    type AsmType: Copy;
 
     /// 将自身所有权转移给汇编端。如果返回值未妥善处理则可能引发资源泄露或内存不安全。
     ///
@@ -28,6 +28,16 @@ pub unsafe trait SharedWithAsm {
     {
         drop(unsafe { Self::from_asm(asm_value) });
     }
+
+    /// 从汇编端克隆一个所有权。输入值不正确则会导致内存不安全。
+    unsafe fn clone_asm(asm_value: Self::AsmType) -> Self::AsmType
+    where
+        Self: Clone,
+    {
+        let this = unsafe { Self::from_asm(asm_value) };
+        forget_unsized(this.clone());
+        unsafe { Self::into_asm(this) }
+    }
 }
 
 unsafe impl<T: ?Sized> SharedWithAsm for Pin<Arc<T>> {
@@ -43,6 +53,11 @@ unsafe impl<T: ?Sized> SharedWithAsm for Pin<Arc<T>> {
 
     unsafe fn drop_asm(asm_value: Self::AsmType) {
         unsafe { Arc::decrement_strong_count(asm_value) };
+    }
+
+    unsafe fn clone_asm(asm_value: Self::AsmType) -> Self::AsmType {
+        unsafe { Arc::increment_strong_count(asm_value) };
+        asm_value
     }
 }
 

@@ -1,6 +1,6 @@
 use crate::filesystem::vfs::Path;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct FilesystemData {
     pub current_work_dir: Path,
 }

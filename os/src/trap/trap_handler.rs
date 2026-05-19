@@ -27,7 +27,7 @@ pub fn init_k() {
 
 #[repr(C)]
 #[repr(align(16))] // 上下文须压栈，而 RISC-V 64 和 LoongArch 64 都要求栈按 16 字节对齐
-struct TrapContext {
+pub struct TrapContext {
     pub registers: [usize; 31], // x1 ~ x31
     pub status: usize,          // sstatus (RISC-V 64) / PRMD (LoongArch 64)
     pub ret_pc: usize,          // 用户态 PC，即返回后执行的第一条指令
@@ -67,12 +67,12 @@ extern "C" fn trap_handler(context: &mut TrapContext) {
         Trap::Interrupt(Interrupt::TimerInterrupt) => {
             reset_timer_interrupt();
 
-            let mut brw = TASK_SCHEDULER.write();
+            let mut brw = TASK_SCHEDULER.lock();
             if let Some(next_task) =
                 brw.on_time_interrupt(unsafe { current_task().as_ref_unchecked() })
             {
                 drop(brw);
-                crate::run_program(next_task);
+                next_task.switch_to();
             }
         }
         Trap::Exception(fault) if fault.is_page_fault() => {
@@ -129,6 +129,10 @@ extern "C" fn trap_handler(context: &mut TrapContext) {
                     );
                     log::info!("其试图访问：{:#x}", get_bad_address());
                     log::info!("对应代码所在地址：{:#x}", context.ret_pc);
+                    log::debug!("寄存器信息：");
+                    for (i, reg) in context.registers.iter().enumerate() {
+                        log::debug!("x{:02}: {:#018x}", i + 1, reg);
+                    }
                     log::info!(
                         "=================================================================================="
                     );
@@ -285,33 +289,14 @@ pub extern "C" fn trap_handler_raw_from_user() {
             // 8. 调用 trap_handler
             "mv a0, sp", // 传参
             "call trap_handler",
-            // 9. 将 stvec 改为用户态的版本
-            "la t0, trap_handler_raw_from_user",
-            "csrw stvec, t0",
-            // 10. 恢复用户栈的 sp（到 sscratch 中）
-            "ld a2, {REGS_OFFSET}+8(sp)",
-            "csrw sscratch, a2",
-            // 11. 恢复 sepc 和 sstatus
-            "ld a1, {RET_PC_OFFSET}(sp)",
-            "csrw sepc, a1",
-            "ld a0, {STATUS_OFFSET}(sp)",
-            "csrw sstatus, a0",
-            // 12. 恢复先前保存的其它寄存器
-            "ld x1, {REGS_OFFSET}(sp)",
-            #(
-                concat!("ld x", N, ", (", N, "-1)*8+{REGS_OFFSET}(sp)"),
-            )*
-            // 13. 释放栈空间
-            "addi sp, sp, {TRAP_CONTEXT_SIZE}",
-            // 14. 切换回用户栈
-            "csrrw sp, sscratch, sp",
-            // 15. 返回用户态（U 特权级）
-            "sret",
+            // 9. 返回用户态（U 特权级）
+            "j {return_to_user}", // 尾调用，无条件跳转即可
             TRAP_CONTEXT_SIZE = const TRAP_CONTEXT_SIZE,
             REGS_OFFSET = const REGS_OFFSET,
             STATUS_OFFSET = const STATUS_OFFSET,
             RET_PC_OFFSET = const RET_PC_OFFSET,
             recover_task_pointer = sym recover_task_pointer,
+            return_to_user = sym return_to_user,
         );
     });
 }
@@ -349,29 +334,8 @@ pub extern "C" fn trap_handler_raw_from_user() {
             // 8. 调用 trap_handler
             "move $a0, $sp", // 传参
             "bl trap_handler",
-            // 9. 将 EENTRY 改为用户态的版本
-            "la $t0, trap_handler_raw_from_user",
-            "csrwr $t0, {CSR_EENTRY}",
-            // 10. 恢复用户栈的 $sp（到 CSR_SAVE0 中）
-            "ld.d $t2, $sp, {REGS_OFFSET}+2*8",
-            "csrwr $t2, {CSR_SAVE0}",
-            // 11. 恢复 ERA 和 PRMD
-            "ld.d $t1, $sp, {RET_PC_OFFSET}",
-            "csrwr $t1, {CSR_ERA}",
-            "ld.d $t0, $sp, {STATUS_OFFSET}",
-            "csrwr $t0, {CSR_PRMD}",
-            // 12. 恢复先前保存的其它寄存器
-            "ld.d $r1, $sp, {REGS_OFFSET}",
-            "ld.d $r2, $sp, {REGS_OFFSET}+8",
-            #(
-                concat!("ld.d $r", N, ", $sp, (", N, "-1)*8+{REGS_OFFSET}"),
-            )*
-            // 13. 释放栈空间
-            "addi.d $sp, $sp, {TRAP_CONTEXT_SIZE}",
-            // 14. 切换回用户栈
-            "csrwr $sp, {CSR_SAVE0}", // 交换二者的值
-            // 15. 返回用户态
-            "ertn",
+            // 9. 返回用户态
+            "b {return_to_user}", // 尾调用，无条件跳转即可
             CSR_SAVE0 = const 0x30,
             CSR_PRMD = const 0x1,
             CSR_ERA = const 0x6,
@@ -381,6 +345,82 @@ pub extern "C" fn trap_handler_raw_from_user() {
             STATUS_OFFSET = const STATUS_OFFSET,
             RET_PC_OFFSET = const RET_PC_OFFSET,
             recover_task_pointer = sym recover_task_pointer,
+            return_to_user = sym return_to_user,
+        );
+    });
+}
+
+#[unsafe(naked)]
+#[cfg(target_arch = "riscv64")]
+pub unsafe extern "C" fn return_to_user() {
+    seq!(N in 3..=31 {
+        naked_asm!(
+            // 1. 将 stvec 改为用户态的版本
+            "la t0, trap_handler_raw_from_user",
+            "csrw stvec, t0",
+            // 2. 恢复用户栈的 sp（到 sscratch 中）
+            "ld a2, {REGS_OFFSET}+8(sp)",
+            "csrw sscratch, a2",
+            // 3. 恢复 sepc 和 sstatus
+            "ld a1, {RET_PC_OFFSET}(sp)",
+            "csrw sepc, a1",
+            "ld a0, {STATUS_OFFSET}(sp)",
+            "csrw sstatus, a0",
+            // 4. 恢复先前保存的其它寄存器
+            "ld x1, {REGS_OFFSET}(sp)",
+            #(
+                concat!("ld x", N, ", (", N, "-1)*8+{REGS_OFFSET}(sp)"),
+            )*
+            // 5. 释放栈空间
+            "addi sp, sp, {TRAP_CONTEXT_SIZE}",
+            // 6. 切换回用户栈
+            "csrrw sp, sscratch, sp",
+            // 7. 返回用户态（U 特权级）
+            "sret",
+            TRAP_CONTEXT_SIZE = const TRAP_CONTEXT_SIZE,
+            REGS_OFFSET = const REGS_OFFSET,
+            STATUS_OFFSET = const STATUS_OFFSET,
+            RET_PC_OFFSET = const RET_PC_OFFSET,
+        );
+    });
+}
+
+#[unsafe(naked)]
+#[cfg(target_arch = "loongarch64")]
+pub unsafe extern "C" fn return_to_user() {
+    seq!(N in 4..=31 {
+        naked_asm!(
+            // 1. 将 EENTRY 改为用户态的版本
+            "la $t0, trap_handler_raw_from_user",
+            "csrwr $t0, {CSR_EENTRY}",
+            // 2. 恢复用户栈的 $sp（到 CSR_SAVE0 中）
+            "ld.d $t2, $sp, {REGS_OFFSET}+2*8",
+            "csrwr $t2, {CSR_SAVE0}",
+            // 3. 恢复 ERA 和 PRMD
+            "ld.d $t1, $sp, {RET_PC_OFFSET}",
+            "csrwr $t1, {CSR_ERA}",
+            "ld.d $t0, $sp, {STATUS_OFFSET}",
+            "csrwr $t0, {CSR_PRMD}",
+            // 4. 恢复先前保存的其它寄存器
+            "ld.d $r1, $sp, {REGS_OFFSET}",
+            "ld.d $r2, $sp, {REGS_OFFSET}+8",
+            #(
+                concat!("ld.d $r", N, ", $sp, (", N, "-1)*8+{REGS_OFFSET}"),
+            )*
+            // 5. 释放栈空间
+            "addi.d $sp, $sp, {TRAP_CONTEXT_SIZE}",
+            // 6. 切换回用户栈
+            "csrwr $sp, {CSR_SAVE0}", // 交换二者的值
+            // 7. 返回用户态
+            "ertn",
+            CSR_SAVE0 = const 0x30,
+            CSR_PRMD = const 0x1,
+            CSR_ERA = const 0x6,
+            CSR_EENTRY = const 0xc,
+            TRAP_CONTEXT_SIZE = const TRAP_CONTEXT_SIZE,
+            REGS_OFFSET = const REGS_OFFSET,
+            STATUS_OFFSET = const STATUS_OFFSET,
+            RET_PC_OFFSET = const RET_PC_OFFSET,
         );
     });
 }

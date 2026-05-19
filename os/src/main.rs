@@ -25,6 +25,9 @@
 #![feature(const_type_name)]
 #![feature(offset_of_enum)]
 #![feature(const_result_unwrap_unchecked)]
+#![feature(forget_unsized)]
+#![feature(const_convert)]
+#![feature(const_trait_impl)]
 //
 #![deny(unused_must_use)]
 
@@ -55,8 +58,10 @@ use crate::memory::address::PhysAddr;
 use crate::memory::address::VirtAddr;
 use crate::memory::frame_allocator;
 use crate::memory::page_meta::PAGE_METADATAS;
+use crate::multitask::current_task;
 use crate::multitask::task::Task;
 use crate::multitask::task::TaskArc;
+use crate::multitask::task_context::switch_context;
 
 mod basic;
 mod devices;
@@ -331,7 +336,12 @@ pub extern "C" fn main(_: usize, dtb: PhysAddr) -> ! {
             .open(rv.1, vfs::FileFlags::Read)
             .unwrap();
 
-    Task::execute_init(multitask::SchedulePolicy::FIFO, 50, file, ROOT_PATH.clone());
+    Task::execute_init(
+        multitask::SchedulePolicy::RoundRobin,
+        50,
+        file,
+        ROOT_PATH.clone(),
+    );
 }
 
 fn clear_bss() {
@@ -344,153 +354,3 @@ fn clear_bss() {
 
     unsafe { volatile_set_memory(sbss, 0, ebss.offset_from_unsigned(sbss)) };
 }
-
-// FIXME：temp
-const OFFSET: usize = cfg_select! {
-    target_arch = "riscv64" =>     0xffffffc000000000,
-    target_arch = "loongarch64" => 0x1000000000000000,
-};
-
-// FIXME: temp
-fn run_program(task: TaskArc) {
-    panic!()
-    /*
-    let task = unsafe { task.into_asm().as_ref_unchecked() };
-
-    if core::ptr::eq(task, current_task()) {
-        // 仍然切换到当前任务，直接返回即可。
-        // 注意这不仅是优化，也是正确性所必需的：下面的 switch_context 分支无法处理这种情况。
-        return;
-    }
-
-    let mut ent = task.entry.write();
-    if let Some(entry) = *ent {
-        *ent = None;
-        drop(ent);
-        cfg_select! {
-            target_arch = "riscv64" => unsafe {
-                use riscv::register::sstatus;
-                sstatus::set_spp(sstatus::SPP::User);
-
-                asm!(
-                    "csrw stvec, {trap_handler_raw_from_user}",
-                    trap_handler_raw_from_user = in(reg) trap::trap_handler::trap_handler_raw_from_user,
-                );
-            },
-            target_arch = "loongarch64" => unsafe {
-                use bit_field::BitField;
-
-                let mut prmd: usize;
-                asm!("csrrd {0}, 0x0", out(reg) prmd); // CRMD
-                prmd.set_bits(0..2, 3);
-                prmd.set_bit(2, true);
-                asm!("csrwr {0}, 0x1", in(reg) prmd);
-
-                asm!(
-                    "csrwr {trap_handler_raw_from_user}, 0xc",
-                    trap_handler_raw_from_user = in(reg) trap::trap_handler::trap_handler_raw_from_user,
-                );
-            },
-        }
-
-        // 注意这个不能写进下面的函数调用，否则神必的 Rust 编译器不会析构 ref
-        let page_table_reg = task
-            .address_space
-            .read()
-            .get_page_table()
-            .to_native_register();
-
-        save_current_and_run(
-            entry - OFFSET,
-            task.ustack,
-            task.kstack.get_addr(),
-            page_table_reg,
-        );
-    } else {
-        drop(ent);
-        unsafe { switch_context(task.get_context().as_ref_unchecked()) };
-    }
-    */
-}
-/*
-#[unsafe(naked)]
-extern "C" fn save_current_and_run(
-    entry: usize,
-    stack: usize,
-    kstack: usize,
-    page_table_reg: usize,
-) {
-    use core::mem::offset_of;
-    use seq_macro::seq;
-
-    const TASK_CONTEXT_SIZE: usize = size_of::<TaskContext>();
-    const RA_OFFSET: usize = offset_of!(TaskContext, return_address);
-    const TASK_ADDR_OFFSET: usize = offset_of!(TaskContext, task_pointer);
-    const SP_OFFSET: usize = offset_of!(TaskContext, stack_pointer);
-    const PAGE_TABLE_OFFSET: usize = offset_of!(TaskContext, page_table_register);
-    const REGS_OFFSET: usize = offset_of!(TaskContext, callee_saved_registers);
-
-    const KSTACK_OFFSET_IN_TASK: usize = offset_of!(crate::multitask::task::Task, kstack);
-
-    cfg_select! {
-        target_arch = "riscv64" => seq!(N in 0..=11 { naked_asm!(
-            // 1. 在当前内核栈上分配一块空间，用于存储当前上下文
-            "addi sp, sp, -{TASK_CONTEXT_SIZE}",
-            // 2. 保存当前上下文（ra、tp、sp、satp、s0~s11）
-            "sd ra, {RA_OFFSET}(sp)",
-            "sd tp, {TASK_ADDR_OFFSET}(sp)",
-            "sd sp, {SP_OFFSET}(sp)",
-            "csrr t0, satp",
-            "sd t0, {PAGE_TABLE_OFFSET}(sp)",
-            #(
-                concat!("sd s", N, ", ", N, "*8+{REGS_OFFSET}(sp)"),
-            )*
-            // 3. 更新当前 Task 结构体的内核栈顶指针
-            "sd sp, {KSTACK_OFFSET_IN_TASK}(tp)",
-
-            "csrw sscratch, a1",
-            "csrw sepc, a0",
-            "csrrw sp, sscratch, a2",
-            "csrw satp, a3",
-            "sfence.vma",
-            "sret",
-            TASK_CONTEXT_SIZE = const TASK_CONTEXT_SIZE,
-            RA_OFFSET = const RA_OFFSET,
-            SP_OFFSET = const SP_OFFSET,
-            PAGE_TABLE_OFFSET = const PAGE_TABLE_OFFSET,
-            REGS_OFFSET = const REGS_OFFSET,
-            TASK_ADDR_OFFSET = const TASK_ADDR_OFFSET,
-            KSTACK_OFFSET_IN_TASK = const KSTACK_OFFSET_IN_TASK,
-        )}),
-        target_arch = "loongarch64" => seq!(N in 0..=8 { naked_asm!(
-            // 1. 在当前内核栈上分配一块空间，用于存储当前上下文
-            "addi.d $sp, $sp, -{TASK_CONTEXT_SIZE}",
-            // 2. 保存当前上下文（$ra、$tp、$sp、PGDL、$s0~$s8）
-            "st.d $ra, $sp, {RA_OFFSET}",
-            "st.d $tp, $sp, {TASK_ADDR_OFFSET}",
-            "st.d $sp, $sp, {SP_OFFSET}",
-            "csrrd $t0, 0x19",
-            "st.d $t0, $sp, {PAGE_TABLE_OFFSET}",
-            #(
-                concat!("st.d $s", N, ", $sp, ", N, "*8+{REGS_OFFSET}"),
-            )*
-            // 3. 更新当前 Task 结构体的内核栈顶指针
-            "st.d $sp, $tp, {KSTACK_OFFSET_IN_TASK}",
-
-            "csrwr $a0, 0x6",
-            "csrwr $a2, 0x30",
-            "csrwr $a3, 0x19",
-            "invtlb 0x0, $zero, $zero",
-            "move $sp, $a1",
-            "ertn",
-            TASK_CONTEXT_SIZE = const TASK_CONTEXT_SIZE,
-            RA_OFFSET = const RA_OFFSET,
-            SP_OFFSET = const SP_OFFSET,
-            PAGE_TABLE_OFFSET = const PAGE_TABLE_OFFSET,
-            REGS_OFFSET = const REGS_OFFSET,
-            TASK_ADDR_OFFSET = const TASK_ADDR_OFFSET,
-            KSTACK_OFFSET_IN_TASK = const KSTACK_OFFSET_IN_TASK,
-        )}),
-    }
-}
-*/

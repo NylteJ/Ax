@@ -6,7 +6,7 @@ use crate::{
     },
     memory::uaccess::copy_from_user,
     multitask::{current_task, task::TaskArc, task_scheduler::TASK_SCHEDULER},
-    print, println, run_program,
+    print, println,
 };
 
 /// * 功能：触发进程终止，无返回值；
@@ -21,7 +21,7 @@ pub extern "C" fn exit(ec: isize) -> ! {
 
     let cur = current_task();
 
-    let Some(next_task) = TASK_SCHEDULER.write().pick_next() else {
+    let Some(next_task) = TASK_SCHEDULER.lock().pick_next() else {
         println!("所有用户程序运行完毕，关机");
         cleanup_and_shutdown();
     };
@@ -30,19 +30,19 @@ pub extern "C" fn exit(ec: isize) -> ! {
     // 导致清理任务出现各种问题。不关机时因为下一步就是 run_program，它不进行内存分配，所以没问题
     unsafe { TaskArc::drop_asm(cur) };
 
-    run_program(next_task);
+    next_task.switch_to();
     unreachable!();
 }
 
 pub extern "C" fn yield_() -> isize {
     println!("[Kernel] Application yielded.");
 
-    let mut scheduler = TASK_SCHEDULER.write();
+    let mut scheduler = TASK_SCHEDULER.lock();
     let cur = current_task();
     scheduler.add_task(unsafe { TaskArc::from_asm(cur) });
     let next_task = scheduler.pick_next().unwrap();
     drop(scheduler);
-    run_program(next_task);
+    next_task.switch_to();
 
     0
 }

@@ -80,7 +80,7 @@ bitflags! {
 }
 
 #[cfg(target_arch = "loongarch64")]
-impl From<PTEFlagsNative> for PTEFlags {
+impl const From<PTEFlagsNative> for PTEFlags {
     fn from(value: PTEFlagsNative) -> Self {
         const MASK: usize = PTEFlagsNative::NRead.bits() | PTEFlagsNative::NExecute.bits();
         Self::from_bits_retain(value.bits() ^ MASK)
@@ -88,7 +88,7 @@ impl From<PTEFlagsNative> for PTEFlags {
 }
 
 #[cfg(target_arch = "loongarch64")]
-impl From<PTEFlags> for PTEFlagsNative {
+impl const From<PTEFlags> for PTEFlagsNative {
     fn from(value: PTEFlags) -> Self {
         const MASK: usize = PTEFlagsNative::NRead.bits() | PTEFlagsNative::NExecute.bits();
         Self::from_bits_retain(value.bits() ^ MASK)

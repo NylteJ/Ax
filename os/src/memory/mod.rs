@@ -49,6 +49,8 @@ const MEMORY_SIZE: usize = 0x30000000;
 
 const MEMORY_END: usize = MEMORY_START + MEMORY_SIZE;
 
+pub const STACK_ALIGN: usize = 16;
+
 #[repr(C)]
 #[repr(align(4096))]
 pub struct Page([u8; PAGE_BYTES]);

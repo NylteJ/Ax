@@ -188,14 +188,14 @@ impl PageTable<2> {
         Self::get_ptr(self.as_usize_array(), index).map(|ptr| unsafe { ptr.as_ref_unchecked() })
     }
     pub fn at_mut<'a, const LEVEL: usize>(
-        self: Pin<&'a mut Self>,
+        self: &'a mut Pin<Box<Self>>,
         index: VirtPageNum<LEVEL>,
     ) -> Option<&'a mut PageTableEntry<LEVEL>> {
         Self::get_ptr(self.as_usize_array(), index)
             .map(|ptr| unsafe { (ptr as *mut PageTableEntry<LEVEL>).as_mut_unchecked() })
     }
 
-    pub fn get_ptr<const LEVEL: usize>(
+    fn get_ptr<const LEVEL: usize>(
         mut page_table: &[usize; 512],
         index: VirtPageNum<LEVEL>,
     ) -> Option<*const PageTableEntry<LEVEL>> {
@@ -229,6 +229,94 @@ impl PageTable<2> {
         }
 
         None
+    }
+
+    /// 将所有用户态次级页表递归性地深拷贝，浅拷贝所有页表项（会增加底层 PageMetaGuard 的引用计数），同时将所有非只读页表项改为只读
+    /// 支持大页，自动忽略无效项
+    ///
+    /// 对于内核态映射，双方的都不会改变
+    pub fn clone_cow(self: &mut Pin<Box<Self>>) -> Pin<Box<Self>> {
+        let this = unsafe { self.as_mut().get_unchecked_mut() };
+
+        let mut ret = Self::new_table();
+        let table = unsafe { ret.as_mut().get_unchecked_mut() };
+
+        const NO_WRITE: usize = !PTEFlagsNative::from(PTEFlags::Write).bits();
+
+        for (idx, entry) in this.frames[..256].iter_mut().enumerate() {
+            let flags_native = PTEFlagsNative::from_bits_truncate(entry.bits);
+            let flags: PTEFlags = flags_native.into();
+            if !flags.contains(PTEFlags::Valid) {
+                continue;
+            }
+
+            if flags.intersects(PTEFlags::Read | PTEFlags::Write | PTEFlags::Execute) {
+                // 大页
+                entry.bits &= NO_WRITE;
+                table.frames[idx] = *entry;
+                todo!();
+            } else {
+                // 下一级页表
+                let next_table = PageTable::<1>::new();
+
+                let pte = next_table.to_entry(flags);
+
+                table.frames[idx] = pte;
+
+                let ret_next_table = unsafe { next_table.into_asm().as_mut_unchecked() };
+
+                let phys_page = PhysPageNum::<0>::from_pte(&PageTableEntry { bits: entry.bits });
+                let phys_addr = PhysAddr::from(phys_page);
+                let vaddr = phys_addr.to_virtual_address();
+                let my_next_table =
+                    unsafe { vaddr.as_mut_ptr::<PageTable<1>>().as_mut_unchecked() };
+
+                for (idx, entry) in my_next_table.frames.iter_mut().enumerate() {
+                    let flags_native = PTEFlagsNative::from_bits_truncate(entry.bits);
+                    let flags: PTEFlags = flags_native.into();
+                    if !flags.contains(PTEFlags::Valid) {
+                        continue;
+                    }
+
+                    if flags.intersects(PTEFlags::Read | PTEFlags::Write | PTEFlags::Execute) {
+                        // 大页
+                        entry.bits &= NO_WRITE;
+                        ret_next_table.frames[idx] = *entry;
+                        todo!();
+                    } else {
+                        // 下一级（也是最后一级）页表
+                        let next_table = PageTable::<0>::new();
+
+                        let pte = next_table.to_entry(flags);
+
+                        ret_next_table.frames[idx] = pte;
+
+                        let ret_next_table = unsafe { next_table.into_asm().as_mut_unchecked() };
+
+                        let phys_page =
+                            PhysPageNum::<0>::from_pte(&PageTableEntry { bits: entry.bits });
+                        let phys_addr = PhysAddr::from(phys_page);
+                        let vaddr = phys_addr.to_virtual_address();
+                        let my_next_table =
+                            unsafe { vaddr.as_mut_ptr::<PageTable<0>>().as_mut_unchecked() };
+
+                        for (idx, entry) in my_next_table.frames.iter_mut().enumerate() {
+                            let flags_native = PTEFlagsNative::from_bits_truncate(entry.bits);
+                            let flags: PTEFlags = flags_native.into();
+                            if !flags.contains(PTEFlags::Valid) {
+                                continue;
+                            }
+
+                            entry.bits &= NO_WRITE;
+                            ret_next_table.frames[idx] = *entry;
+                            unsafe { PageMetaGuard::clone_asm(PhysPageNum::<0>::from_pte(entry)) };
+                        }
+                    }
+                }
+            }
+        }
+
+        ret
     }
 
     /// 取消映射 `[start, end)` 范围内的页表项，支持大页，自动忽略无效项
@@ -383,16 +471,14 @@ unsafe fn unmap_page_table_range(
             let next_table = vaddr as *mut [usize; PAGE_TABLE_SIZE];
             let next_table = unsafe { next_table.as_mut_unchecked() };
 
-            let start = if index == start_head {
-                start
-            } else {
-                index << PAGE_SHIFTS[level]
-            };
-            let end = if index == end_head {
-                end
-            } else {
-                index << PAGE_SHIFTS[level] + tail_max
-            };
+            let start =
+                (index << PAGE_SHIFTS[level]) + if index == start_head { start_tail } else { 0 };
+            let end = (index << PAGE_SHIFTS[level])
+                + if index == end_head {
+                    end_tail
+                } else {
+                    tail_max
+                };
 
             unsafe { unmap_page_table_range(next_table, start, end, level - 1) };
 

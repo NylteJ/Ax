@@ -6,9 +6,9 @@ use crate::{
     basic::shared_with_asm::SharedWithAsm,
     memory::{
         ZERO_PAGE,
-        address::{PhysAddr, PhysPageNum, VirtAddr, VirtPageNum},
+        address::{PhysPageNum, VirtAddr, VirtPageNum},
         frame_allocator::FRAME_ALLOCATOR,
-        page::{PTEFlags, PageTableEntry},
+        page::{PTEFlags, PTEFlagsNative, PageTableEntry},
         page_meta::{self, PAGE_METADATAS, PageMetaGuard},
         page_table::{PageTable, PageTableBox},
         virtual_memory_area::{VMAFlags, VMAGrowth, VMAType, VirtualMemoryArea},
@@ -242,47 +242,63 @@ impl AddressSpace {
 
                     self.page_table.map(virt_page_num, ppn, page_flag).unwrap();
                 } else {
-                    // TODO: 为唯一引用时写时复制可以不用复制
-                    let physical_memory =
-                        PhysPageNum(FRAME_ALLOCATOR.lock().alloc(1).expect("无法分配物理页"));
+                    let mut old_entry = self.page_table.at_mut(virt_page_num);
 
-                    let page_guard = unsafe {
-                        PAGE_METADATAS
-                            .mark_new_page(physical_memory, page_meta::PageType::Anonymous)
-                    };
+                    if let Some(old_entry) = &mut old_entry
+                        && let old_guard =
+                            unsafe { PageMetaGuard::from_asm(PhysPageNum::from_pte(old_entry)) }
+                        && old_guard.is_unique_ref()
+                    {
+                        // 写时复制优化：如果原来映射的页只有这一处引用，那么直接修改页权限，无需复制
+                        log::trace!("写时复制优化: {:#x}", PhysPageNum::from_pte(old_entry).0);
+                        unsafe { old_guard.into_asm() };
+                        old_entry.bits |= PTEFlagsNative::from(PTEFlags::Write).bits();
+                    } else {
+                        // 否则，需要分配一个新页、复制其内容并将其插入到页表中
+                        let physical_memory =
+                            PhysPageNum(FRAME_ALLOCATOR.lock().alloc(1).expect("无法分配物理页"));
 
-                    // 对于匿名映射，需要清零内容
-                    let memory = unsafe { page_guard.visit_memory_mut() };
-                    unsafe { volatile_set_memory(memory.as_mut_ptr(), 0, memory.len()) };
+                        let page_guard = unsafe {
+                            PAGE_METADATAS
+                                .mark_new_page(physical_memory, page_meta::PageType::Anonymous)
+                        };
 
-                    let asm_handle = unsafe { page_guard.into_asm() };
-                    debug_assert!(asm_handle == physical_memory);
+                        let memory = unsafe { page_guard.visit_memory_mut() };
 
-                    self.page_table
-                        .map(virt_page_num, physical_memory, page_flag)
-                        .unwrap_or_else(|old_entry| {
-                            // 写时复制
-                            debug_assert_eq!(fault_type, PageFaultType::Write);
-                            debug_assert!(!old_entry.flags().contains(PTEFlags::Write));
-                            debug_assert_eq!(
-                                PhysAddr::from(PhysPageNum::from_pte(old_entry))
-                                    .to_virtual_address(),
-                                VirtAddr::from_ptr(&ZERO_PAGE)
-                            );
+                        if let Some(old_entry) = &mut old_entry
+                            && let old_pte = PhysPageNum::from_pte(old_entry)
+                            && old_pte
+                                != VirtAddr::from_ptr(&ZERO_PAGE).to_physical_address().into()
+                        {
+                            // 此时不能笃定复制是否等价于清零，只能老老实实复制
+                            let guard = unsafe { PageMetaGuard::from_asm(old_pte) };
+                            unsafe { memory.copy_from_slice(guard.visit_memory()) };
+                            log::trace!("COW, {:#x} => {:#x}", old_pte.0, physical_memory.0);
+                            unsafe { guard.into_asm() }; // 此时上面那个 if 已经将所有权转移了，我们这里不能再释放一次（FIXME）
+                        } else {
+                            // 复制等价于清零，此时清零往往更快
+                            unsafe { volatile_set_memory(memory.as_mut_ptr(), 0, memory.len()) };
+                            log::trace!("zeroed, {:#x}", physical_memory.0);
+                        }
 
+                        if let Some(old_entry) = old_entry {
                             *old_entry = PageTableEntry::new(
                                 physical_memory,
                                 old_entry.flags() | PTEFlags::Write,
                             );
-
-                            // 没有必要释放旧页，反正它总是全局零页
-                        });
+                        } else {
+                            self.page_table
+                                .map(virt_page_num, physical_memory, page_flag)
+                                .unwrap();
+                        }
+                        unsafe { page_guard.into_asm() }; // 交出对新页的引用，交给页表管理
+                    }
                 }
             }
             VMAType::File { file, page_index } => 'handle: {
                 if !vma.flags.contains(VMAFlags::Shared) {
                     // 私有映射
-                    let old_entry = self.page_table.as_mut().at_mut(virt_page_num);
+                    let old_entry = self.page_table.at_mut(virt_page_num);
 
                     if let Some(old_entry) = old_entry {
                         // 写时复制
@@ -371,6 +387,20 @@ impl AddressSpace {
         }
 
         Ok(())
+    }
+
+    /// 将当前地址空间复制一份，并将两个地址空间都改为写时复制。
+    ///
+    /// 地址空间元数据的复制本身是深拷贝，但底层所有物理页都是浅拷贝。
+    ///
+    /// 注意此函数很可能需要紧跟 TLB 刷新
+    pub fn clone_cow(&mut self) -> Self {
+        let page_table = self.page_table.clone_cow();
+
+        Self {
+            vmas: self.vmas.clone(),
+            page_table,
+        }
     }
 
     /// 寻找第一个完全位于给定地址之后（.start > addr）的 VMA 索引

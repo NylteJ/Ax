@@ -19,7 +19,7 @@ static_assertions::const_assert!(
     REALTIME_PRIORITY_COUNT + NORMAL_PRIORITY_COUNT <= (1 << TaskPriority::BITS) as usize
 );
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SchedulePolicy {
     // 实时
     FIFO,

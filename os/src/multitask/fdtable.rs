@@ -5,6 +5,10 @@ use bitvec::prelude::*;
 
 use crate::filesystem::vfs::FileArc;
 
+/// 文件描述符表，管理一个任务的所有文件描述符
+///
+/// 其克隆操作是浅拷贝，双方仍共享同一批 File
+#[derive(Clone)]
 pub struct FileDescriptorTable {
     entries: Vec<Option<FileArc>>,
     free: Vec<usize>,

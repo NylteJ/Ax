@@ -1,4 +1,4 @@
-use core::{marker::PhantomPinned, ops::Deref, pin::Pin};
+use core::{marker::PhantomPinned, mem::offset_of, ops::Deref, pin::Pin, ptr::addr_eq};
 
 use alloc::sync::{Arc, UniqueArc};
 use elf::{ElfBytes, endian::NativeEndian};
@@ -7,20 +7,21 @@ use crate::{
     basic::{shared_with_asm::SharedWithAsm, stack::TaskKernelStackPtr, sync::RwLock},
     filesystem::vfs::{File, FileArc, Path},
     memory::{
-        PAGE_BYTES,
+        PAGE_BYTES, STACK_ALIGN,
         address::{VIRTUAL_ADDRESS_LOW_HIGHEST, VirtAddr},
         address_space::AddressSpace,
         uaccess::fill_user_memory,
         virtual_memory_area::{VMAFlags, VMAGrowth, VMAType, VirtualMemoryArea},
     },
     multitask::{
-        SchedulePolicy, TaskPriority,
+        SchedulePolicy, TaskPriority, current_task,
         fdtable::FileDescriptorTable,
         fs_data::FilesystemData,
-        task_context::TaskContext,
+        task_context::{TaskContext, switch_context},
         task_manager::{PID_ALLOCATOR, register_task},
+        task_scheduler::TASK_SCHEDULER,
     },
-    trap::trap_handler::trap_handler_raw_from_user,
+    trap::trap_handler::{TrapContext, return_to_user, trap_handler_raw_from_user},
 };
 
 /// 当前任务的所有元数据。拥有任务所有资源的所有权。
@@ -40,7 +41,6 @@ pub struct Task {
 
     pub address_space: Arc<RwLock<AddressSpace>>,
 
-    // pub exe_file: Pin<Arc<File>>,
     pub files: Arc<RwLock<FileDescriptorTable>>,
     pub fs_data: Arc<RwLock<FilesystemData>>,
 
@@ -72,7 +72,7 @@ impl Task {
         assert!(success, "必须能够为 init 进程分配 PID {INIT_PID}");
 
         let (kstack, task_ptr_ptr) = Self::alloc_kstack();
-        let kstack_sp = task_ptr_ptr as usize;
+        let kstack_sp = (task_ptr_ptr as usize) / STACK_ALIGN * STACK_ALIGN;
 
         let mut address_space = Self::new_addr_space();
 
@@ -159,6 +159,91 @@ impl Task {
         }
     }
 
+    /// 复制一份当前任务，并将其添加到调度器中，返回新任务。
+    ///
+    /// 注意此函数在内核端就是普通函数，返回用户态后新任务才可能被执行。
+    pub fn fork(&self) -> TaskArc {
+        // 对于内核栈，必须分配新的
+        let (_kstack, task_ptr_ptr) = Self::alloc_kstack();
+        let kstack_sp = (task_ptr_ptr as usize) / STACK_ALIGN * STACK_ALIGN;
+        // 而且必须压入完全一致的 TrapContext 并伪造 TaskContext
+        let ret_trap_ctxt_ptr = (kstack_sp - size_of::<TrapContext>()) as *mut TrapContext;
+        unsafe { ret_trap_ctxt_ptr.write(self.get_trap_context().read()) };
+        let ret_task_ctxt_ptr =
+            (ret_trap_ctxt_ptr.addr() - size_of::<TaskContext>()) as *mut TaskContext;
+        let kstack_sp = ret_task_ctxt_ptr as usize;
+        unsafe {
+            ret_task_ctxt_ptr
+                .byte_add(offset_of!(TaskContext, return_address))
+                .cast::<usize>()
+                .write(return_to_user as usize);
+            ret_task_ctxt_ptr
+                .byte_add(offset_of!(TaskContext, stack_pointer))
+                .cast::<usize>()
+                .write(kstack_sp);
+
+            // 我们还需要初始化 page_table_register，这个需要在后面写入
+
+            // 剩余部分保持未初始化即可，它们完全不重要
+        }
+        // 于是相对应的，kstack 也要改变，以伪造出该 Task 已经挂起的场景
+        let kstack = unsafe { TaskKernelStackPtr::from_addr(kstack_sp) };
+
+        // PID 也要分配新的
+        let pid = PID_ALLOCATOR
+            .lock()
+            .allocate()
+            .expect("必须要能为新任务分配 PID（TODO）");
+
+        // 这两个直接复制即可
+        let policy = self.policy;
+        let priority = self.priority;
+
+        // 地址空间需要复制一份，并将所有页设为写时复制
+        let address_space = Arc::new(RwLock::new(self.address_space.write().clone_cow()));
+        // 由于所有页被设为了写时复制，本进程的页表很可能也已经改变，因此需要刷新 TLB
+        cfg_select! {
+            target_arch = "riscv64" => riscv::asm::sfence_vma_all(),
+            target_arch = "loongarch64" => unsafe { core::arch::asm!("invtlb 0x0, $zero, $zero") },
+        }
+
+        // 写入之前没写入的 page_table_register
+        unsafe {
+            ret_task_ctxt_ptr
+                .byte_add(offset_of!(TaskContext, page_table_register))
+                .cast::<usize>()
+                .write(address_space.read().get_page_table().to_native_register());
+        }
+
+        // 这两个都可以直接浅拷贝
+        let files = Arc::new(RwLock::new(self.files.read().clone()));
+        let fs_data = Arc::new(RwLock::new(self.fs_data.read().clone()));
+
+        let ret = Arc::pin(Self {
+            kstack,
+            pid,
+
+            policy,
+            priority,
+
+            address_space,
+            files,
+            fs_data,
+
+            _pin: PhantomPinned,
+        });
+
+        unsafe { task_ptr_ptr.write(ret.deref()) };
+
+        register_task(ret.clone());
+
+        TASK_SCHEDULER.lock().add_task(ret.clone());
+
+        log::trace!("forked: {} => {pid}", self.pid);
+
+        ret
+    }
+
     pub unsafe fn set_current_task(task_ptr: *const Task) {
         use core::arch::asm;
 
@@ -166,6 +251,21 @@ impl Task {
             target_arch = "riscv64" =>     unsafe { asm!("mv    tp, {0}", in(reg) task_ptr) },
             target_arch = "loongarch64" => unsafe { asm!("move $tp, {0}", in(reg) task_ptr) },
         }
+    }
+
+    /// 暂时切换到此任务。
+    ///
+    /// 通常情况下（当前任务还在调度器中），此调用迟早会正常返回，但当前任务的确可能要在很久以后才能被调度到，因此请尽可能释放不必要的资源
+    pub fn switch_to(self: TaskArc) {
+        if addr_eq(self.deref(), current_task()) {
+            // 仍然切换到当前任务，直接返回即可。
+            // 注意这不仅是优化，也是正确性所必需的：下面的 switch_context 无法处理这种情况。
+            return;
+        }
+
+        let context = self.get_context();
+        unsafe { self.into_asm() };
+        unsafe { switch_context(context.as_ref_unchecked()) };
     }
 
     fn alloc_kstack() -> (TaskKernelStackPtr, *mut *const Task) {
@@ -342,6 +442,15 @@ impl Task {
     /// 此函数本身安全，但当前任务不处于挂起状态时其返回值不能被安全使用
     pub fn get_context(&self) -> *const TaskContext {
         self.kstack.get_addr() as _
+    }
+    /// 获取 TrapContext
+    ///
+    /// # Safety
+    /// 此函数本身安全，但当前任务不处于内核态时其返回值不能被安全使用
+    pub fn get_trap_context(&self) -> *const TrapContext {
+        let misaligned_top = self.kstack.get_high_addr() - size_of::<*const TaskContext>();
+        let top = misaligned_top / STACK_ALIGN * STACK_ALIGN;
+        (top - size_of::<TrapContext>()) as *const TrapContext
     }
 }
 

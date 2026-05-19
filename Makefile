@@ -144,13 +144,16 @@ LA_QEMU_CMD_BASE := \
 # 		-drive file=disk-la.img,if=none,format=raw,id=x1 \
 # 		-device virtio-blk-pci,drive=x1,bus=virtio-mmio-bus.1 \
 
-DOCKER_ARGS_BASE := --rm -v .:/repo -p 1234:1234 zhouzhouyi/os-contest:20260104
+WINDOWS_TERMINAL_PATH ?= /mnt/d/Downloads/Chrome/terminal-1.22.11751.0/wt.exe
+
+DOCKER_ARGS_BASE := -it --rm -v .:/repo -p 1234:1234 zhouzhouyi/os-contest:20260104
 
 .PHONY: debug-rv
 debug-rv:
 	@{ \
 		$(MAKE) rv MODE=debug || exit 1; \
-		docker run -d $(DOCKER_ARGS_BASE) $(RV_QEMU_CMD_BASE) -s -S; \
+		$(WINDOWS_TERMINAL_PATH) --profile "Ubuntu" -- bash -c "cd ~/OSKernel2026/repo && docker run $(DOCKER_ARGS_BASE) $(RV_QEMU_CMD_BASE) -s -S"; \
+		sleep 2; \
 		gdb-multiarch -ex "file ./kernel-rv" -ex "set arch riscv:rv64" -ex "target remote localhost:1234" -ex "tb *0x80200000" -ex "c" -ex "tui enable" -ex "layout split"; \
 		docker stop $$(docker ps -q); \
 		echo "调试完成，所有容器已终止"; \
@@ -159,8 +162,8 @@ debug-rv:
 debug-la:
 	@{ \
 		$(MAKE) la MODE=debug || exit 1; \
-		docker run -d $(DOCKER_ARGS_BASE) $(LA_QEMU_CMD_BASE) -s -S; \
-		sleep 0.1; \
+		$(WINDOWS_TERMINAL_PATH) --profile "Ubuntu" -- bash -c "cd ~/OSKernel2026/repo && docker run $(DOCKER_ARGS_BASE) $(LA_QEMU_CMD_BASE) -s -S"; \
+		sleep 2; \
 		~/OSKernel2026/cross-tools/bin/loongarch64-unknown-linux-gnu-gdb -ex "file ./kernel-la" -ex "target remote localhost:1234"; \
 		docker stop $$(docker ps -q); \
 		echo "调试完成，所有容器已终止"; \
@@ -169,12 +172,12 @@ debug-la:
 .PHONY: run-rv
 run-rv: rv
 	@{ \
-		docker run -it $(DOCKER_ARGS_BASE) $(RV_QEMU_CMD_BASE); \
+		docker run $(DOCKER_ARGS_BASE) $(RV_QEMU_CMD_BASE); \
 	}
 .PHONY: run-la
 run-la: la
 	@{ \
-		docker run -it $(DOCKER_ARGS_BASE) $(LA_QEMU_CMD_BASE); \
+		docker run $(DOCKER_ARGS_BASE) $(LA_QEMU_CMD_BASE); \
 	}
 
 .PHONY: clippy-rv

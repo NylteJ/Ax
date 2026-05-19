@@ -5,6 +5,7 @@ use seq_macro::seq;
 
 #[repr(C)]
 #[repr(align(16))] // 上下文须压栈，而 RISC-V 64 和 LoongArch 64 都要求栈按 16 字节对齐
+#[derive(Debug)]
 pub struct TaskContext {
     pub return_address: usize,
     pub task_pointer: usize, // Task 结构体的地址

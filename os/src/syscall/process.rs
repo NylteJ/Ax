@@ -11,8 +11,19 @@ use core::ffi::{c_char, c_int};
 /// ```c
 /// pid_t ret = syscall(SYS_clone, flags, stack, ptid, tls, ctid)
 /// ```
-pub extern "C" fn clone(flags: usize, stack: usize, ptid: usize, tls: usize, ctid: usize) -> isize {
-    -1
+pub extern "C" fn clone(
+    flags: usize,
+    stack: usize,
+    ptid: usize,
+    tls: usize,
+    ctid: usize,
+) -> SyscallResult {
+    log::error!("TODO: 处理 clone 的参数");
+    let task = unsafe { current_task().as_ref_unchecked() };
+
+    task.fork();
+
+    SyscallResult::success(0)
 }
 
 /// * 功能：执行一个指定的程序；
@@ -46,6 +57,8 @@ pub extern "C" fn execve(
 pub extern "C" fn wait4(pid: isize, status: *mut c_int, options: usize) -> isize {
     -1
 }
+
+use crate::{multitask::current_task, syscall::SyscallResult};
 
 pub use super::basic::exit;
 
