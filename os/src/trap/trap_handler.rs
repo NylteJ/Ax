@@ -33,6 +33,13 @@ pub struct TrapContext {
     pub ret_pc: usize,          // 用户态 PC，即返回后执行的第一条指令
 }
 
+impl TrapContext {
+    pub const STACK_POINTER: usize = cfg_select! {
+        target_arch = "riscv64" => 1, // x2
+        target_arch = "loongarch64" => 2, // $r3
+    };
+}
+
 #[unsafe(no_mangle)]
 extern "C" fn trap_handler(context: &mut TrapContext) {
     match Trap::new() {

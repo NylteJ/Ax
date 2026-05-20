@@ -92,6 +92,34 @@ static long fork() {
     return ret;
 }
 
+static long execve(const char* path) {
+    long ret;
+
+#ifdef __riscv
+    asm volatile (
+        "li   a7, 221\n"
+        "mv   a0, %1\n"
+        "ecall\n"
+        "mv   %0, a0\n"
+        : "=r"(ret)
+        : "r"(path)
+        : "a0", "a7"
+    );
+#else
+    asm volatile (
+        "li.d   $a7, 221\n"
+        "move   $a0, %1\n"
+        "syscall 0\n"
+        "move   %0, $a0\n"
+        : "=r"(ret)
+        : "r"(path)
+        : "$a0", "$a7"
+    );
+#endif
+
+    return ret;
+}
+
 #define assert(...) static_cast<void>(static_cast<bool>(__VA_ARGS__) || ((print("Assertion failed: " #__VA_ARGS__ "\nPos: " __FILE__ "（行号请见返回值）\n") && (exit(-100000), true)) || (exit(-__LINE__), true)))
 
 long long zeros[16384 + 777];
@@ -133,14 +161,26 @@ extern "C" [[noreturn]] void _start() {
 
     fork();
     fork();
-    const auto last_fork_ret = fork();
-    
+    fork();
+
     for (int i = 0; i < 260; ++i) {
         const char c = i % 26 + ((i / 26) % 2 ? 'a' : 'A');
         print(&c, 1uz);
     }
 
-    exit(last_fork_ret);
+    constexpr auto path =
+#ifdef __riscv
+        "/tmp/../../rv_hlwd"
+#else
+        "/tmp/../../la_hlwd"
+#endif
+    ;
+
+    const auto execve_ret = execve(path);
+    assert(execve_ret != 0);
+    exit(execve_ret);
+    
+    // exit(last_fork_ret);
 }
 
 // 它存在的意义只是给代码段加点东西（也因此不能是 static）

@@ -58,10 +58,7 @@ use crate::memory::address::PhysAddr;
 use crate::memory::address::VirtAddr;
 use crate::memory::frame_allocator;
 use crate::memory::page_meta::PAGE_METADATAS;
-use crate::multitask::current_task;
 use crate::multitask::task::Task;
-use crate::multitask::task::TaskArc;
-use crate::multitask::task_context::switch_context;
 
 mod basic;
 mod devices;

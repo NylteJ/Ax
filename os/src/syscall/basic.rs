@@ -27,7 +27,8 @@ pub extern "C" fn exit(ec: isize) -> ! {
     };
 
     // 注意只在不关机时 drop 当前任务，因为现在使用的页表还是当前任务的页表，drop 掉了其内存就可能被重用，
-    // 导致清理任务出现各种问题。不关机时因为下一步就是 run_program，它不进行内存分配，所以没问题
+    // 导致清理任务出现各种问题。实际上连目前我们所在的内核栈都有可能被重用。
+    // 不关机时 drop 因为下一步就是 switch_to，它不进行内存分配，所以没问题
     unsafe { TaskArc::drop_asm(cur) };
 
     next_task.switch_to();

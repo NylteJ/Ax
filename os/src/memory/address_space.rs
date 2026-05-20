@@ -272,7 +272,7 @@ impl AddressSpace {
                         {
                             // 此时不能笃定复制是否等价于清零，只能老老实实复制
                             let guard = unsafe { PageMetaGuard::from_asm(old_pte) };
-                            unsafe { memory.copy_from_slice(guard.visit_memory()) };
+                            memory.copy_from_slice(guard.visit_memory());
                             log::trace!("COW, {:#x} => {:#x}", old_pte.0, physical_memory.0);
                             unsafe { guard.into_asm() }; // 此时上面那个 if 已经将所有权转移了，我们这里不能再释放一次（FIXME）
                         } else {

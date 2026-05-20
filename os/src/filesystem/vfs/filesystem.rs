@@ -383,8 +383,8 @@ pub fn walk_path(path: PathToWalk) -> VfsResult<WalkedPath> {
             let prev_path = cur_path.walk_step_back();
             log::trace!(
                 "walk_step: {} --prev--> {}",
-                cur_path.0.data.lock().name,
-                prev_path.0.data.lock().name
+                { cur_path.0.data.lock().name.clone() },
+                prev_path.0.data.lock().name,
             );
             return Ok((true, prev_path));
         }
@@ -513,6 +513,16 @@ impl Deref for NPath {
 pub enum PathToWalk<'a> {
     Absolute(&'a ByteStr),
     Relative(&'a ByteStr, Path),
+}
+
+impl<'a> PathToWalk<'a> {
+    pub fn auto(path: &'a ByteStr, get_cur_path: impl FnOnce() -> Path) -> VfsResult<Self> {
+        if *path.first().ok_or(VfsError::FileNotFound)? == b'/' {
+            Ok(Self::Absolute(path))
+        } else {
+            Ok(Self::Relative(path, get_cur_path()))
+        }
+    }
 }
 
 pub trait FileSystemOps: Send + Sync {

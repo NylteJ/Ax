@@ -40,8 +40,28 @@ pub extern "C" fn execve(
     path: *const c_char,
     argv: *const *const c_char,
     envp: *const *const c_char,
-) -> isize {
-    -1
+) -> SyscallResult {
+    let path = copy_str_from_user(path, PATH_LEN_HINT, PATH_LEN_MAX)?;
+
+    let task = unsafe { current_task().as_ref_unchecked() };
+    let path_to_walk = PathToWalk::auto(path.as_ref(), || {
+        task.fs_data.read().current_work_dir.clone()
+    })?;
+
+    let file_path = walk_path(path_to_walk)?.ensure()?;
+
+    let file = file_path
+        .0
+        .data
+        .lock()
+        .ops
+        .open(file_path.1, FileFlags::Read)?;
+
+    log::error!("TODO: argv/envp");
+
+    task.replace_execute(file);
+
+    SyscallResult::success(0)
 }
 
 /// * 功能：等待进程改变状态;
@@ -58,7 +78,15 @@ pub extern "C" fn wait4(pid: isize, status: *mut c_int, options: usize) -> isize
     -1
 }
 
-use crate::{multitask::current_task, syscall::SyscallResult};
+use crate::{
+    filesystem::vfs::{FileFlags, PathToWalk, walk_path},
+    memory::uaccess::copy_str_from_user,
+    multitask::current_task,
+    syscall::{
+        SyscallResult,
+        filesystem::{PATH_LEN_HINT, PATH_LEN_MAX},
+    },
+};
 
 pub use super::basic::exit;
 

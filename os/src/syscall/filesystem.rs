@@ -22,9 +22,9 @@ use crate::{
 
 use crate::syscall::err_codes::*;
 
-const PATH_LEN_HINT: usize = 64;
-const FILENAME_LEN_HINT: usize = 32;
-const PATH_LEN_MAX: usize = 32768;
+pub(super) const PATH_LEN_HINT: usize = 64;
+pub(super) const FILENAME_LEN_HINT: usize = 32;
+pub(super) const PATH_LEN_MAX: usize = 32768;
 
 /// 功能：获取当前工作目录；
 ///
@@ -188,12 +188,9 @@ pub extern "C" fn chdir(path: *const c_char) -> SyscallResult {
 
     let cur_task = unsafe { current_task().as_ref_unchecked() };
 
-    let path_to_walk = if *path.get(0).ok_or(ENOENT)? == b'/' {
-        PathToWalk::Absolute(ByteStr::new(&path))
-    } else {
-        let cwd = cur_task.fs_data.read().current_work_dir.clone();
-        PathToWalk::Relative(ByteStr::new(&path), cwd)
-    };
+    let path_to_walk = PathToWalk::auto(path.as_ref(), || {
+        cur_task.fs_data.read().current_work_dir.clone()
+    })?;
 
     let new_cwd = walk_path(path_to_walk)?.ensure()?;
 

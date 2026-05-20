@@ -1,6 +1,6 @@
 use core::{marker::PhantomPinned, mem::offset_of, ops::Deref, pin::Pin, ptr::addr_eq};
 
-use alloc::sync::{Arc, UniqueArc};
+use alloc::sync::Arc;
 use elf::{ElfBytes, endian::NativeEndian};
 
 use crate::{
@@ -74,10 +74,10 @@ impl Task {
         let (kstack, task_ptr_ptr) = Self::alloc_kstack();
         let kstack_sp = (task_ptr_ptr as usize) / STACK_ALIGN * STACK_ALIGN;
 
-        let mut address_space = Self::new_addr_space();
+        let address_space = Self::new_addr_space();
 
         // 激活用户态页表（必须提前激活，因为后面可能要往用户空间里写一堆东西）
-        address_space.get_mut().get_page_table().activitate();
+        address_space.get_page_table().activitate();
 
         // 先创建一个半成品 task
         let task = Arc::pin(Self {
@@ -87,7 +87,7 @@ impl Task {
             policy,
             priority,
 
-            address_space: UniqueArc::into_arc(address_space),
+            address_space: Arc::new(RwLock::new(address_space)),
             files: Arc::new(RwLock::new(FileDescriptorTable::new())),
 
             // FIXME: 后面应该要改
@@ -244,6 +244,30 @@ impl Task {
         ret
     }
 
+    /// 将当前任务替换为 `file` 对应可执行文件的内容。
+    ///
+    /// 注意此函数在内核端就是普通函数，返回用户态后替换后的任务才可能被执行。
+    pub fn replace_execute(&self, file: FileArc) {
+        // 创建新的地址空间，并替换当前地址空间
+        {
+            let mut my_addr_space = self.address_space.write();
+            *my_addr_space = Self::new_addr_space();
+            my_addr_space.get_page_table().activitate();
+        }
+
+        // 加载 ELF 文件并获取入口地址
+        let entry = Self::load_elf(&file, &self.address_space);
+
+        // 将入口地址和栈指针写入到 TrapContext 中
+        // 特别注意，和前面几个函数不同，我们并没有更换内核栈，因此不需要伪造任何东西，只要修改 ret_pc 和 sp 即可
+        // （剩余寄存器的值并不重要）
+        let trap_context = unsafe { self.get_trap_context().cast_mut().as_mut_unchecked() };
+        trap_context.ret_pc = entry;
+        trap_context.registers[TrapContext::STACK_POINTER] = USER_STACK_HIGHEST;
+
+        // OK，这样就可以了！
+    }
+
     pub unsafe fn set_current_task(task_ptr: *const Task) {
         use core::arch::asm;
 
@@ -286,17 +310,15 @@ impl Task {
     }
 
     /// 分配新的 [`AddressSpace`]，并在其中填充好用户栈区的 VMA
-    fn new_addr_space() -> UniqueArc<RwLock<AddressSpace>> {
-        let mut ret = UniqueArc::new(RwLock::new(AddressSpace::new()));
-
-        let addr_space = ret.get_mut();
+    fn new_addr_space() -> AddressSpace {
+        let mut ret = AddressSpace::new();
 
         const USER_STACK_BYTES: usize = 2048 * PAGE_BYTES;
 
         static_assertions::const_assert!(USER_STACK_BYTES % PAGE_BYTES == 0);
         static_assertions::const_assert!(USER_STACK_BYTES > PAGE_BYTES);
 
-        addr_space.add_vma(VirtualMemoryArea {
+        ret.add_vma(VirtualMemoryArea {
             start: VirtAddr(USER_STACK_HIGHEST - PAGE_BYTES),
             end: VirtAddr(USER_STACK_HIGHEST),
             flags: VMAFlags::Read | VMAFlags::Write | VMAFlags::User,
