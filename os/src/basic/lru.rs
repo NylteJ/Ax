@@ -103,6 +103,7 @@ impl<T: PointeeSized> LruNode<T> {
         let my_prev = lru.prev;
         let my_next = lru.next;
 
+        #[expect(dropping_references)]
         drop(sentinel);
 
         debug_assert!(!my_prev.addr_eq(&LruPtr::dangling()));

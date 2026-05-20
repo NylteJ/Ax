@@ -145,9 +145,7 @@ impl DebugContext {
         )
         .unwrap();
 
-        unsafe {
-            super::sync::OnceInited::init(&self.0, addr2line::Context::from_dwarf(file).unwrap())
-        }
+        super::sync::OnceInited::init(&self.0, addr2line::Context::from_dwarf(file).unwrap())
     }
 }
 

@@ -51,12 +51,12 @@ impl PageCache {
         let page_meta: &PageMeta = page_meta.deref();
         // SAFETY: 由于返回引用的实际生命周期一直延续到最后一个 PageMetaGuard 被 drop，
         // 而我们又引用了 self（因此 xarray 内部的 PageMetaGuard 不能被 drop），这一转换是安全的。
-        Some(unsafe { extend_lifetime::<'a>(page_meta) })
+        Some(unsafe { extend_lifetime(page_meta) })
     }
 
     pub fn insert<'a>(&'a self, page_index: u64, page_meta_guard: PageMetaGuard) -> &'a PageMeta {
         // SAFETY: 见 Self::get
-        let meta_ref = unsafe { extend_lifetime::<'a>(page_meta_guard.deref()) };
+        let meta_ref = unsafe { extend_lifetime(page_meta_guard.deref()) };
 
         self.data.write().pages.store(page_index, page_meta_guard);
 

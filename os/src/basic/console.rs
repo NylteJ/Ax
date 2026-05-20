@@ -1,25 +1,7 @@
 use core::fmt::Write;
 
-use crate::basic::sbi::SbiError;
+use crate::basic::sbi::{SbiError, putchar_ascii};
 use crate::basic::sync::Mutex;
-
-#[derive(Debug)]
-pub enum ConsoleIoError {
-    SbiError(SbiError),
-}
-
-impl From<SbiError> for ConsoleIoError {
-    fn from(sbi_error: SbiError) -> Self {
-        ConsoleIoError::SbiError(sbi_error)
-    }
-}
-
-pub fn print_to_console(text: &str) -> Result<(), ConsoleIoError> {
-    for byte in text.bytes() {
-        crate::basic::sbi::putchar_ascii(byte)?;
-    }
-    Ok(())
-}
 
 pub struct ConsoleWriter;
 
@@ -27,7 +9,10 @@ pub static CONSOLE_WRITER: Mutex<ConsoleWriter> = Mutex::new(ConsoleWriter);
 
 impl Write for ConsoleWriter {
     fn write_str(&mut self, s: &str) -> core::fmt::Result {
-        print_to_console(s).map_err(|_| core::fmt::Error)
+        for byte in s.bytes() {
+            putchar_ascii(byte).map_err(|_| core::fmt::Error)?;
+        }
+        Ok(())
     }
 }
 

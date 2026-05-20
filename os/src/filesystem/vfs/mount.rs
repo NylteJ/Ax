@@ -7,7 +7,6 @@ use core::{
 
 use alloc::sync::{Arc, UniqueArc};
 use intrusive_collections::{LinkedList as IntrusiveLinkedList, LinkedListLink, intrusive_adapter};
-use xarray::ItemEntry;
 
 use crate::{
     basic::{extend_lifetime, extend_lifetime_mut, sync::RwLock},

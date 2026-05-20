@@ -14,7 +14,7 @@ use crate::filesystem::vfs::{
 
 use crate::filesystem::vfs;
 
-pub(super) enum INodeType {
+pub enum INodeType {
     File,
     Directory(Vec<(ByteString, INodeArc)>),
     Symlink(ByteString),

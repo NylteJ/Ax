@@ -1,6 +1,5 @@
 use core::{
     cell::SyncUnsafeCell,
-    hash::Hasher,
     marker::{PhantomData, PhantomPinned},
     mem::{offset_of, replace},
     ops::{Deref, DerefMut},
@@ -68,9 +67,9 @@ impl DEntryLinkedListPtr {
 }
 
 pub struct DEntryLinkedListNode {
-    pub next: DEntryLinkedListPtr,
-    pub prev: DEntryLinkedListPtr,
-    pub _phantom: PhantomPinned,
+    next: DEntryLinkedListPtr,
+    prev: DEntryLinkedListPtr,
+    _phantom: PhantomPinned,
 }
 
 pub struct DEntryData<T: ?Sized + DEntryOps = dyn DEntryOps> {

@@ -89,6 +89,7 @@ impl<T: FileOps + 'static> File<T> {
 
     pub fn from_dyn_mut(this: &mut T) -> &mut File<T> {
         let mut ptr = NonNull::from_ref(Self::from_dyn(this));
+        #[expect(dropping_references)]
         drop(this);
         unsafe { ptr.as_mut() }
     }

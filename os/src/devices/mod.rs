@@ -11,10 +11,6 @@ pub static BLOCK_DEVICES: OnceInited<[&'static dyn BlockDevice; 1]> = OnceInited
 
 #[derive(Debug)]
 pub enum DeviceError {
-    BufferTooSmall,
-    InvalidBlockId,
-    NotYetImplemented,
-
     VirtIOError(virtio_drivers::Error),
 }
 

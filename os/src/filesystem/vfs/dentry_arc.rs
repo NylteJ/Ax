@@ -4,7 +4,7 @@ use alloc::boxed::Box;
 
 use crate::filesystem::vfs::{
     DEntry, DEntryOps,
-    cache::{CachedValue, CachedValueArc, drop_cached_varc},
+    cache::{CachedValueArc, drop_cached_varc},
 };
 
 #[derive(Debug)]

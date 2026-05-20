@@ -704,7 +704,7 @@ pub extern "C" fn mount(
 ///
 /// TODO：最好搞清楚 dev_t 这种类型的具体定义
 #[repr(C)]
-pub(super) struct Kstat {
+pub struct Kstat {
     pub st_dev: u64,
     pub st_ino: u64,
     pub st_mode: u32,
