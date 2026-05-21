@@ -29,6 +29,7 @@ pub struct PageCache {
 }
 
 impl PageCache {
+    /// 初始化新 INode 的页缓存字段。页缓存包含自引用结构，因此不得不这么初始化。
     pub unsafe fn init(inode: &mut INode) {
         let inode_ptr = NonNull::from_mut(inode);
 

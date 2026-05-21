@@ -37,7 +37,7 @@ pub struct FileSystem<T: ?Sized + FileSystemOps = dyn FileSystemOps> {
     pub(super) dcache: RwLock<HashMap<DCacheKey, DCacheArc>>,
     pub(super) icache: RwLock<HashMap<u32, ICacheArc>>,
     pub root_inode: INodeArc,
-    pub init_root_dentry: DEntryArc,
+    pub root_dentry: DEntryArc,
 
     #[debug(skip)]
     pub dlru_sent: Mutex<LruNode<DEntry>>,
@@ -66,7 +66,7 @@ impl<T: FileSystemOps + 'static> FileSystem<T> {
                 dcache: RwLock::new(HashMap::new()),
                 icache: RwLock::new(HashMap::new()),
                 root_inode,
-                init_root_dentry,
+                root_dentry: init_root_dentry,
                 dlru_sent: Mutex::new(LruNode::new_unlinked()),
                 ilru_sent: Mutex::new(LruNode::new_unlinked()),
                 dirty_sent: Mutex::new(LruNode::new_unlinked()),
@@ -376,7 +376,7 @@ pub fn walk_path(path: PathToWalk) -> VfsResult<WalkedPath> {
 
     // `dir` 的部分可能为空且必须找到，`last` 不为空且可以不找到
 
-    fn walk_step(fs: &FileSystem, cur_path: &Path, name: &ByteStr) -> VfsResult<(bool, Path)> {
+    fn walk_step(fs: &mut &FileSystem, cur_path: &Path, name: &ByteStr) -> VfsResult<(bool, Path)> {
         debug_assert_ne!(name, ".");
 
         if name == ".." {
@@ -415,8 +415,28 @@ pub fn walk_path(path: PathToWalk) -> VfsResult<WalkedPath> {
         log::trace!(
             "walk_step: current_dentry={} name=`{name}` found={found} fs={:#x}",
             cur_path.0.data.lock().name,
-            (fs as *const FileSystem).addr()
+            (*fs as *const FileSystem).addr()
         );
+
+        // 如果是挂载点则要转到对应文件系统
+
+        let dentry = if let Some(mount) = { dentry.data.lock().mount } {
+            debug_assert!(found);
+
+            let mnt = unsafe { mount.as_ref() }.get_cur_mount();
+            let mnt_to = mnt.mount_to.clone();
+            *fs = unsafe { mnt_to.filesystem.as_ref() };
+
+            log::trace!(
+                "walk_path 穿越挂载点：{} ---> {}",
+                { dentry.data.lock().name.clone() },
+                mnt_to.data.lock().name,
+            );
+
+            mnt_to
+        } else {
+            dentry
+        };
 
         return Ok((found, Path(dentry, cur_path.1.clone())));
     }
@@ -429,21 +449,13 @@ pub fn walk_path(path: PathToWalk) -> VfsResult<WalkedPath> {
             .map(ByteStr::new)
             .filter(|&name| name != ".")
         {
-            let (found, path) = walk_step(fs, &cur_path, name)?;
+            let (found, path) = walk_step(&mut fs, &cur_path, name)?;
 
             if !found {
                 return Err(VfsError::FileNotFound);
             }
 
-            // 因为我们这不是最后一步，因此如果是挂载点则要转到对应文件系统
-
-            if let Some(mount) = path.0.data.lock().mount {
-                let mnt = unsafe { mount.as_ref() }.get_cur_mount();
-                cur_path = Path(mnt.mount_to.clone(), mnt);
-                fs = unsafe { cur_path.0.filesystem.as_ref() };
-            } else {
-                cur_path = path;
-            }
+            cur_path = path;
         }
     }
 

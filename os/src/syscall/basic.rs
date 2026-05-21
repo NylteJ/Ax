@@ -5,7 +5,11 @@ use crate::{
         shared_with_asm::SharedWithAsm,
     },
     memory::uaccess::copy_from_user,
-    multitask::{current_task, task::TaskArc, task_scheduler::TASK_SCHEDULER},
+    multitask::{
+        current_task,
+        task::{INIT_PID, TaskArc},
+        task_scheduler::TASK_SCHEDULER,
+    },
     print, println,
 };
 
@@ -20,6 +24,11 @@ pub extern "C" fn exit(ec: isize) -> ! {
     println!("[Kernel] Application exited with code {0} ({0:#x}).", ec);
 
     let cur = current_task();
+
+    debug_assert!(
+        unsafe { cur.as_ref_unchecked() }.pid != INIT_PID,
+        "init 进程不应退出"
+    );
 
     let Some(next_task) = TASK_SCHEDULER.lock().pick_next() else {
         println!("所有用户程序运行完毕，关机");
@@ -44,45 +53,6 @@ pub extern "C" fn yield_() -> isize {
     let next_task = scheduler.pick_next().unwrap();
     drop(scheduler);
     next_task.switch_to();
-
-    0
-}
-
-// FIXME: 临时
-pub extern "C" fn print(mut str_ptr: *const u8, mut length: usize) -> isize {
-    const BUFFER_SIZE: usize = 64;
-
-    let mut buffer = [0; BUFFER_SIZE];
-
-    while length > BUFFER_SIZE {
-        let Ok(()) = copy_from_user(&mut buffer, str_ptr) else {
-            return 2;
-        };
-
-        let s = match str::from_utf8(&buffer) {
-            Ok(str) => str,
-            Err(err) => unsafe { str::from_utf8_unchecked(&buffer[0..err.valid_up_to()]) },
-        };
-
-        if s.is_empty() {
-            return 1;
-        }
-
-        print!("{s}");
-
-        length -= s.len();
-        str_ptr = unsafe { str_ptr.add(s.len()) };
-    }
-
-    let Ok(()) = copy_from_user(&mut buffer[0..length], str_ptr) else {
-        return 2;
-    };
-
-    let Ok(s) = str::from_utf8(&buffer[0..length]) else {
-        return 1;
-    };
-
-    print!("{s}");
 
     0
 }

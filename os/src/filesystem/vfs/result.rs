@@ -22,6 +22,8 @@ pub enum VfsError {
     OperationNotSupported,
     /// 范围越界
     OutOfRange,
+    /// 未找到对应设备
+    DeviceNotFound,
     /// 用户态程序输入了错误的指针
     InvalidUserPointer(uaccess::CopyError),
     /// 目标对象支持该操作，但输入参数无效（如果其它更具体的类型能满足要求，请使用其他类型）
@@ -48,7 +50,7 @@ impl From<ext4_rs::Ext4Error> for VfsError {
             ENOENT => FileNotFound,
             EINTR => todo!(),
             EIO => IoError,
-            ENXIO => todo!(),
+            ENXIO => DeviceNotFound,
             E2BIG => todo!(),
             EBADF => todo!(),
             EAGAIN => todo!(),
@@ -59,7 +61,7 @@ impl From<ext4_rs::Ext4Error> for VfsError {
             EBUSY => todo!(),
             EEXIST => FileAlreadyExists,
             EXDEV => todo!(),
-            ENODEV => todo!(),
+            ENODEV => DeviceNotFound,
             ENOTDIR => NotADirectory,
             EISDIR => IsADirectory,
             EINVAL => InvalidArguments(msg),

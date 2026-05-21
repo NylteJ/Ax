@@ -17,3 +17,5 @@ os/kernel-rv.debug
 os/kernel-la.debug
 
 disk.img
+
+programs/init/target

@@ -19,27 +19,32 @@ GREEN  := \033[0;32m
 NC     := \033[0m
 
 .PHONY: all
-all: clean rv la
+all: clean disk_img/rv-init disk_img/la-init regen-disk rv la
 
 .PHONY: clean
 clean:
 	@{ \
-		cd os; \
 		echo "正在清理..."; \
+		cd os; \
 		cargo clean; \
 		rm -f ../kernel-rv ../kernel-la; \
 		rm -f ./src/linker_rv.ld ./src/linker_la.ld; \
 		rm -f ./kernel-rv.debug ./kernel-la.debug; \
 		rm -f ./disk.img; \
+		rm -f ./disk_img/rv-init ./disk_img/la-init; \
 		rm -rf ./.cargo; \
+		cd ../programs/init; \
+		cargo clean; \
 		printf "$(GREEN)清理完毕！$(NC)\n"; \
 	}
 
 .PHONY: fmt
 fmt:
 	@{\
-		cd os; \
 		echo "正在格式化代码..."; \
+		cd os; \
+		cargo fmt; \
+		cd ../programs/init; \
 		cargo fmt; \
 		printf "$(GREEN)代码格式化完成！$(NC)\n"; \
 	}
@@ -82,6 +87,21 @@ la: os/.cargo
 
 os/.cargo:
 	cp os/cargo os/.cargo -r
+
+disk_img/rv-init: $(wildcard programs/init/src/*)
+	@{ \
+		cd programs/init; \
+		echo "正在编译 init..."; \
+		cargo build --release --target riscv64gc-unknown-none-elf && printf "$(GREEN)init 编译完成！$(NC)\n" || { printf "$(RED)init 编译失败......$(NC)\n"; exit 1; }; \
+		cp target/riscv64gc-unknown-none-elf/release/init ../../disk_img/rv-init; \
+	}
+disk_img/la-init: $(wildcard programs/init/src/*)
+	@{ \
+		cd programs/init; \
+		echo "正在编译 init..."; \
+		cargo build --release --target loongarch64-unknown-none && printf "$(GREEN)init 编译完成！$(NC)\n" || { printf "$(RED)init 编译失败......$(NC)\n"; exit 1; }; \
+		cp target/loongarch64-unknown-none/release/init ../../disk_img/la-init; \
+	}
 
 .PHONY: check
 check: clean
@@ -193,7 +213,7 @@ clippy-la:
 		cargo clippy --target loongarch64-unknown-none $(CARGOFLAGS); \
 	}
 
-disk.img:
+disk.img: $(wildcard disk_img/*)
 	mkfs.ext4 -F -d ./disk_img disk.img 1M
 
 .PHONY: regen-disk

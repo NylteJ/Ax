@@ -28,6 +28,7 @@
 #![feature(forget_unsized)]
 #![feature(const_convert)]
 #![feature(const_trait_impl)]
+#![feature(never_type)]
 //
 #![deny(unused_must_use)]
 
@@ -253,6 +254,8 @@ pub extern "C" fn main(_: usize, dtb: PhysAddr) -> ! {
         );
     }
 
+    filesystem::devfs::drivers::init();
+
     println!("Hello, world!");
     println!("中文也可以！");
     println!();
@@ -275,27 +278,39 @@ pub extern "C" fn main(_: usize, dtb: PhysAddr) -> ! {
     {
         let ext4_type = filesystem::filesystems::get_filesystem_type("ext4").unwrap();
         let tmpfs_type = filesystem::filesystems::get_filesystem_type("tmpfs").unwrap();
+        let devfs_type = filesystem::filesystems::get_filesystem_type("devfs").unwrap();
 
         filesystem::init_root(ext4_type);
 
         let root_fs = ROOT_PATH.1.sub_fs.clone();
 
-        let tmp_1 = match walk_path(vfs::PathToWalk::Absolute(ByteStr::new("/tmp"))).unwrap() {
-            vfs::WalkedPath::Positive(path) => path,
-            vfs::WalkedPath::Negative(npath) => {
-                root_fs
-                    .root_inode
-                    .data
-                    .write()
-                    .mkdir(npath.0.0.clone(), vfs::INodeMode::all_permitted())
-                    .unwrap();
-                npath.0
+        fn get_or_create_path(root_fs: &vfs::FileSystem, path: &str) -> vfs::Path {
+            match walk_path(vfs::PathToWalk::Absolute(ByteStr::new(path))).unwrap() {
+                vfs::WalkedPath::Positive(path) => path,
+                vfs::WalkedPath::Negative(npath) => {
+                    root_fs
+                        .root_inode
+                        .data
+                        .write()
+                        .mkdir(npath.0.0.clone(), vfs::INodeMode::all_permitted())
+                        .unwrap();
+                    npath.0
+                }
             }
-        };
+        }
 
+        let tmp_1 = get_or_create_path(&root_fs, "/tmp");
         let tmp_fs = tmpfs_type.ops.new_fs();
-        let tmp_2 = tmp_fs.init_root_dentry.clone();
+        let tmp_2 = tmp_fs.root_dentry.clone();
         vfs::MountPoint::mount(tmp_1, tmp_fs, tmp_2);
+        log::info!("已将 tmpfs 挂载到 /tmp");
+
+        let dev_1 = get_or_create_path(&root_fs, "/dev");
+        let dev_fs = devfs_type.ops.new_fs();
+        let dev_2 = dev_fs.root_dentry.clone();
+        vfs::MountPoint::mount(dev_1, dev_fs, dev_2);
+        log::info!("已将 devfs 挂载到 /dev");
+        init_devs();
     }
 
     let zero_page_num = unsafe {
@@ -317,8 +332,8 @@ pub extern "C" fn main(_: usize, dtb: PhysAddr) -> ! {
     basic::timer::start_timer_tick_tock();
 
     const INIT_PATH: &str = cfg_select! {
-        target_arch = "riscv64" => "/rv",
-        target_arch = "loongarch64" => "/la",
+        target_arch = "riscv64" => "/rv-init",
+        target_arch = "loongarch64" => "/la-init",
     };
 
     let rv = vfs::walk_path(vfs::PathToWalk::Absolute(ByteStr::new(INIT_PATH)))
@@ -350,4 +365,35 @@ fn clear_bss() {
     }
 
     unsafe { volatile_set_memory(sbss, 0, ebss.offset_from_unsigned(sbss)) };
+}
+
+fn init_devs() {
+    let dev = vfs::walk_path(vfs::PathToWalk::Absolute(ByteStr::new("/dev")))
+        .unwrap()
+        .ensure()
+        .expect("根目录下应该有 dev 目录");
+
+    let dev_inode = dev.0.data.lock().inode.clone().unwrap();
+
+    let mode = vfs::INodeMode::all_permitted();
+
+    macro_rules! define {
+        ($name:literal, $kind:expr) => {{
+            let neg = vfs::walk_path(vfs::PathToWalk::Relative(ByteStr::new($name), dev))
+                .unwrap()
+                .ensure_neg()
+                .expect(concat!("/dev/", $name, " 应当初始不存在"));
+
+            dev_inode
+                .data
+                .write()
+                .make_node($kind, mode, neg.0.0)
+                .unwrap();
+        }};
+    }
+
+    use filesystem::devfs::drivers::*;
+    use vfs::SpecialINodeType::{BlockDevice, CharDevice};
+
+    define!("tty", CharDevice(DEV_TTY));
 }

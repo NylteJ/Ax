@@ -231,8 +231,6 @@ pub static TABLE: [Option<SyscallFn>; 512] = const {
     define!(221, process::execve);
     define!(260, process::wait4);
 
-    define!(233, basic::print);
-
     table
 };
 
@@ -296,6 +294,7 @@ impl FromResidual<Result<Infallible, VfsError>> for SyscallResult {
             VfsError::FilesystemMismatch => EINVAL,
             VfsError::OperationNotSupported => EOPNOTSUPP,
             VfsError::OutOfRange => ERANGE,
+            VfsError::DeviceNotFound => ENXIO,
             VfsError::InvalidUserPointer(copy_error) => Self::from_residual(Err(copy_error)),
             VfsError::InvalidArguments(_) => EINVAL,
             VfsError::IoError => EIO,

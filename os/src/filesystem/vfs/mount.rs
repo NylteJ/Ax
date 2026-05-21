@@ -76,7 +76,7 @@ impl MountPoint {
     }
 
     pub unsafe fn mount_root(fs: Pin<Arc<FileSystem>>) -> Arc<Mount> {
-        let root_dentry = fs.init_root_dentry.clone();
+        let root_dentry = fs.root_dentry.clone();
 
         let mut mp = UniqueArc::new(MountPoint {
             parent: Path(root_dentry.clone(), unsafe {

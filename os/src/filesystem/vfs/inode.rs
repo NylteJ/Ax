@@ -13,10 +13,13 @@ use bitflags::bitflags;
 
 use crate::{
     basic::{lru::LruNode, sync::RwLock},
-    filesystem::vfs::{
-        DEntryArc, FileSystem, FileSystemOps, PageCache, VfsError, VfsResult,
-        cache::CachedValue,
-        inode_arc::{ICacheArc, INodeArc},
+    filesystem::{
+        devfs::drivers::DeviceId,
+        vfs::{
+            DEntryArc, FileSystem, FileSystemOps, PageCache, VfsError, VfsResult,
+            cache::CachedValue,
+            inode_arc::{ICacheArc, INodeArc},
+        },
     },
 };
 
@@ -25,6 +28,8 @@ type HardLinksType = u32;
 pub struct INodeData<T: ?Sized + INodeOps = dyn INodeOps> {
     pub file_size: u64,
     /// 硬链接数，即文件系统层面的引用计数。
+    ///
+    /// 注意底层文件系统可以不维护它，此时其值可为 0 ~ 2 内的任何一个值。
     pub hard_links: HardLinksType,
 
     pub mode: INodeMode,
@@ -160,6 +165,18 @@ pub trait INodeOps: Any {
         flags: INodeRenameFlags,
     ) -> VfsResult<()>;
 
+    /// 创建一个类型为 `kind` 的特殊文件节点（如设备、管道等），该节点原本对应的负 DEntry 是 `dentry`。返回创建的节点。
+    ///
+    /// 此功能是可选的，底层文件系统默认不实现它。
+    fn make_node(
+        &mut self,
+        kind: SpecialINodeType,
+        mode: INodeMode,
+        dentry: DEntryArc,
+    ) -> VfsResult<INodeArc> {
+        Err(VfsError::OperationNotSupported)
+    }
+
     /// 当内存引用计数归零时调用。若返回 `true` 则 INode 可以被销毁或压入 LRU 链表。实现无需顾虑页缓存问题。
     ///
     /// 建议实现至少在硬链接计数也归零时返回 `true`。
@@ -177,6 +194,12 @@ bitflags! {
         const NoReplace = 1 << 0;
         const Exchange = 1 << 1;
     }
+}
+
+pub enum SpecialINodeType {
+    FIFO,
+    BlockDevice(DeviceId),
+    CharDevice(DeviceId),
 }
 
 impl<T: INodeOps> INode<T> {
@@ -214,9 +237,22 @@ impl<T: INodeOps> INodeData<T> {
 impl<T: ?Sized + INodeOps> INodeData<T> {
     /// 在当前 INode 下创建一个普通文件节点，该节点原本对应的负 DEntry 是 `dentry`。返回创建的节点。
     ///
-    /// 和 `INodeOps::create` 不同，它会自动将新节点放入 `dentry` 中。
+    /// 和 [`INodeOps::create`] 不同，它会自动将新节点放入 `dentry` 中。
     pub fn create(&mut self, mode: INodeMode, dentry: DEntryArc) -> VfsResult<INodeArc> {
         let new_node = self.ops.create(mode, dentry.clone())?;
+        dentry.data.lock().inode.replace(new_node.clone());
+        Ok(new_node)
+    }
+    /// 在当前 INode 下创建一个类型为 `kind` 的特殊文件节点（如设备、管道等），该节点原本对应的负 DEntry 是 `dentry`。返回创建的节点。
+    ///
+    /// 和 [`INodeOps::make_node`] 不同，它会自动将新节点放入 `dentry` 中。
+    pub fn make_node(
+        &mut self,
+        kind: SpecialINodeType,
+        mode: INodeMode,
+        dentry: DEntryArc,
+    ) -> VfsResult<INodeArc> {
+        let new_node = self.ops.make_node(kind, mode, dentry.clone())?;
         dentry.data.lock().inode.replace(new_node.clone());
         Ok(new_node)
     }

@@ -4,7 +4,7 @@ use core::arch::asm;
 #[cfg(target_arch = "loongarch64")]
 use crate::memory::address::PhysAddr;
 #[cfg(target_arch = "loongarch64")]
-use core::ptr::write_volatile;
+use core::ptr::{read_volatile, write_volatile};
 
 pub struct SbiError {
     pub code: isize,
@@ -44,7 +44,7 @@ impl core::fmt::Debug for SbiError {
     }
 }
 
-pub fn putchar_ascii(chr: u8) -> Result<(), SbiError> {
+pub fn putchar_u8(chr: u8) -> Result<(), SbiError> {
     cfg_select! {
         target_arch = "riscv64" => {
             let code;
@@ -64,9 +64,49 @@ pub fn putchar_ascii(chr: u8) -> Result<(), SbiError> {
             }
         },
         target_arch = "loongarch64" => {
-            unsafe { write_volatile(PhysAddr(0x1fe001e0).to_virtual_address().0 as *mut u8, chr) };
+            unsafe { write_volatile(PhysAddr(0x1fe001e0).to_virtual_address().as_mut_ptr(), chr) };
             Ok(())
         },
+    }
+}
+
+/// 从控制台读取一个字节的数据。
+///
+/// 此函数需要等待用户输入并且很可能会阻塞。阻塞是同步的（因为我们只有一个控制台），基本上就是空转。
+pub fn getchar_u8() -> Result<u8, SbiError> {
+    // 直接在内核态空转，因为输入其实不是我们内核的核心功能
+    let chr_raw = loop {
+        cfg_select! {
+            target_arch = "riscv64" => {
+                let code: i64;
+
+                unsafe {
+                    asm!("ecall",
+                        in("a7") 0x02, // EID = sbi_console_getchar
+                        // FID = ignored
+                        out("a0") code,
+                    );
+                }
+
+                if code != -1 {
+                    break code as u8;
+                }
+            },
+            target_arch = "loongarch64" => {
+                let has_data: u8 = unsafe { read_volatile(PhysAddr(0x1fe001e5).to_virtual_address().as_ptr()) };
+                let has_data = has_data & 0x1 == 1;
+
+                if has_data {
+                    break unsafe { read_volatile(PhysAddr(0x1fe001e0).to_virtual_address().as_ptr()) };
+                }
+            },
+        }
+    };
+
+    if chr_raw == b'\r' {
+        Ok(b'\n') // 将回车转换为换行
+    } else {
+        Ok(chr_raw)
     }
 }
 
