@@ -26,6 +26,7 @@ virtio-drivers = "0.13.0"
 ext4_rs = { path = "../edited_lib/ext4_rs" }
 uninit = { version = "0.6.2", default-features = false }
 elf = { path = "../edited_lib/rust-elf", default-features = false }
+bit_field = "0.10.3"
 
 [features]
 framepointer = []
@@ -33,6 +34,3 @@ default = ["framepointer"]
 
 [target.riscv64gc-unknown-none-elf.dependencies]
 riscv = "0.16.0"
-
-[target.loongarch64-unknown-none.dependencies]
-bit_field = "0.10.3"

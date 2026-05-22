@@ -38,6 +38,10 @@ impl TrapContext {
         target_arch = "riscv64" => 1, // x2
         target_arch = "loongarch64" => 2, // $r3
     };
+    pub const RET_REG: usize = cfg_select! {
+        target_arch = "riscv64" => 9, // a0, r10
+        target_arch = "loongarch64" => 3, // $a0, $r4
+    };
 }
 
 #[unsafe(no_mangle)]
@@ -54,10 +58,6 @@ extern "C" fn trap_handler(context: &mut TrapContext) {
                 target_arch = "riscv64" => 9..=14, // a0 ~ a5, r10 ~ r15
                 target_arch = "loongarch64" => 3..=8, // $a0 ~ $a5, $r4 ~ $r9
             };
-            const SYSCALL_RET_REG_INDEX: usize = cfg_select! {
-                target_arch = "riscv64" => 9, // a0, r10
-                target_arch = "loongarch64" => 3, // $a0, $r4
-            };
 
             context.ret_pc += 4; // 跳过 `ecall` / `break 0` 指令
 
@@ -66,7 +66,7 @@ extern "C" fn trap_handler(context: &mut TrapContext) {
                 .try_into()
                 .unwrap();
 
-            context.registers[SYSCALL_RET_REG_INDEX] = match syscall::TABLE.get(id) {
+            context.registers[TrapContext::RET_REG] = match syscall::TABLE.get(id) {
                 Some(Some(func)) => func.call(args) as usize,
                 _ => ERRORCODE_NOSYS,
             };
@@ -132,7 +132,7 @@ extern "C" fn trap_handler(context: &mut TrapContext) {
                     );
                     log::info!(
                         "用户态程序（PID = {}）发生 PageFault（{fault:?}）",
-                        unsafe { current_task().as_ref_unchecked() }.pid,
+                        unsafe { current_task().as_ref_unchecked() }.tid,
                     );
                     log::info!("其试图访问：{:#x}", get_bad_address());
                     log::info!("对应代码所在地址：{:#x}", context.ret_pc);

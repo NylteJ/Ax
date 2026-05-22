@@ -133,6 +133,7 @@ unsafe impl<T: ?Sized> DerefPure for RwLockWriteGuard<'_, T> {}
 unsafe impl<T: ?Sized + Send + Sync> Sync for RwLock<T> {}
 unsafe impl<T: ?Sized + Send> Send for RwLock<T> {}
 
+#[derive(Default)]
 pub struct Mutex<T: ?Sized> {
     flag: AtomicBool,
     #[cfg(debug_assertions)]

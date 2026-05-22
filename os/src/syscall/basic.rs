@@ -21,14 +21,18 @@ use crate::{
 /// syscall(SYS_exit, ec);
 /// ```
 pub extern "C" fn exit(ec: isize) -> ! {
-    println!("[Kernel] Application exited with code {0} ({0:#x}).", ec);
-
-    let cur = current_task();
-
-    debug_assert!(
-        unsafe { cur.as_ref_unchecked() }.pid != INIT_PID,
-        "init 进程不应退出"
+    log::trace!(
+        "Task {} exited with code {1} ({1:#x}).",
+        unsafe { current_task().as_ref_unchecked() }.tid,
+        ec
     );
+
+    let cur = unsafe { TaskArc::from_asm(current_task()) };
+
+    debug_assert!(cur.tid != INIT_PID, "init 进程不应退出");
+
+    log::error!("TODO: 处理退出 signal");
+    cur.on_exit(0, ec as u8);
 
     let Some(next_task) = TASK_SCHEDULER.lock().pick_next() else {
         println!("所有用户程序运行完毕，关机");
@@ -38,14 +42,17 @@ pub extern "C" fn exit(ec: isize) -> ! {
     // 注意只在不关机时 drop 当前任务，因为现在使用的页表还是当前任务的页表，drop 掉了其内存就可能被重用，
     // 导致清理任务出现各种问题。实际上连目前我们所在的内核栈都有可能被重用。
     // 不关机时 drop 因为下一步就是 switch_to，它不进行内存分配，所以没问题
-    unsafe { TaskArc::drop_asm(cur) };
+    drop(cur);
 
     next_task.switch_to();
     unreachable!();
 }
 
 pub extern "C" fn yield_() -> isize {
-    println!("[Kernel] Application yielded.");
+    log::trace!(
+        "Task {} yielded.",
+        unsafe { current_task().as_ref_unchecked() }.tid
+    );
 
     let mut scheduler = TASK_SCHEDULER.lock();
     let cur = current_task();

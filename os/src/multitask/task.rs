@@ -1,10 +1,23 @@
-use core::{marker::PhantomPinned, mem::offset_of, ops::Deref, pin::Pin, ptr::addr_eq};
+use core::{
+    marker::PhantomPinned,
+    mem::offset_of,
+    num::NonZero,
+    ops::Deref,
+    pin::Pin,
+    ptr::{NonNull, addr_eq},
+};
 
-use alloc::sync::Arc;
+use alloc::{sync::Arc, vec::Vec};
 use elf::{ElfBytes, endian::NativeEndian};
+use intrusive_collections::{LinkedListLink, intrusive_adapter};
 
 use crate::{
-    basic::{shared_with_asm::SharedWithAsm, stack::TaskKernelStackPtr, sync::RwLock},
+    basic::{
+        UnsafeInited,
+        shared_with_asm::SharedWithAsm,
+        stack::TaskKernelStackPtr,
+        sync::{Mutex, RwLock},
+    },
     filesystem::vfs::{File, FileArc, Path},
     memory::{
         PAGE_BYTES, STACK_ALIGN,
@@ -17,10 +30,12 @@ use crate::{
         SchedulePolicy, TaskPriority, current_task,
         fdtable::FileDescriptorTable,
         fs_data::FilesystemData,
+        process_data::ProcessData,
         task_context::{TaskContext, switch_context},
         task_manager::{PID_ALLOCATOR, register_task},
         task_scheduler::TASK_SCHEDULER,
     },
+    syscall::process::CloneFlags,
     trap::trap_handler::{TrapContext, return_to_user, trap_handler_raw_from_user},
 };
 
@@ -34,7 +49,7 @@ pub struct Task {
     /// 注意：它只在任务挂起时保证精确！
     pub kstack: TaskKernelStackPtr,
 
-    pub pid: usize,
+    pub tid: usize,
 
     pub policy: SchedulePolicy,
     pub priority: TaskPriority,
@@ -44,12 +59,40 @@ pub struct Task {
     pub files: Arc<RwLock<FileDescriptorTable>>,
     pub fs_data: Arc<RwLock<FilesystemData>>,
 
+    pub process: Arc<ProcessData>,
+
+    /// 子 Task 链表头
+    pub children: Mutex<intrusive_collections::LinkedList<TaskAdapter>>,
+    /// 子 Task 链表的侵入式节点，由于所有操作都须借助 children 的锁，它本身无需额外同步
+    pub(self) children_link: LinkedListLink,
+    /// 父 Task 指针，通常不会变化
+    ///
+    /// 通过托孤机制保证总是有效（如果父节点提前死亡，则其改为指向 init）
+    pub parent: RwLock<NonNull<Task>>,
+
+    pub wait_state: Mutex<ZombieWaitingState>,
+
     _pin: PhantomPinned, // Task 的地址需要在 tp、内核栈等区域存储，因此不能移动
 }
+
+#[derive(Debug)]
+pub struct ZombieWaitingState {
+    /// Task 是否已经退出，如果有，则内部存放退出状态 (信号, 返回值)
+    pub status: Option<(u8, u8)>,
+    /// 是否有父 Task 正在等待当前 Task，如果有，则内部存放用于唤醒等待者的句柄
+    // （我们目前根本不支持睡眠，所以其实没什么能放的）
+    pub waiter: Option<()>,
+}
+
+unsafe impl Send for Task {}
+unsafe impl Sync for Task {}
+
+intrusive_adapter!(pub TaskAdapter = TaskArc: Task { children_link => LinkedListLink });
 
 pub type TaskArc = Pin<Arc<Task>>;
 
 pub const INIT_PID: usize = 0;
+pub static INIT_TASK: UnsafeInited<TaskArc> = unsafe { UnsafeInited::uninit() };
 
 const KERNEL_STACK_LAYOUT: alloc::alloc::Layout = unsafe {
     alloc::alloc::Layout::from_size_align(TaskKernelStackPtr::size(), TaskKernelStackPtr::align())
@@ -82,7 +125,7 @@ impl Task {
         // 先创建一个半成品 task
         let task = Arc::pin(Self {
             kstack,
-            pid: INIT_PID,
+            tid: INIT_PID,
 
             policy,
             priority,
@@ -95,8 +138,22 @@ impl Task {
                 current_work_dir: work_dir,
             })),
 
+            process: Arc::new(ProcessData::new(INIT_PID, INIT_PID)),
+
+            children: Mutex::new(intrusive_collections::LinkedList::new(TaskAdapter::new())),
+            children_link: LinkedListLink::new(),
+            parent: RwLock::new(NonNull::dangling()), // init 进程没有父进程，先放一个悬空指针，后面改为指向自己
+
+            wait_state: Mutex::new(ZombieWaitingState {
+                status: None,
+                waiter: None,
+            }),
+
             _pin: PhantomPinned,
         });
+
+        // 填充 parent
+        unsafe { task.parent.as_ptr().write(NonNull::from_ref(&task)) };
 
         // 将 task 地址写入内核栈（注意我们现在不在这个内核栈上）
         unsafe { task_ptr_ptr.write(task.deref()) };
@@ -109,7 +166,8 @@ impl Task {
         // 因此传入大粒度的可变引用会导致死锁或违反别名规则。
         let entry = Self::load_elf(&file, &task.address_space);
 
-        register_task(task);
+        register_task(task.clone());
+        unsafe { UnsafeInited::init_unsafe(&INIT_TASK, task) };
 
         // 至此，task 终于完全初始化完毕了！
 
@@ -159,16 +217,28 @@ impl Task {
         }
     }
 
-    /// 复制一份当前任务，并将其添加到调度器中，返回新任务。
+    /// 复制一份当前任务，并将其添加到调度器中，返回新任务。子任务的返回值（a0）会被篡改为 0。
     ///
     /// 注意此函数在内核端就是普通函数，返回用户态后新任务才可能被执行。
-    pub fn fork(&self) -> TaskArc {
+    pub fn fork(&self, flags: CloneFlags, ustack: Option<NonZero<usize>>) -> TaskArc {
         // 对于内核栈，必须分配新的
         let (_kstack, task_ptr_ptr) = Self::alloc_kstack();
         let kstack_sp = (task_ptr_ptr as usize) / STACK_ALIGN * STACK_ALIGN;
-        // 而且必须压入完全一致的 TrapContext 并伪造 TaskContext
+        // 而且必须压入（几乎）完全一致的 TrapContext 并伪造 TaskContext
         let ret_trap_ctxt_ptr = (kstack_sp - size_of::<TrapContext>()) as *mut TrapContext;
-        unsafe { ret_trap_ctxt_ptr.write(self.get_trap_context().read()) };
+        let ret_trap_ctxt = unsafe {
+            ret_trap_ctxt_ptr
+                .as_uninit_mut()
+                .unwrap_unchecked()
+                .write(self.get_trap_context().read())
+        };
+        if let Some(ustack) = ustack {
+            // 此时还要手动修改用户栈指针
+            ret_trap_ctxt.registers[TrapContext::STACK_POINTER] = ustack.get();
+        }
+        // 别忘了修改其返回值
+        ret_trap_ctxt.registers[TrapContext::RET_REG] = 0;
+        // 接下来是 TaskContext
         let ret_task_ctxt_ptr =
             (ret_trap_ctxt_ptr.addr() - size_of::<TaskContext>()) as *mut TaskContext;
         let kstack_sp = ret_task_ctxt_ptr as usize;
@@ -184,13 +254,13 @@ impl Task {
 
             // 我们还需要初始化 page_table_register，这个需要在后面写入
 
-            // 剩余部分保持未初始化即可，它们完全不重要
+            // 剩余部分保持未初始化即可，它们会被 TrapContext 覆盖因此完全不重要
         }
         // 于是相对应的，kstack 也要改变，以伪造出该 Task 已经挂起的场景
         let kstack = unsafe { TaskKernelStackPtr::from_addr(kstack_sp) };
 
-        // PID 也要分配新的
-        let pid = PID_ALLOCATOR
+        // TID 也要分配新的
+        let tid = PID_ALLOCATOR
             .lock()
             .allocate()
             .expect("必须要能为新任务分配 PID（TODO）");
@@ -199,13 +269,19 @@ impl Task {
         let policy = self.policy;
         let priority = self.priority;
 
-        // 地址空间需要复制一份，并将所有页设为写时复制
-        let address_space = Arc::new(RwLock::new(self.address_space.write().clone_cow()));
-        // 由于所有页被设为了写时复制，本进程的页表很可能也已经改变，因此需要刷新 TLB
-        cfg_select! {
-            target_arch = "riscv64" => riscv::asm::sfence_vma_all(),
-            target_arch = "loongarch64" => unsafe { core::arch::asm!("invtlb 0x0, $zero, $zero") },
-        }
+        let address_space = if flags.contains(CloneFlags::VM) {
+            // 浅拷贝一份 Arc 即可
+            self.address_space.clone()
+        } else {
+            // 地址空间需要复制一份，并将所有页设为写时复制
+            let address_space = Arc::new(RwLock::new(self.address_space.write().clone_cow()));
+            // 由于所有页被设为了写时复制，本进程的页表很可能也已经改变，因此需要刷新 TLB
+            cfg_select! {
+                target_arch = "riscv64" => riscv::asm::sfence_vma_all(),
+                target_arch = "loongarch64" => unsafe { core::arch::asm!("invtlb 0x0, $zero, $zero") },
+            }
+            address_space
+        };
 
         // 写入之前没写入的 page_table_register
         unsafe {
@@ -215,13 +291,41 @@ impl Task {
                 .write(address_space.read().get_page_table().to_native_register());
         }
 
-        // 这两个都可以直接浅拷贝
-        let files = Arc::new(RwLock::new(self.files.read().clone()));
-        let fs_data = Arc::new(RwLock::new(self.fs_data.read().clone()));
+        let files = if flags.contains(CloneFlags::FILES) {
+            // 共享同一个文件描述符表
+            self.files.clone()
+        } else {
+            // 使用初始时相等的两个文件描述符表
+            Arc::new(RwLock::new(self.files.read().clone()))
+        };
+
+        let fs_data = if flags.contains(CloneFlags::FS) {
+            // 共享文件系统信息（文件系统的根目录、当前工作目录和 umask 值）
+            self.fs_data.clone()
+        } else {
+            // 使用初始时相等的两个文件系统信息
+            Arc::new(RwLock::new(self.fs_data.read().clone()))
+        };
+
+        let process = if flags.contains(CloneFlags::THREAD) {
+            // 线程，放在同一个进程（线程组）中，浅拷贝即可
+            self.process.clone()
+        } else {
+            // 进程，直接新建一个进程（线程组），注意仍在同一个进程组中
+            Arc::new(ProcessData::new(tid, self.process.pgid))
+        };
+
+        let parent = if flags.contains(CloneFlags::PARENT) {
+            // 克隆父指针，父 Task 和自身相同
+            self.parent_task()
+        } else {
+            // 不克隆父指针，父 Task 设为自身
+            self
+        };
 
         let ret = Arc::pin(Self {
             kstack,
-            pid,
+            tid,
 
             policy,
             priority,
@@ -230,8 +334,24 @@ impl Task {
             files,
             fs_data,
 
+            process,
+
+            // 这几个不应当复制
+            children: Mutex::new(intrusive_collections::LinkedList::new(TaskAdapter::new())),
+            children_link: LinkedListLink::new(),
+            parent: RwLock::new(NonNull::from_ref(parent)),
+
+            wait_state: Mutex::new(ZombieWaitingState {
+                status: None,
+                waiter: None,
+            }),
+
             _pin: PhantomPinned,
         });
+
+        if !flags.contains(CloneFlags::THREAD) {
+            parent.children.lock().push_back(ret.clone());
+        }
 
         unsafe { task_ptr_ptr.write(ret.deref()) };
 
@@ -239,7 +359,7 @@ impl Task {
 
         TASK_SCHEDULER.lock().add_task(ret.clone());
 
-        log::trace!("forked: {} => {pid}", self.pid);
+        log::trace!("forked: {} => {tid}", self.tid);
 
         ret
     }
@@ -290,6 +410,27 @@ impl Task {
         let context = self.get_context();
         unsafe { self.into_asm() };
         unsafe { switch_context(context.as_ref_unchecked()) };
+    }
+
+    /// 获取父 Task 的引用
+    pub fn parent_task(&self) -> &Task {
+        unsafe { self.parent.read().as_ref() }
+    }
+
+    /// 当此 Task 退出时调用，若父进程还未 wait 则回收部分资源并将自身标记为僵尸状态，否则唤醒父进程且不做额外操作
+    pub fn on_exit(&self, signal: u8, return_value: u8) {
+        let mut wait_state = self.wait_state.lock();
+
+        let old = wait_state.status.replace((signal, return_value));
+        debug_assert!(old.is_none());
+
+        if let Some(waiter) = wait_state.waiter {
+            let _ = waiter; // 假装我们唤醒了等待中的父 Task
+        } else {
+            // *self.address_space.write() = AddressSpace::new();
+            // *self.files.write() = FileDescriptorTable::new();
+            self.transfer_children_to_init();
+        }
     }
 
     fn alloc_kstack() -> (TaskKernelStackPtr, *mut *const Task) {
@@ -458,6 +599,22 @@ impl Task {
         elf.ehdr.e_entry as usize
     }
 
+    fn transfer_children_to_init(&self) {
+        let my_children = self.children.lock().take();
+        if !my_children.is_empty() {
+            log::trace!(
+                "TID 为 {} 的 Task 的子进程（{:?}）将被转移到 init",
+                self.tid,
+                my_children.iter().map(|task| task.tid).collect::<Vec<_>>()
+            );
+            INIT_TASK
+                .children
+                .lock()
+                .cursor_mut()
+                .splice_before(my_children);
+        }
+    }
+
     /// 获取 TaskContext
     ///
     /// # Safety
@@ -482,8 +639,12 @@ impl Drop for Task {
             alloc::alloc::dealloc(self.kstack.get_low_addr() as *mut u8, KERNEL_STACK_LAYOUT)
         };
 
-        PID_ALLOCATOR.lock().deallocate(self.pid);
+        PID_ALLOCATOR.lock().deallocate(self.tid);
 
-        crate::println!("Task {} dropped", self.pid);
+        self.transfer_children_to_init();
+
+        // 注意，Task 被 drop 意味着它已经从父 Task 的 children 中被移除了，因此此处无需重复清理
+
+        crate::println!("Task {} dropped", self.tid);
     }
 }

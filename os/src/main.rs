@@ -29,6 +29,7 @@
 #![feature(const_convert)]
 #![feature(const_trait_impl)]
 #![feature(never_type)]
+#![feature(ptr_as_uninit)]
 //
 #![deny(unused_must_use)]
 
@@ -393,7 +394,7 @@ fn init_devs() {
     }
 
     use filesystem::devfs::drivers::*;
-    use vfs::SpecialINodeType::{BlockDevice, CharDevice};
+    use vfs::SpecialINodeType::CharDevice;
 
     define!("tty", CharDevice(DEV_TTY));
 }

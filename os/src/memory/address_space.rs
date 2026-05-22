@@ -1,4 +1,6 @@
-use core::{intrinsics::volatile_set_memory, mem::replace, pin::Pin, sync::atomic::Ordering};
+use core::{
+    arch::asm, intrinsics::volatile_set_memory, mem::replace, pin::Pin, sync::atomic::Ordering,
+};
 
 use alloc::vec::Vec;
 
@@ -382,8 +384,8 @@ impl AddressSpace {
         }
 
         cfg_select! {
-            target_arch = "riscv64" => riscv::asm::sfence_vma_all(), // TODO: 避免全量刷新
-            target_arch = "loongarch64" => unsafe { core::arch::asm!("invtlb 0x0, $zero, $zero") }, // TODO: 避免全量刷新
+            target_arch = "riscv64" => unsafe { asm!("sfence.vma {vaddr}, zero", vaddr = in(reg) addr.0) },
+            target_arch = "loongarch64" => unsafe { asm!("invtlb 0x6, $zero, {vaddr}", vaddr = in(reg) addr.0) },
         }
 
         Ok(())

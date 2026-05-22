@@ -18,7 +18,7 @@ lazy_static::lazy_static! {
 /// 将 Task 注册到全局 Task 表中
 pub fn register_task(task: TaskArc) {
     let mut map = PID_TASK_MAP.lock();
-    let entry = map.entry(task.pid);
+    let entry = map.entry(task.tid);
 
     use hashbrown::hash_map::Entry;
     match entry {
@@ -26,7 +26,7 @@ pub fn register_task(task: TaskArc) {
             if occupied.get().strong_count() == 0 {
                 occupied.insert(PinWeak::downgrade(task));
             } else {
-                let pid = task.pid;
+                let pid = task.tid;
                 assert!(
                     occupied.get().ptr_eq(&PinWeak::downgrade(task)),
                     "试图插入拥有重复 PID 的不同任务（PID = {pid}）",

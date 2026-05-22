@@ -226,7 +226,9 @@ pub static TABLE: [Option<SyscallFn>; 512] = const {
     define!(40, filesystem::mount);
     define!(80, filesystem::fstat);
 
+    define!(172, process::getpid);
     define!(173, process::getppid);
+    define!(178, process::gettid);
     define!(220, process::clone);
     define!(221, process::execve);
     define!(260, process::wait4);
@@ -235,6 +237,7 @@ pub static TABLE: [Option<SyscallFn>; 512] = const {
 };
 
 #[repr(C)]
+#[must_use]
 pub struct SyscallResult {
     value: usize,
 }
