@@ -3,10 +3,8 @@ use core::mem::MaybeUninit;
 use hashbrown::HashMap;
 
 use crate::{
-    basic::{
-        UnsafeInited,
-        sbi::{getchar_u8, putchar_u8},
-    },
+    arch::{self, interfaces::Basic},
+    basic::UnsafeInited,
     filesystem::vfs::{VfsError, VfsResult},
     memory::uaccess::{copy_from_user_uninit, copy_to_user},
 };
@@ -84,7 +82,7 @@ fn init_char_drivers() {
             let mut i = 0;
             while i < len {
                 let index = i % BUFFER_BYTES;
-                let chr = *buffer[index].write(getchar_u8().map_err(|_| VfsError::IoError)?);
+                let chr = *buffer[index].write(arch::NativeBasic::input_u8().map_err(|_| VfsError::IoError)?);
 
                 if index == BUFFER_BYTES - 1 {
                     copy_to_user(user_buf, unsafe { buffer.assume_init_ref() })?;
@@ -115,7 +113,7 @@ fn init_char_drivers() {
 
                 let buf = copy_from_user_uninit(&mut buffer[..count], user_data)?;
                 for byte in buf {
-                    putchar_u8(*byte).map_err(|_| VfsError::IoError)?;
+                    arch::NativeBasic::print_u8(*byte).map_err(|_| VfsError::IoError)?;
                 }
 
                 len -= count;

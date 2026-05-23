@@ -4,6 +4,7 @@ use core::{arch::asm, fmt::Debug, marker::PhantomPinned, pin::Pin};
 use alloc::boxed::Box;
 
 use crate::{
+    arch::{self, interfaces::Basic},
     basic::shared_with_asm::SharedWithAsm,
     memory::{
         PAGE_BYTES, PAGE_SHIFTS,
@@ -89,29 +90,22 @@ impl PageTable<2> {
 
     pub fn to_native_register(&self) -> usize {
         let my_paddr = VirtAddr::from_ptr(self).to_physical_address();
-        cfg_select! {
-            target_arch = "riscv64" => (8 << 60) | PhysPageNum::<0>::from(my_paddr).0,
-            target_arch = "loongarch64" => my_paddr.0,
+        if cfg!(target_arch = "riscv64") {
+            (8 << 60) | PhysPageNum::<0>::from(my_paddr).0
+        } else {
+            my_paddr.0
         }
     }
 
     pub unsafe fn switch_to(native_register: usize) {
-        cfg_select! {
-            target_arch = "riscv64" => unsafe {
-                asm!(
-                    "csrw satp, {reg}",
-                    "sfence.vma",
-                    reg = in(reg) native_register,
-                )
-            },
-            target_arch = "loongarch64" => unsafe {
-                asm!(
-                    "csrwr {reg}, 0x19",
-                    "invtlb 0x0, $zero, $zero",
-                    reg = in(reg) native_register,
-                )
-            },
+        unsafe {
+            #[cfg(target_arch = "riscv64")]
+            asm!("csrw satp, {reg}", reg = in(reg) native_register);
+            #[cfg(target_arch = "loongarch64")]
+            asm!("csrwr {reg}, 0x19", reg = in(reg) native_register);
         }
+
+        arch::NativeBasic::tlb_invalidate_all();
     }
     pub fn activitate(&self) {
         unsafe { PageTable::switch_to(self.to_native_register()) }

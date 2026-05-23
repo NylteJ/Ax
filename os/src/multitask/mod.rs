@@ -1,5 +1,3 @@
-use core::arch::asm;
-
 pub mod task;
 pub mod task_context;
 pub mod task_manager;
@@ -33,10 +31,7 @@ pub enum SchedulePolicy {
 ///
 /// 顺带一提，不设计成返回引用的形式是因为很难说清它的生命周期（'static 显然会带来数不尽的安全隐患）。
 pub fn current_task() -> *const task::Task {
-    let tp;
-    cfg_select! {
-        target_arch = "riscv64" =>     unsafe { asm!("mv {0}, tp", out(reg) tp) },
-        target_arch = "loongarch64" => unsafe { asm!("move {0}, $tp", out(reg) tp) },
-    };
-    tp
+    use crate::arch::{self, interfaces::Regs};
+
+    arch::NativeRegs::get_tp() as _
 }

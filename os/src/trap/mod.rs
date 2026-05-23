@@ -1,37 +1,16 @@
 pub mod page_fault_type;
 pub mod trap_handler;
 
-mod trap;
+pub mod trap;
 
 pub fn set_global_interrupts_enable(enable: bool) {
-    cfg_select! {
-        target_arch = "riscv64" => if enable {
-            unsafe { riscv::register::sstatus::set_sie() }
-        } else {
-            unsafe { riscv::register::sstatus::clear_sie() }
-        },
-        target_arch = "loongarch64" => {
-            use core::arch::asm;
-            use bit_field::BitField;
+    use crate::arch::{self, interfaces::Trap};
 
-            let mut crmd: usize;
-            unsafe {asm!("csrrd {0}, 0x0", out(reg) crmd)};
-
-            crmd.set_bit(2, enable);
-
-            unsafe { asm!("csrwr {0}, 0x0", in(reg) crmd) };
-        },
-    }
+    arch::NativeTrap::set_global_interrupts_enable(enable);
 }
 
 pub fn enable_timer_interrupt() {
-    cfg_select! {
-        target_arch = "riscv64" => unsafe { riscv::register::sie::set_stimer(); },
-        target_arch = "loongarch64" => {
-            use core::arch::asm;
+    use crate::arch::{self, interfaces::Trap};
 
-            const ECFG: usize = 1 << (trap::Interrupt::TimerInterrupt as usize);
-            unsafe { asm!("csrwr {0}, 0x4", in(reg) ECFG) }
-        },
-    }
+    arch::NativeTrap::enable_timer_interrupt();
 }

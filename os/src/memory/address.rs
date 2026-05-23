@@ -25,18 +25,25 @@ impl<const LEVEL: usize> From<PhysPageNum<LEVEL>> for PhysAddr {
     }
 }
 
+#[cfg(not(any(target_arch = "riscv64", target_arch = "loongarch64")))]
+compile_error!("Unsupported architecture");
+
+const RISC_V: bool = cfg!(target_arch = "riscv64");
+
 impl<const LEVEL: usize> PhysPageNum<LEVEL> {
     pub const fn mask(&self) -> usize {
-        cfg_select! {
-            target_arch = "riscv64" =>     self.0 << (PAGE_SHIFTS[LEVEL] - 2),
-            target_arch = "loongarch64" => self.0 << PAGE_SHIFTS[LEVEL],
+        if RISC_V {
+            self.0 << (PAGE_SHIFTS[LEVEL] - 2)
+        } else {
+            self.0 << PAGE_SHIFTS[LEVEL]
         }
     }
 
     pub fn from_pte(pte: &PageTableEntry<LEVEL>) -> Self {
-        cfg_select! {
-            target_arch = "riscv64" =>     Self((pte.bits >> (PAGE_SHIFTS[LEVEL] - 2)) & ((1 << 44) - 1)),
-            target_arch = "loongarch64" => Self((pte.bits >> PAGE_SHIFTS[LEVEL]) & ((1 << 48) - 1)),
+        if RISC_V {
+            Self((pte.bits >> (PAGE_SHIFTS[LEVEL] - 2)) & ((1 << 44) - 1))
+        } else {
+            Self((pte.bits >> PAGE_SHIFTS[LEVEL]) & ((1 << 48) - 1))
         }
     }
 }
@@ -56,9 +63,10 @@ impl<const LEVEL: usize> From<VirtPageNum<LEVEL>> for VirtAddr {
 // #[cfg(target_arch = "riscv64")] // FIXME
 pub const VIRTUAL_ADDRESS_LOW_HIGHEST: usize = 0x3f_ffff_ffff;
 
-pub const VIRTUAL_ADDRESS_HIGH_BASE: usize = cfg_select! {
-    target_arch = "riscv64" =>     0xffff_ffc0_0000_0000,
-    target_arch = "loongarch64" => 0x1000_0000_0000_0000, // 此值要改就要连着 ld 脚本一起改
+pub const VIRTUAL_ADDRESS_HIGH_BASE: usize = if RISC_V {
+    0xffff_ffc0_0000_0000
+} else {
+    0x1000_0000_0000_0000 // 此值要改就要连着 ld 脚本一起改
 };
 pub const LINEAR_MAPPING_OFFSET: usize = VIRTUAL_ADDRESS_HIGH_BASE;
 

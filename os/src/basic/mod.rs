@@ -5,7 +5,6 @@ pub mod debugger;
 pub mod global_allocator;
 pub mod logger;
 pub mod lru;
-pub mod sbi;
 pub mod shared_with_asm;
 pub mod stack;
 pub mod sync;
@@ -143,5 +142,11 @@ pub fn cleanup_and_shutdown() -> ! {
     log::error!("TODO: INode GC");
 
     log::debug!("清理完毕，正式关机");
-    sbi::shutdown(sbi::ShutdownStatus::Normal);
+    use crate::arch::{self, interfaces::Basic};
+    arch::NativeBasic::shutdown(true);
+}
+
+pub fn abort_and_shutdown() -> ! {
+    use crate::arch::{self, interfaces::Basic};
+    arch::NativeBasic::shutdown(false);
 }

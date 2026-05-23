@@ -1,25 +1,15 @@
-use core::{arch::asm, ptr};
+use core::ptr;
 
 use crate::{print, println};
-
-pub fn debugbreak() {
-    cfg_select! {
-        target_arch = "riscv64" =>     unsafe { asm!("ebreak") },
-        target_arch = "loongarch64" => unsafe { asm!("break 0") },
-    };
-}
 
 /// 回溯打印当前调用栈，在 Debug 构建下带符号。
 ///
 /// 目前实现依赖于帧指针。
 #[cfg(feature = "framepointer")]
 pub fn backtrace() {
-    let frame_pointer: *const usize;
-    cfg_select! {
-        target_arch = "riscv64" =>     unsafe { asm!("mv   {0}, s0",  out(reg) frame_pointer) },
-        target_arch = "loongarch64" => unsafe { asm!("move {0}, $fp", out(reg) frame_pointer) },
-    }
-    backtrace_at(frame_pointer);
+    use crate::arch::{self, interfaces::Regs};
+
+    backtrace_at(arch::NativeRegs::get_fp() as *const usize);
 }
 
 /// 回溯打印指定调用栈，在 Debug 构建下带符号。
@@ -43,10 +33,7 @@ pub fn backtrace_at(mut frame_pointer: *const usize) {
         let pc = unsafe { *frame_pointer.sub(1) };
         let fp = unsafe { *frame_pointer.sub(2) };
 
-        if cfg_select! {
-            target_arch = "riscv64" => fp < 0x80200000, // RISC-V 这部分貌似会一路回溯到 SBI 里头，这部分我们不感兴趣
-            target_arch = "loongarch64" => fp == 0, // 到达调用链末尾
-        } {
+        if fp < 0x80200000 {
             break;
         }
 

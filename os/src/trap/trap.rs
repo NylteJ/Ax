@@ -1,3 +1,5 @@
+use core::convert::TryFrom;
+
 use num_enum::TryFromPrimitive;
 
 #[derive(Debug)]
@@ -13,37 +15,34 @@ impl Trap {
     ///
     /// 很神奇但完全不需要输入参数，它能从虚空中提取信息！
     pub fn new() -> Self {
-        use core::convert::TryFrom;
+        #[cfg(target_arch = "riscv64")]
+        match riscv::register::scause::read().cause() {
+            riscv::interrupt::Trap::Interrupt(code) => {
+                Self::Interrupt(Interrupt::try_from(code).unwrap())
+            }
+            riscv::interrupt::Trap::Exception(code) => {
+                Self::Exception(Exception::try_from(code).unwrap())
+            }
+        }
 
-        cfg_select! {
-            target_arch = "riscv64" => {
-                match riscv::register::scause::read().cause() {
-                    riscv::interrupt::Trap::Interrupt(code) => {
-                        Self::Interrupt(Interrupt::try_from(code).unwrap())
-                    }
-                    riscv::interrupt::Trap::Exception(code) => {
-                        Self::Exception(Exception::try_from(code).unwrap())
-                    }
-                }
-            },
-            target_arch = "loongarch64" => {
-                use bit_field::BitField;
-                use core::arch::asm;
+        #[cfg(target_arch = "loongarch64")]
+        {
+            use bit_field::BitField;
+            use core::arch::asm;
 
-                let estat: usize;
-                unsafe { asm!("csrrd {0}, 0x5", out(reg) estat) };
+            let estat: usize;
+            unsafe { asm!("csrrd {0}, 0x5", out(reg) estat) };
 
-                let ecode = estat.get_bits(16..=21);
-                if ecode != 0 {
-                    Self::Exception(Exception::try_from(ecode).unwrap())
-                } else {
-                    // “仅当 CSR.ECFG.VS=0 时，表示是中断”，但手册也没说不是 0 时的行为，当作未定义行为忽略了
-                    let is = estat.get_bits(0..=12);
+            let ecode = estat.get_bits(16..=21);
+            if ecode != 0 {
+                Self::Exception(Exception::try_from(ecode).unwrap())
+            } else {
+                // “仅当 CSR.ECFG.VS=0 时，表示是中断”，但手册也没说不是 0 时的行为，当作未定义行为忽略了
+                let is = estat.get_bits(0..=12);
 
-                    static_assertions::const_assert_eq!(size_of::<usize>(), 8);
-                    Self::Interrupt(Interrupt::try_from((63 - is.leading_zeros()) as usize).unwrap())
-                }
-            },
+                static_assertions::const_assert_eq!(size_of::<usize>(), 8);
+                Self::Interrupt(Interrupt::try_from((63 - is.leading_zeros()) as usize).unwrap())
+            }
         }
     }
 }
@@ -130,9 +129,16 @@ impl Exception {
             self,
             Self::LoadPageFault | Self::StorePageFault | Self::InstructionPageFault
         );
-        cfg_select! {
-            target_arch = "riscv64" => v1,
-            target_arch = "loongarch64" => v1 || matches!(self, Self::PageModifyFault | Self::PageNonReadableFault | Self::PageNonExecutableFault),
+
+        #[cfg(target_arch = "riscv64")]
+        {
+            v1
         }
+
+        #[cfg(target_arch = "loongarch64")]
+        (v1 || matches!(
+            self,
+            Self::PageModifyFault | Self::PageNonReadableFault | Self::PageNonExecutableFault
+        ))
     }
 }

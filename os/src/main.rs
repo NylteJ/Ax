@@ -30,6 +30,7 @@
 #![feature(const_trait_impl)]
 #![feature(never_type)]
 #![feature(ptr_as_uninit)]
+#![feature(associated_type_defaults)]
 //
 #![deny(unused_must_use)]
 
@@ -37,13 +38,13 @@ extern crate alloc;
 
 use core::arch::asm;
 use core::arch::global_asm;
-use core::arch::naked_asm;
 use core::bstr::ByteStr;
 use core::intrinsics::volatile_set_memory;
 use core::ops::Deref;
 
 use flat_device_tree::Fdt;
 
+use crate::arch::interfaces::{Arch, Regs, Trap};
 use crate::basic::debugger::backtrace;
 use crate::basic::global_allocator::init_heap;
 use crate::basic::logger;
@@ -55,13 +56,13 @@ use crate::filesystem::vfs;
 use crate::filesystem::vfs::ROOT_PATH;
 use crate::filesystem::vfs::walk_path;
 use crate::memory::ZERO_PAGE;
-use crate::memory::address::LINEAR_MAPPING_OFFSET;
 use crate::memory::address::PhysAddr;
 use crate::memory::address::VirtAddr;
 use crate::memory::frame_allocator;
 use crate::memory::page_meta::PAGE_METADATAS;
 use crate::multitask::task::Task;
 
+mod arch;
 mod basic;
 mod devices;
 mod filesystem;
@@ -82,92 +83,10 @@ global_asm!(
     BOOT_STACK_BYTES = const BOOT_STACK_BYTES,
 );
 
-#[cfg(target_arch = "riscv64")]
-#[repr(align(4096))]
-#[allow(dead_code)] // 尽管 Rust 侧不会读取其成员，汇编侧会访问它，因此并非“死代码”
-struct BootPageTable([usize; 512]);
-
-#[cfg(target_arch = "riscv64")]
-static BOOT_PAGE_TABLE: BootPageTable = const {
-    use crate::memory::address::PhysPageNum;
-
-    use crate::memory::page::PTEFlagsNative;
-
-    let mut entries = [0; 512];
-
-    const VX: usize = PTEFlagsNative::Valid.bits() | PTEFlagsNative::Execute.bits();
-    const VRWX: usize = VX | PTEFlagsNative::Read.bits() | PTEFlagsNative::Write.bits();
-
-    // 将低地址的 0x80000000~... 和高地址的都映射到同一个位置
-    // 这是因为 Rust 编译器认为自己位于高地址，因此各种全局变量都会从高地址拿数据
-    // 但程序实际跑在低地址，特别是刚启动时，直接使用的就是物理地址。为了 pc 还能用，必须暂时映射低地址。
-    entries[2] = PhysPageNum::<2>(2).mask() | VX;
-    entries[256 + 2] = PhysPageNum::<2>(2).mask() | VRWX;
-
-    // 然后，由于 VirtIO 设备普遍使用 0x10000000 附近的地址，我们将这部分也进行映射
-    entries[256 + 0] = PhysPageNum::<2>(0).mask() | VRWX;
-
-    BootPageTable(entries)
-};
-
-#[unsafe(naked)]
-#[unsafe(no_mangle)]
-#[unsafe(link_section = ".text.entry")]
-pub extern "C" fn _start() {
-    cfg_select! {
-        target_arch = "riscv64" => naked_asm!(
-            // 此时，尽管程序认为自己位于高 256 GB 处，实际它还是被加载到了正常入口点位置，因此必须先启用虚拟内存
-            // === 注意 ===
-            // 这里按理来说是要手动偏移的（因为 BOOT_PAGE_TABLE 位于一个很高的虚拟地址），但是 Rust 编译器会在所
-            // 有优化等级下将其编译为依据 pc 间接寻址，而 Rust 编译器认为的 pc 恰好也是虚拟地址，二者的相对偏移量相同，
-            // 因此 t1 可以直接加载到 BOOT_PAGE_TABLE 的实际物理地址。
-            // 它只是恰好能工作！
-            // ============
-            // "li t0, {LINEAR_MAPPING_OFFSET}",
-            "la t1, {BOOT_PAGE_TABLE}",
-            // "sub t1, t1, t0",
-            "li t2, 8 << 60",
-            "srli t1, t1, 12",
-            "or t1, t1, t2",
-            "csrw satp, t1",
-            "sfence.vma",
-            // 现在虚拟地址已经启用，不过 PC 还在低地址，这会让一些相对寻址失效。
-            // 目前不会出问题，因为我们也映射了低地址，但长远考虑这里还是要挪 PC。
-            // 注意即使是内核也没办法直接改 PC，我们只能用跳转指令操作。
-            "li t0, {LINEAR_MAPPING_OFFSET} + 4 * 2", // 注意这个偏移量和下面的汇编代码长度强相关！（是的这代码很烂）
-            "auipc t1, 0",
-            "add t1, t1, t0",
-            "jr t1",
-            // OK，现在一切正常了！
-            "la sp, boot_stack_top",
-            "j {main}",
-            BOOT_PAGE_TABLE = sym BOOT_PAGE_TABLE,
-            LINEAR_MAPPING_OFFSET = const LINEAR_MAPPING_OFFSET,
-            main = sym main,
-        ),
-        target_arch = "loongarch64" => naked_asm!(
-            // 启用 DMW
-            "li.d $t0, {LINEAR_MAPPING_OFFSET} | 0x11", // 一致可缓存，PLV 0
-            "csrwr $t0, 0x180",
-            "li.d $t0, 0x10", // DA = 0, PG = 1
-            "csrwr $t0, 0x0",
-            // 和 RISC-V 64 的情况不一样，这里 PC 初始就位于高地址，所以接下来不用动了
-            // （由于 LoongArch 64 物理地址空间最高不超过 60 位，不启用 DMW 程序貌似也是能正常跑的，多余高位会直接被忽略）
-            "la $sp, boot_stack_top",
-            // LoongArch 64 支持设备树，但不会像 RISC-V 64 那样自动通过寄存器传参，而是始终为定值
-            // 这里我们手动传给 main
-            "li.d $a1, 0x100000",
-            "b {main}",
-            LINEAR_MAPPING_OFFSET = const LINEAR_MAPPING_OFFSET,
-            main = sym main,
-        ),
-    }
-}
-
 // main 必须不能返回（因为 _start 中用的是无条件跳转）
 pub extern "C" fn main(_: usize, dtb: PhysAddr) -> ! {
     clear_bss();
-    trap::trap_handler::init_k();
+    arch::NativeRegs::set_trap_handler(arch::NativeTrap::trap_handler_raw_from_kernel);
 
     #[cfg(target_arch = "loongarch64")]
     memory::tlb_refill_handler::init();
@@ -229,6 +148,8 @@ pub extern "C" fn main(_: usize, dtb: PhysAddr) -> ! {
         // 清空整个 TLB
         unsafe { asm!("invtlb 0x0, $zero, $zero") };
     }
+
+    basic::timer::init_clock_freq();
 
     filesystem::register_all();
 
@@ -332,12 +253,7 @@ pub extern "C" fn main(_: usize, dtb: PhysAddr) -> ! {
     trap::enable_timer_interrupt();
     basic::timer::start_timer_tick_tock();
 
-    const INIT_PATH: &str = cfg_select! {
-        target_arch = "riscv64" => "/rv-init",
-        target_arch = "loongarch64" => "/la-init",
-    };
-
-    let rv = vfs::walk_path(vfs::PathToWalk::Absolute(ByteStr::new(INIT_PATH)))
+    let rv = vfs::walk_path(vfs::PathToWalk::Absolute(arch::Native::INIT_EXEC_PATH))
         .unwrap()
         .ensure()
         .unwrap();

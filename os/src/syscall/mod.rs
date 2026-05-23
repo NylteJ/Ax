@@ -17,131 +17,6 @@ pub mod basic;
 pub mod filesystem;
 pub mod process;
 
-/// 执行系统调用。
-///
-/// 第一个参数是系统调用 ID，剩余参数将被转发给 ecall。
-///
-/// 允许 0 ~ 6 个参数，不在此范围内的参数数目会导致编译错误。
-///
-/// 返回值是 ecall 的返回值，类型为 isize。
-#[macro_export]
-macro_rules! syscall {
-    ($nr:expr) => {{
-        let ret: usize;
-        unsafe {
-            cfg_select! {
-                target_arch = "riscv64" => core::arch::asm!(
-                    "ecall",
-                    in("a7") $nr,
-                    lateout("a0") ret,
-                ),
-                target_arch = "loongarch64" => core::arch::asm!(
-                    "syscall 0",
-                    in("$a7") $nr,
-                    lateout("$a0") ret,
-                ),
-            }
-        }
-        ret
-    }};
-
-    ($nr:expr, $a0:expr) => {{
-        let ret: usize;
-        unsafe {
-            cfg_select! {
-                target_arch = "riscv64" => core::arch::asm!(
-                    "ecall",
-                    in("a7") $nr,
-                    in("a0") $a0,
-                    lateout("a0") ret,
-                ),
-                target_arch = "loongarch64" => core::arch::asm!(
-                    "syscall 0",
-                    in("$a7") $nr,
-                    in("$a0") $a0,
-                    lateout("$a0") ret,
-                ),
-            }
-        }
-        ret
-    }};
-
-    ($nr:expr, $a0:expr, $a1:expr) => {{
-        let ret: usize;
-        unsafe {
-            cfg_select! {
-                target_arch = "riscv64" => core::arch::asm!(
-                    "ecall",
-                    in("a7") $nr,
-                    in("a0") $a0,
-                    in("a1") $a1,
-                    lateout("a0") ret,
-                ),
-                target_arch = "loongarch64" => core::arch::asm!(
-                    "syscall 0",
-                    in("$a7") $nr,
-                    in("$a0") $a0,
-                    in("$a1") $a1,
-                    lateout("$a0") ret,
-                ),
-            }
-        }
-        ret
-    }};
-
-    ($nr:expr, $a0:expr, $a1:expr, $a2:expr) => {{
-        let ret: usize;
-        unsafe {
-            cfg_select! {
-                target_arch = "riscv64" => core::arch::asm!(
-                    "ecall",
-                    in("a7") $nr,
-                    in("a0") $a0,
-                    in("a1") $a1,
-                    in("a2") $a2,
-                    lateout("a0") ret,
-                ),
-                target_arch = "loongarch64" => core::arch::asm!(
-                    "syscall 0",
-                    in("$a7") $nr,
-                    in("$a0") $a0,
-                    in("$a1") $a1,
-                    in("$a2") $a2,
-                    lateout("$a0") ret,
-                ),
-            }
-        }
-        ret
-    }};
-
-    ($nr:expr, $a0:expr, $a1:expr, $a2:expr, $a3:expr) => {{
-        let ret: usize;
-        unsafe {
-            cfg_select! {
-                target_arch = "riscv64" => core::arch::asm!(
-                    "ecall",
-                    in("a7") $nr,
-                    in("a0") $a0,
-                    in("a1") $a1,
-                    in("a2") $a2,
-                    in("a3") $a3,
-                    lateout("a0") ret,
-                ),
-                target_arch = "loongarch64" => core::arch::asm!(
-                    "syscall 0",
-                    in("$a7") $nr,
-                    in("$a0") $a0,
-                    in("$a1") $a1,
-                    in("$a2") $a2,
-                    in("$a3") $a3,
-                    lateout("$a0") ret,
-                ),
-            }
-        }
-        ret
-    }}; // TODO
-}
-
 #[derive(Clone, Copy)]
 #[repr(transparent)]
 pub struct SyscallFn {
@@ -156,35 +31,34 @@ impl SyscallFn {
         let func_addr = self.ptr.as_ptr() as usize;
 
         let ret: isize;
-        cfg_select! {
-            target_arch = "riscv64" => unsafe {
-                asm!(
-                    "jalr ra, {func}",
-                    func = in(reg) func_addr,
-                    in("a0") args[0],
-                    in("a1") args[1],
-                    in("a2") args[2],
-                    in("a3") args[3],
-                    in("a4") args[4],
-                    in("a5") args[5],
-                    lateout("a0") ret,
-                    clobber_abi("C"),
-                );
-            },
-            target_arch = "loongarch64" => unsafe {
-                asm!(
-                    "jirl $ra, {func}, 0",
-                    func = in(reg) func_addr,
-                    in("$a0") args[0],
-                    in("$a1") args[1],
-                    in("$a2") args[2],
-                    in("$a3") args[3],
-                    in("$a4") args[4],
-                    in("$a5") args[5],
-                    lateout("$a0") ret,
-                    clobber_abi("C"),
-                );
-            },
+
+        unsafe {
+            #[cfg(target_arch = "riscv64")]
+            asm!(
+                "jalr ra, {func}",
+                func = in(reg) func_addr,
+                in("a0") args[0],
+                in("a1") args[1],
+                in("a2") args[2],
+                in("a3") args[3],
+                in("a4") args[4],
+                in("a5") args[5],
+                lateout("a0") ret,
+                clobber_abi("C"),
+            );
+            #[cfg(target_arch = "loongarch64")]
+            asm!(
+                "jirl $ra, {func}, 0",
+                func = in(reg) func_addr,
+                in("$a0") args[0],
+                in("$a1") args[1],
+                in("$a2") args[2],
+                in("$a3") args[3],
+                in("$a4") args[4],
+                in("$a5") args[5],
+                lateout("$a0") ret,
+                clobber_abi("C"),
+            );
         }
 
         ret

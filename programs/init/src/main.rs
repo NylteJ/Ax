@@ -6,22 +6,27 @@ use core::fmt::Write;
 use core::mem::MaybeUninit;
 use core::sync::atomic::AtomicU32;
 
+#[cfg(not(any(target_arch = "riscv64", target_arch = "loongarch64")))]
+compile_error!("Unsupported architecture");
+
 macro_rules! syscall {
     ($nr:expr) => {{
         let ret: usize;
         unsafe {
-            cfg_select! {
-                target_arch = "riscv64" => core::arch::asm!(
-                    "ecall",
-                    in("a7") $nr,
-                    lateout("a0") ret,
-                ),
-                target_arch = "loongarch64" => core::arch::asm!(
-                    "syscall 0",
-                    in("$a7") $nr,
-                    lateout("$a0") ret,
-                ),
-            }
+            #[cfg(target_arch = "riscv64")]
+            core::arch::asm!(
+                "ecall",
+                in("a7") $nr,
+                lateout("a0") ret,
+                options(nostack, nomem, preserves_flags),
+            );
+            #[cfg(target_arch = "loongarch64")]
+            core::arch::asm!(
+                "syscall 0",
+                in("$a7") $nr,
+                lateout("$a0") ret,
+                options(nostack, nomem, preserves_flags),
+            );
         }
         ret
     }};
@@ -29,20 +34,20 @@ macro_rules! syscall {
     ($nr:expr, $a0:expr) => {{
         let ret: usize;
         unsafe {
-            cfg_select! {
-                target_arch = "riscv64" => core::arch::asm!(
-                    "ecall",
-                    in("a7") $nr,
-                    in("a0") $a0,
-                    lateout("a0") ret,
-                ),
-                target_arch = "loongarch64" => core::arch::asm!(
-                    "syscall 0",
-                    in("$a7") $nr,
-                    in("$a0") $a0,
-                    lateout("$a0") ret,
-                ),
-            }
+            #[cfg(target_arch = "riscv64")]
+            core::arch::asm!(
+                "ecall",
+                in("a7") $nr,
+                in("a0") $a0,
+                lateout("a0") ret,
+            );
+            #[cfg(target_arch = "loongarch64")]
+            core::arch::asm!(
+                "syscall 0",
+                in("$a7") $nr,
+                in("$a0") $a0,
+                lateout("$a0") ret,
+            );
         }
         ret
     }};
@@ -50,22 +55,22 @@ macro_rules! syscall {
     ($nr:expr, $a0:expr, $a1:expr) => {{
         let ret: usize;
         unsafe {
-            cfg_select! {
-                target_arch = "riscv64" => core::arch::asm!(
-                    "ecall",
-                    in("a7") $nr,
-                    in("a0") $a0,
-                    in("a1") $a1,
-                    lateout("a0") ret,
-                ),
-                target_arch = "loongarch64" => core::arch::asm!(
-                    "syscall 0",
-                    in("$a7") $nr,
-                    in("$a0") $a0,
-                    in("$a1") $a1,
-                    lateout("$a0") ret,
-                ),
-            }
+            #[cfg(target_arch = "riscv64")]
+            core::arch::asm!(
+                "ecall",
+                in("a7") $nr,
+                in("a0") $a0,
+                in("a1") $a1,
+                lateout("a0") ret,
+            );
+            #[cfg(target_arch = "loongarch64")]
+            core::arch::asm!(
+                "syscall 0",
+                in("$a7") $nr,
+                in("$a0") $a0,
+                in("$a1") $a1,
+                lateout("$a0") ret,
+            );
         }
         ret
     }};
@@ -73,24 +78,24 @@ macro_rules! syscall {
     ($nr:expr, $a0:expr, $a1:expr, $a2:expr) => {{
         let ret: usize;
         unsafe {
-            cfg_select! {
-                target_arch = "riscv64" => core::arch::asm!(
-                    "ecall",
-                    in("a7") $nr,
-                    in("a0") $a0,
-                    in("a1") $a1,
-                    in("a2") $a2,
-                    lateout("a0") ret,
-                ),
-                target_arch = "loongarch64" => core::arch::asm!(
-                    "syscall 0",
-                    in("$a7") $nr,
-                    in("$a0") $a0,
-                    in("$a1") $a1,
-                    in("$a2") $a2,
-                    lateout("$a0") ret,
-                ),
-            }
+            #[cfg(target_arch = "riscv64")]
+            core::arch::asm!(
+                "ecall",
+                in("a7") $nr,
+                in("a0") $a0,
+                in("a1") $a1,
+                in("a2") $a2,
+                lateout("a0") ret,
+            );
+            #[cfg(target_arch = "loongarch64")]
+            core::arch::asm!(
+                "syscall 0",
+                in("$a7") $nr,
+                in("$a0") $a0,
+                in("$a1") $a1,
+                in("$a2") $a2,
+                lateout("$a0") ret,
+            );
         }
         ret
     }};
@@ -98,26 +103,26 @@ macro_rules! syscall {
     ($nr:expr, $a0:expr, $a1:expr, $a2:expr, $a3:expr) => {{
         let ret: usize;
         unsafe {
-            cfg_select! {
-                target_arch = "riscv64" => core::arch::asm!(
-                    "ecall",
-                    in("a7") $nr,
-                    in("a0") $a0,
-                    in("a1") $a1,
-                    in("a2") $a2,
-                    in("a3") $a3,
-                    lateout("a0") ret,
-                ),
-                target_arch = "loongarch64" => core::arch::asm!(
-                    "syscall 0",
-                    in("$a7") $nr,
-                    in("$a0") $a0,
-                    in("$a1") $a1,
-                    in("$a2") $a2,
-                    in("$a3") $a3,
-                    lateout("$a0") ret,
-                ),
-            }
+            #[cfg(target_arch = "riscv64")]
+            core::arch::asm!(
+                "ecall",
+                in("a7") $nr,
+                in("a0") $a0,
+                in("a1") $a1,
+                in("a2") $a2,
+                in("a3") $a3,
+                lateout("a0") ret,
+            );
+            #[cfg(target_arch = "loongarch64")]
+            core::arch::asm!(
+                "syscall 0",
+                in("$a7") $nr,
+                in("$a0") $a0,
+                in("$a1") $a1,
+                in("$a2") $a2,
+                in("$a3") $a3,
+                lateout("$a0") ret,
+            );
         }
         ret
     }};

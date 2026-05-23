@@ -11,10 +11,11 @@ pub struct TaskContext {
     pub task_pointer: usize, // Task 结构体的地址
     pub stack_pointer: usize,
     pub page_table_register: usize,
-    pub callee_saved_registers: [usize; cfg_select! {
-        target_arch = "riscv64" => 12, // s0 ~ s11
-        target_arch = "loongarch64" => 9, // $s0 ~ $s8
-    }],
+
+    #[cfg(target_arch = "riscv64")]
+    pub callee_saved_registers: [usize; 12], // s0 ~ s11
+    #[cfg(target_arch = "loongarch64")]
+    pub callee_saved_registers: [usize; 9], // $s0 ~ $s8
 }
 
 /// 保存当前上下文，并切换到另一个上下文。
@@ -36,8 +37,9 @@ pub unsafe extern "C" fn switch_context(to: &TaskContext) {
 
     const KSTACK_OFFSET_IN_TASK: usize = offset_of!(crate::multitask::task::Task, kstack);
 
-    cfg_select! {
-        target_arch = "riscv64" => seq!(N in 0..=11 { naked_asm!(
+    #[cfg(target_arch = "riscv64")]
+    seq!(N in 0..=11 {
+        naked_asm!(
             // 1. 在当前内核栈上分配一块空间，用于存储当前上下文
             "addi sp, sp, -{TASK_CONTEXT_SIZE}",
             // 2. 保存当前上下文（ra、tp、sp、satp、s0~s11）
@@ -73,8 +75,11 @@ pub unsafe extern "C" fn switch_context(to: &TaskContext) {
             REGS_OFFSET = const REGS_OFFSET,
             TASK_ADDR_OFFSET = const TASK_ADDR_OFFSET,
             KSTACK_OFFSET_IN_TASK = const KSTACK_OFFSET_IN_TASK,
-        )}),
-        target_arch = "loongarch64" => seq!(N in 0..=8 { naked_asm!(
+        )}
+    );
+    #[cfg(target_arch = "loongarch64")]
+    seq!(N in 0..=8 {
+        naked_asm!(
             // 1. 在当前内核栈上分配一块空间，用于存储当前上下文
             "addi.d $sp, $sp, -{TASK_CONTEXT_SIZE}",
             // 2. 保存当前上下文（$ra、$tp、$sp、PGDL、$s0~$s8）
@@ -110,6 +115,6 @@ pub unsafe extern "C" fn switch_context(to: &TaskContext) {
             REGS_OFFSET = const REGS_OFFSET,
             TASK_ADDR_OFFSET = const TASK_ADDR_OFFSET,
             KSTACK_OFFSET_IN_TASK = const KSTACK_OFFSET_IN_TASK,
-        )}),
-    }
+        )}
+    );
 }

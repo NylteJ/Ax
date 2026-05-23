@@ -1,10 +1,9 @@
-use core::{
-    arch::asm, intrinsics::volatile_set_memory, mem::replace, pin::Pin, sync::atomic::Ordering,
-};
+use core::{intrinsics::volatile_set_memory, mem::replace, pin::Pin, sync::atomic::Ordering};
 
 use alloc::vec::Vec;
 
 use crate::{
+    arch::{self, interfaces::Basic},
     basic::shared_with_asm::SharedWithAsm,
     memory::{
         ZERO_PAGE,
@@ -383,10 +382,7 @@ impl AddressSpace {
             }
         }
 
-        cfg_select! {
-            target_arch = "riscv64" => unsafe { asm!("sfence.vma {vaddr}, zero", vaddr = in(reg) addr.0) },
-            target_arch = "loongarch64" => unsafe { asm!("invtlb 0x6, $zero, {vaddr}", vaddr = in(reg) addr.0) },
-        }
+        arch::NativeBasic::tlb_invalidate_addr(addr);
 
         Ok(())
     }

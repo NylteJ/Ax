@@ -12,6 +12,10 @@ use elf::{ElfBytes, endian::NativeEndian};
 use intrusive_collections::{LinkedListLink, intrusive_adapter};
 
 use crate::{
+    arch::{
+        self,
+        interfaces::{Basic, Regs, Trap, TrapContext},
+    },
     basic::{
         UnsafeInited,
         shared_with_asm::SharedWithAsm,
@@ -36,7 +40,6 @@ use crate::{
         task_scheduler::TASK_SCHEDULER,
     },
     syscall::process::CloneFlags,
-    trap::trap_handler::{TrapContext, return_to_user, trap_handler_raw_from_user},
 };
 
 /// 当前任务的所有元数据。拥有任务所有资源的所有权。
@@ -171,50 +174,7 @@ impl Task {
 
         // 至此，task 终于完全初始化完毕了！
 
-        // FIXME
-        use core::arch::asm;
-        cfg_select! {
-            target_arch = "riscv64" => unsafe {
-                use riscv::register::sstatus;
-
-                sstatus::set_spp(sstatus::SPP::User);
-
-                asm!(
-                    "csrw stvec, {trap_handler_raw_from_user}",
-                    "csrw sscratch, {stack}",
-                    "csrw sepc, {entry}",
-                    "csrrw sp, sscratch, {kstack}",
-                    "sret",
-                    trap_handler_raw_from_user = in(reg) trap_handler_raw_from_user,
-                    stack = in(reg) USER_STACK_HIGHEST,
-                    entry = in(reg) entry,
-                    kstack = in(reg) kstack_sp,
-                    options(noreturn),
-                );
-            },
-            target_arch = "loongarch64" => unsafe {
-                use bit_field::BitField;
-
-                let mut prmd: usize;
-                asm!("csrrd {0}, 0x0", out(reg) prmd); // CRMD
-                prmd.set_bits(0..2, 3);
-                prmd.set_bit(2, true);
-                asm!("csrwr {0}, 0x1", in(reg) prmd);
-
-                asm!(
-                    "csrwr {trap_handler_raw_from_user}, 0xc",
-                    "csrwr {entry}, 0x6",
-                    "csrwr {kstack}, 0x30",
-                    "move $sp, {stack}",
-                    "ertn",
-                    trap_handler_raw_from_user = in(reg) trap_handler_raw_from_user,
-                    entry = in(reg) entry,
-                    stack = in(reg) USER_STACK_HIGHEST,
-                    kstack = in(reg) kstack_sp,
-                    options(noreturn),
-                );
-            },
-        }
+        unsafe { arch::NativeBasic::execute_init(entry, USER_STACK_HIGHEST, kstack_sp) };
     }
 
     /// 复制一份当前任务，并将其添加到调度器中，返回新任务。子任务的返回值（a0）会被篡改为 0。
@@ -225,7 +185,8 @@ impl Task {
         let (_kstack, task_ptr_ptr) = Self::alloc_kstack();
         let kstack_sp = (task_ptr_ptr as usize) / STACK_ALIGN * STACK_ALIGN;
         // 而且必须压入（几乎）完全一致的 TrapContext 并伪造 TaskContext
-        let ret_trap_ctxt_ptr = (kstack_sp - size_of::<TrapContext>()) as *mut TrapContext;
+        let ret_trap_ctxt_addr = kstack_sp - size_of::<arch::NativeTrapContext>();
+        let ret_trap_ctxt_ptr = ret_trap_ctxt_addr as *mut arch::NativeTrapContext;
         let ret_trap_ctxt = unsafe {
             ret_trap_ctxt_ptr
                 .as_uninit_mut()
@@ -234,10 +195,10 @@ impl Task {
         };
         if let Some(ustack) = ustack {
             // 此时还要手动修改用户栈指针
-            ret_trap_ctxt.registers[TrapContext::STACK_POINTER] = ustack.get();
+            ret_trap_ctxt.regs.sp = ustack.get();
         }
         // 别忘了修改其返回值
-        ret_trap_ctxt.registers[TrapContext::RET_REG] = 0;
+        *ret_trap_ctxt.ret_reg_mut() = 0;
         // 接下来是 TaskContext
         let ret_task_ctxt_ptr =
             (ret_trap_ctxt_ptr.addr() - size_of::<TaskContext>()) as *mut TaskContext;
@@ -246,7 +207,7 @@ impl Task {
             ret_task_ctxt_ptr
                 .byte_add(offset_of!(TaskContext, return_address))
                 .cast::<usize>()
-                .write(return_to_user as usize);
+                .write(arch::NativeTrap::return_to_user as usize);
             ret_task_ctxt_ptr
                 .byte_add(offset_of!(TaskContext, stack_pointer))
                 .cast::<usize>()
@@ -276,10 +237,7 @@ impl Task {
             // 地址空间需要复制一份，并将所有页设为写时复制
             let address_space = Arc::new(RwLock::new(self.address_space.write().clone_cow()));
             // 由于所有页被设为了写时复制，本进程的页表很可能也已经改变，因此需要刷新 TLB
-            cfg_select! {
-                target_arch = "riscv64" => riscv::asm::sfence_vma_all(),
-                target_arch = "loongarch64" => unsafe { core::arch::asm!("invtlb 0x0, $zero, $zero") },
-            }
+            arch::NativeBasic::tlb_invalidate_all();
             address_space
         };
 
@@ -383,18 +341,13 @@ impl Task {
         // （剩余寄存器的值并不重要）
         let trap_context = unsafe { self.get_trap_context().cast_mut().as_mut_unchecked() };
         trap_context.ret_pc = entry;
-        trap_context.registers[TrapContext::STACK_POINTER] = USER_STACK_HIGHEST;
+        trap_context.regs.sp = USER_STACK_HIGHEST;
 
         // OK，这样就可以了！
     }
 
     pub unsafe fn set_current_task(task_ptr: *const Task) {
-        use core::arch::asm;
-
-        cfg_select! {
-            target_arch = "riscv64" =>     unsafe { asm!("mv    tp, {0}", in(reg) task_ptr) },
-            target_arch = "loongarch64" => unsafe { asm!("move $tp, {0}", in(reg) task_ptr) },
-        }
+        arch::NativeRegs::set_tp(task_ptr.addr());
     }
 
     /// 暂时切换到此任务。
@@ -626,10 +579,10 @@ impl Task {
     ///
     /// # Safety
     /// 此函数本身安全，但当前任务不处于内核态时其返回值不能被安全使用
-    pub fn get_trap_context(&self) -> *const TrapContext {
-        let misaligned_top = self.kstack.get_high_addr() - size_of::<*const TaskContext>();
+    pub fn get_trap_context(&self) -> *const arch::NativeTrapContext {
+        let misaligned_top = self.kstack.get_high_addr() - size_of::<*const Task>();
         let top = misaligned_top / STACK_ALIGN * STACK_ALIGN;
-        (top - size_of::<TrapContext>()) as *const TrapContext
+        (top - size_of::<arch::NativeTrapContext>()) as *const arch::NativeTrapContext
     }
 }
 

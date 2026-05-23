@@ -1,9 +1,5 @@
 use crate::{
-    basic::{
-        cleanup_and_shutdown,
-        sbi::{ShutdownStatus, shutdown},
-        shared_with_asm::SharedWithAsm,
-    },
+    basic::{cleanup_and_shutdown, shared_with_asm::SharedWithAsm},
     memory::uaccess::copy_from_user,
     multitask::{
         current_task,
