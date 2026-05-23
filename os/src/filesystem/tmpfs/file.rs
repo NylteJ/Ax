@@ -1,5 +1,7 @@
 use core::any::Any;
 
+use uninit::extension_traits::MaybeUninitExt;
+
 use crate::{
     filesystem::{
         tmpfs::{INodeType, TmpFsINode},
@@ -22,7 +24,7 @@ impl vfs::FileOps for TmpFsFile {
             inode_read_guard.page_cache.as_ref().unwrap(),
             len.min(inode_read_guard.file_size - *pos),
             |buf| {
-                let k_src = unsafe { buf.assume_init_ref() };
+                let k_src = unsafe { buf.assume_init_by_ref() };
                 copy_to_user(user_buf, k_src)?;
                 user_buf = unsafe { user_buf.add(buf.len()) };
                 Ok(())

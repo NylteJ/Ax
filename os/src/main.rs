@@ -3,6 +3,7 @@
 //
 #![allow(internal_features)]
 #![allow(incomplete_features)]
+#![allow(stable_features)]
 #![feature(core_intrinsics)]
 #![feature(rustc_attrs)]
 #![feature(fn_align)]
@@ -10,27 +11,29 @@
 #![feature(sync_unsafe_cell)]
 #![feature(adt_const_params)]
 #![feature(unsized_const_params)]
-#![feature(exact_div)]
-#![feature(generic_atomic)]
 #![feature(ptr_metadata)]
-#![feature(bstr)]
 #![feature(deref_pure_trait)]
 #![feature(debug_closure_helpers)]
 #![feature(try_trait_v2)]
-#![feature(deque_extend_front)]
 #![feature(slice_split_once)]
 #![feature(unique_rc_arc)]
-#![feature(sized_hierarchy)]
 #![feature(get_mut_unchecked)]
 #![feature(const_type_name)]
 #![feature(offset_of_enum)]
-#![feature(const_result_unwrap_unchecked)]
 #![feature(forget_unsized)]
-#![feature(const_convert)]
 #![feature(const_trait_impl)]
 #![feature(never_type)]
 #![feature(ptr_as_uninit)]
 #![feature(associated_type_defaults)]
+#![feature(iter_advance_by)]
+#![feature(naked_functions)]
+#![feature(let_chains)]
+#![feature(non_null_from_ref)]
+#![feature(ptr_as_ref_unchecked)]
+#![feature(const_vec_string_slice)]
+#![feature(integer_sign_cast)]
+#![feature(new_zeroed_alloc)]
+#![feature(trait_upcasting)]
 //
 #![deny(unused_must_use)]
 
@@ -38,13 +41,13 @@ extern crate alloc;
 
 use core::arch::asm;
 use core::arch::global_asm;
-use core::bstr::ByteStr;
 use core::intrinsics::volatile_set_memory;
 use core::ops::Deref;
 
 use flat_device_tree::Fdt;
 
 use crate::arch::interfaces::{Arch, Regs, Trap};
+use crate::basic::bstr::ByteStr;
 use crate::basic::debugger::backtrace;
 use crate::basic::global_allocator::init_heap;
 use crate::basic::logger;
@@ -281,7 +284,7 @@ fn clear_bss() {
         asm!("la {0}, ebss", out(reg) ebss);
     }
 
-    unsafe { volatile_set_memory(sbss, 0, ebss.offset_from_unsigned(sbss)) };
+    unsafe { volatile_set_memory(sbss, 0, ebss.offset_from(sbss).cast_unsigned()) };
 }
 
 fn init_devs() {

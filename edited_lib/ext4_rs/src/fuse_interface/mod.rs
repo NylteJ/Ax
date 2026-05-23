@@ -1,5 +1,3 @@
-use core::bstr::ByteStr;
-
 use crate::prelude::*;
 
 use crate::ext4_defs::*;
@@ -16,7 +14,7 @@ pub use crate::ext4_defs::InodeFileType;
 /// fuser interface for ext4
 impl Ext4 {
     /// Look up a directory entry by name and get its attributes.
-    pub fn fuse_lookup(&self, parent: u64, name: &ByteStr) -> Result<FileAttr> {
+    pub fn fuse_lookup(&self, parent: u64, name: &[u8]) -> Result<FileAttr> {
         let mut search_result = Ext4DirSearchResult::new(Ext4DirEntry::default());
 
         self.dir_find_entry(parent as u32, name, &mut search_result)?;
@@ -124,7 +122,7 @@ impl Ext4 {
     pub fn fuse_mknod(
         &self,
         parent: u64,
-        name: &ByteStr,
+        name: &[u8],
         mode: u32,
         umask: u32,
         rdev: u32,
@@ -143,7 +141,7 @@ impl Ext4 {
     pub fn fuse_mknod_with_attr(
         &self,
         parent: u64,
-        name: &ByteStr,
+        name: &[u8],
         mode: u32,
         umask: u32,
         rdev: u32,
@@ -160,7 +158,7 @@ impl Ext4 {
     }
 
     /// Create a directory.
-    pub fn fuse_mkdir(&mut self, parent: u64, name: &ByteStr, mode: u32, umask: u32) -> Result<usize> {
+    pub fn fuse_mkdir(&mut self, parent: u64, name: &[u8], mode: u32, umask: u32) -> Result<usize> {
         let mut search_result = Ext4DirSearchResult::new(Ext4DirEntry::default());
         let r = self.dir_find_entry(parent as u32, name, &mut search_result);
         if r.is_ok() {
@@ -176,7 +174,7 @@ impl Ext4 {
     }
 
     /// Create a directory.
-    pub fn fuse_mkdir_with_attr(&mut self, parent: u64, name: &ByteStr, mode: u32, umask: u32, uid:u32, gid:u32) -> Result<Ext4InodeRef> {
+    pub fn fuse_mkdir_with_attr(&mut self, parent: u64, name: &[u8], mode: u32, umask: u32, uid:u32, gid:u32) -> Result<Ext4InodeRef> {
 
         let mut search_result = Ext4DirSearchResult::new(Ext4DirEntry::default());
         let r = self.dir_find_entry(parent as u32, name, &mut search_result);
@@ -193,7 +191,7 @@ impl Ext4 {
     }
 
     /// Remove a file.
-    pub fn fuse_unlink(&self, parent: u64, name: &ByteStr) -> Result<usize> {
+    pub fn fuse_unlink(&self, parent: u64, name: &[u8]) -> Result<usize> {
         // unlink actual remove a file
 
         // get child inode num
@@ -224,7 +222,7 @@ impl Ext4 {
         Ok(EOK)
     }
     /// Remove a directory.
-    pub fn fuse_rmdir(&mut self, parent: u64, name: &ByteStr) -> Result<usize> {
+    pub fn fuse_rmdir(&mut self, parent: u64, name: &[u8]) -> Result<usize> {
         let mut search_result = Ext4DirSearchResult::new(Ext4DirEntry::default());
 
         let r = self.dir_find_entry(parent as u32, name, &mut search_result)?;
@@ -246,7 +244,7 @@ impl Ext4 {
         Ok(EOK)
     }
     /// Create a symbolic link.
-    pub fn fuse_symlink(&mut self, parent: u64, link_name: &ByteStr, target: &ByteStr) -> Result<usize> {
+    pub fn fuse_symlink(&mut self, parent: u64, link_name: &[u8], target: &[u8]) -> Result<usize> {
         let mut search_result = Ext4DirSearchResult::new(Ext4DirEntry::default());
         let r = self.dir_find_entry(parent as u32, link_name, &mut search_result);
         if r.is_ok() {
@@ -267,7 +265,7 @@ impl Ext4 {
     /// newname: the name of the new file
     ///
     ///
-    pub fn fuse_link(&mut self, ino: u64, newparent: u64, newname: &ByteStr) -> Result<usize> {
+    pub fn fuse_link(&mut self, ino: u64, newparent: u64, newname: &[u8]) -> Result<usize> {
         let mut parent_inode_ref = self.get_inode_ref(newparent as u32);
         let mut child_inode_ref = self.get_inode_ref(ino as u32);
 
@@ -413,7 +411,7 @@ impl Ext4 {
     pub fn fuse_create(
         &mut self,
         parent: u64,
-        name: &ByteStr,
+        name: &[u8],
         mode: u32,
         umask: u32,
         flags: i32,
@@ -493,7 +491,7 @@ impl Ext4 {
     }
 
     /// Rename a file.
-    fn fuse_rename(&mut self, parent: u64, name: &ByteStr, newparent: u64, newname: &ByteStr, flags: u32) {
+    fn fuse_rename(&mut self, parent: u64, name: &[u8], newparent: u64, newname: &[u8], flags: u32) {
         unimplemented!();
     }
 
@@ -563,7 +561,7 @@ impl Ext4 {
     }
 
     /// Set an extended attribute.
-    fn fuse_setxattr(&mut self, ino: u64, name: &ByteStr, _value: &[u8], flags: i32, position: u32) {
+    fn fuse_setxattr(&mut self, ino: u64, name: &[u8], _value: &[u8], flags: i32, position: u32) {
         unimplemented!();
     }
 
@@ -571,7 +569,7 @@ impl Ext4 {
     /// If `size` is 0, the size of the value should be sent with `reply.size()`.
     /// If `size` is not 0, and the value fits, send it with `reply.data()`, or
     /// `reply.error(ERANGE)` if it doesn't.
-    fn fuse_getxattr(&mut self, ino: u64, name: &ByteStr, size: u32) {
+    fn fuse_getxattr(&mut self, ino: u64, name: &[u8], size: u32) {
         unimplemented!();
     }
 
@@ -584,7 +582,7 @@ impl Ext4 {
     }
 
     /// Remove an extended attribute.
-    fn fuse_removexattr(&mut self, ino: u64, name: &ByteStr) {
+    fn fuse_removexattr(&mut self, ino: u64, name: &[u8]) {
         unimplemented!();
     }
 

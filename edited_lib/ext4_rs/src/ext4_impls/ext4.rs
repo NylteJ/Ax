@@ -1,5 +1,3 @@
-use core::bstr::ByteStr;
-
 use crate::prelude::*;
 use crate::return_errno_with_message;
 use crate::utils::*;
@@ -76,7 +74,7 @@ impl Ext4 {
     // with dir result search path offset
     pub fn generic_open(
         &self,
-        path: &ByteStr,
+        path: &[u8],
         parent_inode_num: &mut u32,
         create: bool,
         ftype: u16,
@@ -149,7 +147,7 @@ impl Ext4 {
     }
 
     #[allow(unused)]
-    pub fn dir_mk(&self, path: &ByteStr) -> Result<usize> {
+    pub fn dir_mk(&self, path: &[u8]) -> Result<usize> {
         let mut nameoff = 0;
 
         let filetype = InodeFileType::S_IFDIR;
@@ -167,7 +165,7 @@ impl Ext4 {
         &self,
         parent: &mut Ext4InodeRef,
         child: &mut Ext4InodeRef,
-        name: &ByteStr,
+        name: &[u8],
     ) -> Result<usize> {
         self.dir_remove_entry(parent, name)?;
 

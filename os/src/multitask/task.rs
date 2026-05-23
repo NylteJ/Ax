@@ -98,8 +98,10 @@ pub const INIT_PID: usize = 0;
 pub static INIT_TASK: UnsafeInited<TaskArc> = unsafe { UnsafeInited::uninit() };
 
 const KERNEL_STACK_LAYOUT: alloc::alloc::Layout = unsafe {
-    alloc::alloc::Layout::from_size_align(TaskKernelStackPtr::size(), TaskKernelStackPtr::align())
-        .unwrap_unchecked()
+    alloc::alloc::Layout::from_size_align_unchecked(
+        TaskKernelStackPtr::size(),
+        TaskKernelStackPtr::align(),
+    )
 };
 
 const USER_STACK_HIGHEST: usize = VIRTUAL_ADDRESS_LOW_HIGHEST + 1;

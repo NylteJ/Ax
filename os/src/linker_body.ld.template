@@ -50,6 +50,7 @@ SECTIONS
     ebss = .;
     __debug_data_start = .;
     .debug_infos : AT(. - ADDRESS_OFFSET) {
+        KEEP(*(.debug_infos))
     }
 
     . = ALIGN(4K);

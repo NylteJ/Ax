@@ -2,6 +2,8 @@ use core::any::Any;
 
 use alloc::{sync::Arc, vec::Vec};
 
+use uninit::extension_traits::MaybeUninitExt;
+
 use crate::{
     devices::block_device::BlockDevice,
     filesystem::{
@@ -74,7 +76,7 @@ impl FileSystemOps for Ext4Fs {
         Ok(self
             .ext4
             .read_at_2(&mut inode_ref, page_index as usize * PAGE_BYTES, unsafe {
-                buffer.assume_init_mut()
+                buffer.assume_init_by_mut()
             })?)
     }
 }

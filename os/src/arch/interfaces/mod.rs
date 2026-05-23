@@ -1,5 +1,3 @@
-use core::bstr::ByteStr;
-
 mod basic;
 mod chrono;
 mod regs;
@@ -11,6 +9,8 @@ pub use chrono::Chrono;
 pub use regs::Regs;
 pub use trap::{Trap, TrapContext};
 pub use uaccess_raw::UAccessRaw;
+
+use crate::basic::bstr::ByteStr;
 
 pub unsafe trait Arch {
     /// init 进程对应可执行文件的绝对路径

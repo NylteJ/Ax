@@ -15,14 +15,17 @@ pub mod inode;
 
 pub mod drivers;
 
-use core::{bstr::ByteStr, pin::Pin, sync::atomic::AtomicU32};
+use core::{pin::Pin, sync::atomic::AtomicU32};
 
 use alloc::{borrow::ToOwned, boxed::Box, sync::Arc, vec::Vec};
 
-use crate::filesystem::{
-    devfs::{dentry::DevDEntry, filesystem::DevFs, inode::DevINode},
-    filesystems::{FileSystemType, FileSystemTypeOps, register_filesystem_type},
-    vfs,
+use crate::{
+    basic::bstr::ByteStr,
+    filesystem::{
+        devfs::{dentry::DevDEntry, filesystem::DevFs, inode::DevINode},
+        filesystems::{FileSystemType, FileSystemTypeOps, register_filesystem_type},
+        vfs,
+    },
 };
 
 struct DevFsType;
@@ -31,17 +34,13 @@ impl FileSystemTypeOps for DevFsType {
     fn new_fs(&self) -> Pin<Arc<vfs::FileSystem>> {
         vfs::FileSystem::new(
             |fs, _| {
-                let root_inode = vfs::INode::new_raw(
-                    0,
-                    fs,
-                    vfs::INodeData {
-                        file_size: 0,
-                        hard_links: 2,
-                        mode: vfs::INodeMode::all_permitted(), // FIXME
-                        page_cache: None,
-                        ops: DevINode::Directory(Vec::new()),
-                    },
-                );
+                let root_inode = vfs::INode::new_raw(0, fs, vfs::INodeData {
+                    file_size: 0,
+                    hard_links: 2,
+                    mode: vfs::INodeMode::all_permitted(), // FIXME
+                    page_cache: None,
+                    ops: DevINode::Directory(Vec::new()),
+                });
                 let root_dentry = vfs::DEntry::new_root(
                     ByteStr::new("/(dev root)/").to_owned(),
                     root_inode.clone(),

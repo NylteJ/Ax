@@ -1,5 +1,4 @@
 use core::{
-    bstr::ByteStr,
     ffi::{c_char, c_int, c_long, c_uchar, c_uint, c_ulong, c_ushort, c_void},
     mem::MaybeUninit,
     ops::FromResidual,
@@ -7,10 +6,11 @@ use core::{
     slice,
 };
 
-use alloc::{borrow::ToOwned, bstr::ByteString, collections::vec_deque::VecDeque, str, vec::Vec};
+use alloc::{borrow::ToOwned, collections::vec_deque::VecDeque, str, vec::Vec};
 use bitflags::{Flags, bitflags};
 
 use crate::{
+    basic::bstr::{ByteStr, ByteString},
     filesystem::vfs::{
         DEntryArc, FileFlags, FileSystem, INodeArc, INodeMode, IterateDirData, Path, PathToWalk,
         VfsError, VfsResult, walk_path,
@@ -55,7 +55,10 @@ pub extern "C" fn getcwd(buf: *mut c_char, size: usize) -> SyscallResult {
 
     let mut cwd = cur_task.fs_data.read().current_work_dir.clone();
     while let Some(parent) = cwd.walk_step_back_until_root() {
-        str.prepend(cwd.0.data.lock().name.0.clone().into_iter());
+        let reversed = cwd.0.data.lock().name.0.clone().into_iter().rev();
+        for chr in reversed {
+            str.push_front(chr);
+        }
         str.push_front(b'/');
         cwd = parent;
     }

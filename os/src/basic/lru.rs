@@ -1,16 +1,16 @@
 use core::{
     cell::SyncUnsafeCell,
-    marker::{PhantomPinned, PointeeSized},
+    marker::PhantomPinned,
     mem::replace,
     ptr::{NonNull, Pointee, addr_eq},
 };
 
-pub struct LruPtr<T: PointeeSized> {
+pub struct LruPtr<T: ?Sized> {
     ptr: NonNull<LruNodeInner<T>>,
     metadata: Option<<T as Pointee>::Metadata>,
 }
 
-impl<T: PointeeSized> Clone for LruPtr<T> {
+impl<T: ?Sized> Clone for LruPtr<T> {
     fn clone(&self) -> Self {
         Self {
             ptr: self.ptr.clone(),
@@ -18,23 +18,23 @@ impl<T: PointeeSized> Clone for LruPtr<T> {
         }
     }
 }
-impl<T: PointeeSized> Copy for LruPtr<T> {}
+impl<T: ?Sized> Copy for LruPtr<T> {}
 
-unsafe impl<T: PointeeSized> Send for LruPtr<T> {}
-unsafe impl<T: PointeeSized> Sync for LruPtr<T> {}
+unsafe impl<T: ?Sized> Send for LruPtr<T> {}
+unsafe impl<T: ?Sized> Sync for LruPtr<T> {}
 
-pub struct LruNodeInner<T: PointeeSized> {
+pub struct LruNodeInner<T: ?Sized> {
     pub next: LruPtr<T>,
     pub prev: LruPtr<T>,
     pub _phantom: PhantomPinned,
 }
 
 #[repr(transparent)]
-pub struct LruNode<T: PointeeSized> {
+pub struct LruNode<T: ?Sized> {
     pub lru: SyncUnsafeCell<LruNodeInner<T>>, // FIXME: 也许需要 UnsafePinned
 }
 
-impl<T: PointeeSized> LruPtr<T> {
+impl<T: ?Sized> LruPtr<T> {
     pub fn from_value(dentry: NonNull<T>, offset: usize) -> Self {
         let (ptr, metadata) = dentry.to_raw_parts();
         Self {
@@ -71,7 +71,7 @@ impl<T: PointeeSized> LruPtr<T> {
     }
 }
 
-impl<T: PointeeSized> LruNode<T> {
+impl<T: ?Sized> LruNode<T> {
     pub fn new_unlinked() -> Self {
         Self {
             lru: SyncUnsafeCell::new(LruNodeInner {

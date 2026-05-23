@@ -1,9 +1,12 @@
-use core::{bstr::ByteStr, ptr::NonNull, sync::atomic::Ordering};
+use core::{ptr::NonNull, sync::atomic::Ordering};
 
-use alloc::{borrow::ToOwned, bstr::ByteString, vec::Vec};
+use alloc::{borrow::ToOwned, vec::Vec};
 
 use crate::{
-    basic::extend_lifetime,
+    basic::{
+        bstr::{ByteStr, ByteString},
+        extend_lifetime,
+    },
     filesystem::{
         devfs::{
             dentry::DevDEntry,
@@ -113,19 +116,17 @@ impl INodeOps for DevINode {
 
         let id = fs.ops.inode_id.fetch_add(1, Ordering::Relaxed);
 
-        let new_inode = vfs::INode::new(
-            id,
-            NonNull::from_ref(fs),
-            vfs::INodeData {
-                file_size: 0,  // 设备文件的大小没什么意义
-                hard_links: 1, // 我们不维护它
-                mode,
-                page_cache: None, // 无需页缓存（块设备也是使用底层缓存）
-                ops: DevINode::DeviceFile(device_type, device_id),
-            },
-        );
+        let new_inode = vfs::INode::new(id, NonNull::from_ref(fs), vfs::INodeData {
+            file_size: 0,  // 设备文件的大小没什么意义
+            hard_links: 1, // 我们不维护它
+            mode,
+            page_cache: None, // 无需页缓存（块设备也是使用底层缓存）
+            ops: DevINode::DeviceFile(device_type, device_id),
+        });
 
-        Ok(children.insert_mut(pos, (name, new_inode)).1.clone())
+        children.insert(pos, (name, new_inode.clone()));
+
+        Ok(new_inode)
     }
 
     fn evictable_when_mem_ref_zero(&mut self) -> bool {

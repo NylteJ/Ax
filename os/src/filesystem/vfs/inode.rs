@@ -1,6 +1,5 @@
 use core::{
     any::Any,
-    bstr::ByteStr,
     cell::SyncUnsafeCell,
     mem::{forget, offset_of},
     ops::Deref,
@@ -8,11 +7,14 @@ use core::{
     sync::atomic::{AtomicU8, AtomicU32, Ordering},
 };
 
-use alloc::bstr::ByteString;
 use bitflags::bitflags;
 
 use crate::{
-    basic::{lru::LruNode, sync::RwLock},
+    basic::{
+        bstr::{ByteStr, ByteString},
+        lru::LruNode,
+        sync::RwLock,
+    },
     filesystem::{
         devfs::drivers::DeviceId,
         vfs::{

@@ -8,10 +8,10 @@ use core::{
     sync::atomic::AtomicU32,
 };
 
-use alloc::{bstr::ByteString, sync::Arc};
+use alloc::sync::Arc;
 
 use crate::{
-    basic::{lru::LruNode, sync::Mutex},
+    basic::{bstr::ByteString, lru::LruNode, sync::Mutex},
     filesystem::vfs::{
         DCacheKey, DEntryArc, FileArc, FileFlags, FileSystem, INodeArc, Mount, VfsResult,
         cache::CachedValue, dentry_arc::DCacheArc, mount::MountPoint,

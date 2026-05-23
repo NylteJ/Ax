@@ -2,7 +2,6 @@ use crate::prelude::*;
 use crate::return_errno_with_message;
 use crate::utils::path_check;
 use crate::ext4_defs::*;
-use core::bstr::ByteStr;
 use core::cmp::max;
 // use std::time::{Duration, Instant};
 
@@ -12,7 +11,7 @@ impl Ext4 {
     /// Params:
     /// parent: &mut Ext4InodeRef - parent directory inode reference
     /// child: &mut Ext4InodeRef - child inode reference
-    /// name: &ByteStr - name of the child inode
+    /// name: &[u8] - name of the child inode
     ///
     /// Returns:
     /// `Result<usize>` - status of the operation
@@ -20,7 +19,7 @@ impl Ext4 {
         &self,
         parent: &mut Ext4InodeRef,
         child: &mut Ext4InodeRef,
-        name: &ByteStr,
+        name: &[u8],
     ) -> Result<usize> {
         // Add a directory entry in the parent directory pointing to the child inode
 
@@ -38,11 +37,11 @@ impl Ext4 {
 
             // at this point child need a new block
             // Create "." entry pointing to the child directory itself
-            self.dir_add_entry(child, &new_child_ref, ByteStr::new("."))?;
+            self.dir_add_entry(child, &new_child_ref, b".")?;
 
             // at this point should insert to existing block
             // Create ".." entry pointing to the parent directory
-            self.dir_add_entry(child, parent, ByteStr::new(".."))?;
+            self.dir_add_entry(child, parent, b"..")?;
 
             child.inode.set_links_count(2);
             let link_cnt = parent.inode.links_count() + 1;
@@ -62,11 +61,11 @@ impl Ext4 {
     ///
     /// Params:
     /// parent: u32 - inode number of the parent directory
-    /// name: &ByteStr - name of the new file
+    /// name: &[u8] - name of the new file
     /// mode: u16 - file mode
     ///
     /// Returns:
-    pub fn create(&self, parent: u32, name: &ByteStr, inode_mode: u16) -> Result<Ext4InodeRef> {
+    pub fn create(&self, parent: u32, name: &[u8], inode_mode: u16) -> Result<Ext4InodeRef> {
         let mut parent_inode_ref = self.get_inode_ref(parent);
 
         // let mut child_inode_ref = self.create_inode(inode_mode)?;
@@ -123,13 +122,13 @@ impl Ext4 {
     ///
     /// Params:
     /// parent: u32 - inode number of the parent directory
-    /// name: &ByteStr - name of the new file
+    /// name: &[u8] - name of the new file
     /// mode: u16 - file mode
     /// uid: u32 - user id
     /// gid: u32 - group id
     ///
     /// Returns:
-    pub fn create_with_attr(&self, parent: u32, name: &ByteStr, inode_mode: u16, uid:u16, gid: u16) -> Result<Ext4InodeRef> {
+    pub fn create_with_attr(&self, parent: u32, name: &[u8], inode_mode: u16, uid:u16, gid: u16) -> Result<Ext4InodeRef> {
         let mut parent_inode_ref = self.get_inode_ref(parent);
 
         // let mut child_inode_ref = self.create_inode(inode_mode)?;
@@ -514,7 +513,7 @@ impl Ext4 {
     ///
     /// Returns:
     /// `Result<usize>` - status of the operation
-    pub fn file_remove(&self, path: &ByteStr) -> Result<usize> {
+    pub fn file_remove(&self, path: &[u8]) -> Result<usize> {
         // start from root
         let mut parent_inode_num = ROOT_INODE;
 

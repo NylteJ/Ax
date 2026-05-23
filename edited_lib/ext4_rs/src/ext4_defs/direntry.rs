@@ -1,8 +1,3 @@
-use core::bstr::ByteStr;
-
-use alloc::borrow::ToOwned;
-use alloc::bstr::ByteString;
-
 use crate::prelude::*;
 use crate::utils::*;
 
@@ -132,9 +127,9 @@ impl Ext4DirEntry {
     }
 
     /// Check name
-    pub fn compare_name(&self, name: &ByteStr) -> bool {
+    pub fn compare_name(&self, name: &[u8]) -> bool {
         if self.name_len as usize == name.len(){
-            return &self.name[..name.len()] == &name.0
+            return &self.name[..name.len()] == name
         }
         false
     }
@@ -150,10 +145,10 @@ impl Ext4DirEntry {
     }
 
     /// Get name to string
-    pub fn get_name(&self) -> ByteString {
+    pub fn get_name(&self) -> Vec<u8> {
         let name_len = self.name_len as usize;
         let name = &self.name[..name_len];
-        ByteStr::new(name).to_owned()
+        name.to_vec()
     }
 
     /// Get name len
@@ -173,12 +168,12 @@ impl Ext4DirEntry {
         len
     }
 
-    pub fn write_entry(&mut self, entry_len: u16, inode: u32, name: &ByteStr, de_type:DirEntryType) {
+    pub fn write_entry(&mut self, entry_len: u16, inode: u32, name: &[u8], de_type:DirEntryType) {
         self.inode = inode;
         self.entry_len = entry_len;
         self.name_len = name.len() as u8;
         self.inner.inode_type = de_type.bits();
-        self.name[..name.len()].copy_from_slice(&name.0);
+        self.name[..name.len()].copy_from_slice(name);
     }
 
 }

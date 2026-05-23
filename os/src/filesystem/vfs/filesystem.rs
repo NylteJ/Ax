@@ -1,5 +1,4 @@
 use core::{
-    bstr::ByteStr,
     hash::Hash,
     hint::unreachable_unchecked,
     mem::{MaybeUninit, forget, offset_of, replace},
@@ -10,14 +9,15 @@ use core::{
     sync::atomic::Ordering,
 };
 
-use alloc::{bstr::ByteString, sync::Arc};
+use alloc::sync::Arc;
 use derive_more::Debug;
 use hashbrown::{Equivalent, HashMap};
-use uninit::extension_traits::Transpose;
+use uninit::extension_traits::{MaybeUninitExt, Transpose};
 
 use crate::{
     basic::{
         UnsafeInited,
+        bstr::{ByteStr, ByteString},
         lru::{LruNode, LruPtr},
         sync::{Mutex, RwLock},
     },
@@ -262,7 +262,7 @@ impl FileSystem {
                     );
 
                     let writeback_result = fs_ops.writeback_page(node, page_index, unsafe {
-                        page.visit_memory().transpose_ref().assume_init_ref()
+                        page.visit_memory().transpose_ref().assume_init_by_ref()
                     });
 
                     if let Err(err) = writeback_result {

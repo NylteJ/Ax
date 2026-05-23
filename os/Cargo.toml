@@ -19,10 +19,10 @@ xarray = "0.1.1"
 intrusive-collections = "0.10.0"
 log = "0.4.29"
 derive_more = { version = "2.1.1", default-features = false, features = ["debug"] }
-addr2line = { version = "0.26.1", default-features = false }
+addr2line = { version = "0.25.1", default-features = false }
 object = { version = "0.36", default-features = false, features = ["read_core", "elf"] }
 flat_device_tree  = { version = "3.1.1", features = ["pretty-printing"] }
-virtio-drivers = "0.13.0"
+virtio-drivers = "0.12.0"
 ext4_rs = { path = "../edited_lib/ext4_rs" }
 uninit = { version = "0.6.2", default-features = false }
 elf = { path = "../edited_lib/rust-elf", default-features = false }

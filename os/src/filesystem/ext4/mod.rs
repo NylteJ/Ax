@@ -1,8 +1,9 @@
-use core::{bstr::ByteStr, pin::Pin};
+use core::pin::Pin;
 
 use alloc::{borrow::ToOwned, boxed::Box, sync::Arc};
 
 use crate::{
+    basic::bstr::ByteStr,
     devices::BLOCK_DEVICES,
     filesystem::{
         ext4::{dentry::Ext4DEntry, filesystem::Ext4Fs, inode::Ext4INode},

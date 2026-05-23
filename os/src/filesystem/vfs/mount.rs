@@ -5,7 +5,7 @@ use core::{
     ptr::{NonNull, addr_eq},
 };
 
-use alloc::sync::{Arc, UniqueArc};
+use alloc::sync::Arc;
 use intrusive_collections::{LinkedList as IntrusiveLinkedList, LinkedListLink, intrusive_adapter};
 
 use crate::{
@@ -78,7 +78,7 @@ impl MountPoint {
     pub unsafe fn mount_root(fs: Pin<Arc<FileSystem>>) -> Arc<Mount> {
         let root_dentry = fs.root_dentry.clone();
 
-        let mut mp = UniqueArc::new(MountPoint {
+        let mut mp = Arc::new(MountPoint {
             parent: Path(root_dentry.clone(), unsafe {
                 // SAFETY: 这实际上并不安全，但我不愿意在此花更多时间了
                 transmute(NonNull::<Mount>::dangling())
@@ -86,13 +86,13 @@ impl MountPoint {
             mounts: RwLock::new(IntrusiveLinkedList::new(MountAdapter::new())),
         });
 
-        let mp_ref = unsafe { extend_lifetime_mut(mp.as_mut()) };
+        let mp_ref = unsafe { extend_lifetime_mut(Arc::get_mut_unchecked(&mut mp)) };
         let data_ptr = root_dentry.data.as_ptr();
 
         let mnt = Arc::new(Mount {
             sub_fs: fs,
             mount_to: root_dentry,
-            mount_point: UniqueArc::into_arc(mp),
+            mount_point: mp,
             link: LinkedListLink::new(),
         });
 

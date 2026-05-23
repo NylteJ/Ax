@@ -1,6 +1,7 @@
 use core::mem::MaybeUninit;
 
 use hashbrown::HashMap;
+use uninit::extension_traits::MaybeUninitExt;
 
 use crate::{
     arch::{self, interfaces::Basic},
@@ -85,7 +86,7 @@ fn init_char_drivers() {
                 let chr = *buffer[index].write(arch::NativeBasic::input_u8().map_err(|_| VfsError::IoError)?);
 
                 if index == BUFFER_BYTES - 1 {
-                    copy_to_user(user_buf, unsafe { buffer.assume_init_ref() })?;
+                    copy_to_user(user_buf, unsafe { buffer.assume_init_by_ref() })?;
                     user_buf = unsafe { user_buf.add(BUFFER_BYTES) };
                 }
 
@@ -96,7 +97,7 @@ fn init_char_drivers() {
             }
 
             let tail = i % BUFFER_BYTES;
-            copy_to_user(user_buf, &unsafe { buffer.assume_init_ref() }[..tail])?;
+            copy_to_user(user_buf, &unsafe { buffer.assume_init_by_ref() }[..tail])?;
 
             Ok(i as u64)
         },

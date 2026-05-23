@@ -1,4 +1,3 @@
-use core::bstr::ByteStr;
 use core::panic::RefUnwindSafe;
 
 use crate::prelude::*;
@@ -27,8 +26,8 @@ impl Ext4 {
     ///
     /// # Returns
     /// * `Result<i32>` - The corresponding bitwise flag constants (e.g., `O_RDONLY`, `O_WRONLY`, etc.), or an error if the flags are invalid.
-    fn ext4_parse_flags(&self, flags: &ByteStr) -> Result<i32> {
-        match &flags.0 {
+    fn ext4_parse_flags(&self, flags: &[u8]) -> Result<i32> {
+        match flags {
             b"r" | b"rb" => Ok(O_RDONLY),
             b"w" | b"wb" => Ok(O_WRONLY | O_CREAT | O_TRUNC),
             b"a" | b"ab" => Ok(O_WRONLY | O_CREAT | O_APPEND),
@@ -52,8 +51,8 @@ impl Ext4 {
     /// * `Result<u32>` - Returns the inode number of the opened file if successful.
     pub fn ext4_file_open(
         &self,
-        path: &ByteStr,
-        flags: &ByteStr,
+        path: &[u8],
+        flags: &[u8],
     ) -> Result<u32> {
         let mut parent_inode_num = ROOT_INODE;
         let filetype = InodeFileType::S_IFREG;
@@ -81,7 +80,7 @@ impl Ext4 {
     /// # Returns
     /// * `Result<u32>` - The inode number of the newly created directory if successful, 
     ///   or an error (`Errno::EEXIST`) if the directory already exists.
-    pub fn ext4_dir_mk(&self, path: &ByteStr) -> Result<u32> {
+    pub fn ext4_dir_mk(&self, path: &[u8]) -> Result<u32> {
         let mut search_result = Ext4DirSearchResult::new(Ext4DirEntry::default());
         let r = self.dir_find_entry(ROOT_INODE, path, &mut search_result);
         if r.is_ok() {
@@ -105,7 +104,7 @@ impl Ext4 {
     /// * `Result<u32>` - Returns the inode number of the opened directory if successful.
     pub fn ext4_dir_open(
         &self,
-        path: &ByteStr,
+        path: &[u8],
     ) -> Result<u32> {
         let mut parent_inode_num = ROOT_INODE;
         let filetype = InodeFileType::S_IFDIR;

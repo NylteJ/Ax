@@ -133,16 +133,13 @@ impl AddressSpace {
                 // |==============|
                 //    |========|
                 let ed = replace(&mut self.vmas[begin].end, start);
-                self.vmas.insert(
-                    begin + 1,
-                    VirtualMemoryArea {
-                        start: end,
-                        end: ed,
-                        flags: self.vmas[begin].flags,
-                        vma_type: self.vmas[begin].vma_type.clone(),
-                        growth: self.vmas[begin].growth,
-                    },
-                );
+                self.vmas.insert(begin + 1, VirtualMemoryArea {
+                    start: end,
+                    end: ed,
+                    flags: self.vmas[begin].flags,
+                    vma_type: self.vmas[begin].vma_type.clone(),
+                    growth: self.vmas[begin].growth,
+                });
 
                 return;
             } else {

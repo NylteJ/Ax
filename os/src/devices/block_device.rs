@@ -1,6 +1,7 @@
 use core::mem::MaybeUninit;
 
 use alloc::string::String;
+use uninit::extension_traits::MaybeUninitExt;
 use virtio_drivers::{
     device::blk::{SECTOR_SIZE, VirtIOBlk},
     transport::Transport,
@@ -46,7 +47,7 @@ impl<T: Transport + Send + Sync> BlockDevice for RwLock<VirtIOBlk<VirtIOHal, T>>
         buf: &'a mut [MaybeUninit<u8>],
     ) -> DeviceResult<&'a mut [u8]> {
         // SAFETY: 很遗憾这并不安全，但接口是这么写的（而且实际上这通常也不会产生什么问题）
-        let buf = unsafe { buf.assume_init_mut() };
+        let buf = unsafe { buf.assume_init_by_mut() };
 
         // read_blocks 内部会检测大小是否为块大小的非零整数倍
         // TODO: 避免阻塞

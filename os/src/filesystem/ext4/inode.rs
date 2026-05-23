@@ -1,11 +1,14 @@
-use core::{bstr::ByteStr, ptr::NonNull};
+use core::ptr::NonNull;
 
-use alloc::{borrow::ToOwned, bstr::ByteString};
+use alloc::borrow::ToOwned;
 use ext4_rs::ext4_defs::ROOT_INODE;
 
-use crate::filesystem::{
-    ext4::{dentry::Ext4DEntry, filesystem::Ext4Fs},
-    vfs::{self, INodeOps, PageCache, VfsError, VfsResult},
+use crate::{
+    basic::bstr::{ByteStr, ByteString},
+    filesystem::{
+        ext4::{dentry::Ext4DEntry, filesystem::Ext4Fs},
+        vfs::{self, INodeOps, PageCache, VfsError, VfsResult},
+    },
 };
 
 pub struct Ext4INode {
@@ -264,17 +267,13 @@ impl Ext4INode {
     pub fn new_root(fs: NonNull<vfs::FileSystem>, ext4: &ext4_rs::Ext4) -> vfs::INodeArc {
         let inode = ext4.get_inode_ref(ROOT_INODE).inode;
 
-        vfs::INode::new_raw(
-            ROOT_INODE,
-            fs,
-            vfs::INodeData {
-                file_size: inode.size(),
-                hard_links: inode.links_count().into(),
-                mode: vfs::INodeMode::from_bits_truncate(inode.mode()),
-                page_cache: None,
-                ops: Self { inode },
-            },
-        )
+        vfs::INode::new_raw(ROOT_INODE, fs, vfs::INodeData {
+            file_size: inode.size(),
+            hard_links: inode.links_count().into(),
+            mode: vfs::INodeMode::from_bits_truncate(inode.mode()),
+            page_cache: None,
+            ops: Self { inode },
+        })
     }
 
     fn new_normal(
@@ -287,17 +286,13 @@ impl Ext4INode {
 
         let inode = ext4.create(parent_id, name, mode.bits())?;
 
-        let mut ret = vfs::INode::new(
-            inode.inode_num,
-            NonNull::from_ref(fs),
-            vfs::INodeData {
-                file_size: inode.inode.size(),
-                hard_links: inode.inode.links_count().into(),
-                mode,
-                page_cache: None,
-                ops: Self { inode: inode.inode },
-            },
-        );
+        let mut ret = vfs::INode::new(inode.inode_num, NonNull::from_ref(fs), vfs::INodeData {
+            file_size: inode.inode.size(),
+            hard_links: inode.inode.links_count().into(),
+            mode,
+            page_cache: None,
+            ops: Self { inode: inode.inode },
+        });
 
         unsafe { PageCache::init(ret.get_mut()) };
 
@@ -309,17 +304,13 @@ impl Ext4INode {
 
         let inode = ext4.get_inode_ref(id).inode;
 
-        let mut ret = vfs::INode::new(
-            id,
-            NonNull::from_ref(fs),
-            vfs::INodeData {
-                file_size: inode.size(),
-                hard_links: inode.links_count().into(),
-                mode: vfs::INodeMode::from_bits_truncate(inode.mode()),
-                page_cache: None,
-                ops: Self { inode },
-            },
-        );
+        let mut ret = vfs::INode::new(id, NonNull::from_ref(fs), vfs::INodeData {
+            file_size: inode.size(),
+            hard_links: inode.links_count().into(),
+            mode: vfs::INodeMode::from_bits_truncate(inode.mode()),
+            page_cache: None,
+            ops: Self { inode },
+        });
 
         unsafe { PageCache::init(ret.get_mut()) };
 

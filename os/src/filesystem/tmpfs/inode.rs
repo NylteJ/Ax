@@ -1,11 +1,10 @@
-use core::bstr::ByteStr;
 use core::ptr::NonNull;
 use core::sync::atomic::Ordering;
 
 use alloc::borrow::ToOwned;
-use alloc::bstr::ByteString;
 use alloc::vec::Vec;
 
+use crate::basic::bstr::{ByteStr, ByteString};
 use crate::filesystem::tmpfs::{TmpFs, TmpFsDentry};
 use crate::filesystem::vfs::{
     INodeArc, INodeMode, INodeOps, INodeRenameFlags, VfsError, VfsResult,
@@ -38,16 +37,11 @@ impl INodeOps for TmpFsINode {
             return Err(VfsError::FileAlreadyExists);
         };
 
-        Ok(map
-            .insert_mut(
-                pos,
-                (
-                    name,
-                    Self::new_normal(unsafe { fs.as_ref() }, mode | INodeMode::RegularFile),
-                ),
-            )
-            .1
-            .clone())
+        let new_inode = Self::new_normal(unsafe { fs.as_ref() }, mode | INodeMode::RegularFile);
+
+        map.insert(pos, (name, new_inode.clone()));
+
+        Ok(new_inode)
     }
 
     fn lookup(&self, name: &ByteStr, dentry: vfs::DEntryArc) -> VfsResult<vfs::DEntryArc> {
@@ -123,16 +117,11 @@ impl INodeOps for TmpFsINode {
             return Err(VfsError::FileAlreadyExists);
         };
 
-        let ret = map
-            .insert_mut(
-                pos,
-                (
-                    name,
-                    Self::new_normal(unsafe { fs.as_ref() }, mode | INodeMode::Directory),
-                ),
-            )
-            .1
-            .clone();
+        let new_inode = Self::new_normal(unsafe { fs.as_ref() }, mode | INodeMode::Directory);
+
+        map.insert(pos, (name, new_inode.clone()));
+
+        let ret = new_inode;
         vfs::INodeData::get_data_mut(self).hard_links += 1; // 子目录的 `..`
         Ok(ret)
     }
@@ -365,19 +354,15 @@ impl INodeOps for TmpFsINode {
 
 impl TmpFsINode {
     pub fn new_root(fs: NonNull<vfs::FileSystem>) -> vfs::INodeArc {
-        vfs::INode::new_raw(
-            0,
-            fs,
-            vfs::INodeData {
-                file_size: 0,
-                hard_links: 2,
-                mode: INodeMode::from_bits(0o777).unwrap(),
-                page_cache: None,
-                ops: TmpFsINode {
-                    inode_type: INodeType::Directory(Default::default()),
-                },
+        vfs::INode::new_raw(0, fs, vfs::INodeData {
+            file_size: 0,
+            hard_links: 2,
+            mode: INodeMode::from_bits(0o777).unwrap(),
+            page_cache: None,
+            ops: TmpFsINode {
+                inode_type: INodeType::Directory(Default::default()),
             },
-        )
+        })
     }
 
     fn new_normal(fs: &vfs::FileSystem<TmpFs>, mode: INodeMode) -> vfs::INodeArc {

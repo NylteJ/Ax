@@ -1,5 +1,3 @@
-use core::bstr::ByteStr;
-
 use crate::prelude::*;
 use crate::return_errno_with_message;
 
@@ -10,7 +8,7 @@ impl Ext4 {
     ///
     /// Params:
     /// parent_inode: u32 - inode number of the parent directory
-    /// name: &ByteStr - name of the entry to find
+    /// name: &[u8] - name of the entry to find
     /// result: &mut Ext4DirSearchResult - result of the search
     ///
     /// Returns:
@@ -18,7 +16,7 @@ impl Ext4 {
     pub fn dir_find_entry(
         &self,
         parent_inode: u32,
-        name: &ByteStr,
+        name: &[u8],
         result: &mut Ext4DirSearchResult,
     ) -> Result<usize> {
         // load parent inode
@@ -70,14 +68,14 @@ impl Ext4 {
     ///
     /// Params:
     /// block: &mut Block - block to search in
-    /// name: &ByteStr - name of the entry to find
+    /// name: &[u8] - name of the entry to find
     ///
     /// Returns:
     /// result: Ext4DirEntry - result of the search
     pub fn dir_find_in_block(
         &self,
         block: &Block,
-        name: &ByteStr,
+        name: &[u8],
         result: &mut Ext4DirSearchResult,
     ) -> Result<Ext4DirEntry> {
         let mut offset = 0;
@@ -170,7 +168,7 @@ impl Ext4 {
     /// Params:
     /// parent: &mut Ext4InodeRef - parent directory inode reference
     /// child: &mut Ext4InodeRef - child inode reference
-    /// path: &ByteStr - path of the new entry
+    /// path: &[u8] - path of the new entry
     ///
     /// Returns:
     /// `Result<usize>` - status of the operation
@@ -178,7 +176,7 @@ impl Ext4 {
         &self,
         parent: &mut Ext4InodeRef,
         child: &Ext4InodeRef,
-        name: &ByteStr,
+        name: &[u8],
     ) -> Result<usize> {
         // calculate total blocks
         let inode_size: u64 = parent.inode.size();
@@ -232,7 +230,7 @@ impl Ext4 {
     ///
     /// Params:
     /// block: &mut Block - block to insert the new entry
-    /// name: &ByteStr - name of the new entry
+    /// name: &[u8] - name of the new entry
     /// inode: u32 - inode number of the new entry
     ///
     /// Returns:
@@ -240,7 +238,7 @@ impl Ext4 {
     pub fn try_insert_to_existing_block(
         &self,
         block: &mut Block,
-        name: &ByteStr,
+        name: &[u8],
         child_inode: u32,
     ) -> Result<usize> {
         // required length aligned to 4 bytes
@@ -305,13 +303,13 @@ impl Ext4 {
     ///
     /// Params:
     /// block: &mut Block - block to insert the new entry
-    /// name: &ByteStr - name of the new entry
+    /// name: &[u8] - name of the new entry
     /// inode: u32 - inode number of the new entry
     pub fn insert_to_new_block(
         &self,
         block: &mut Block,
         inode: u32,
-        name: &ByteStr,
+        name: &[u8],
         de_type: DirEntryType,
     ) {
         // write new entry
@@ -327,7 +325,7 @@ impl Ext4 {
         tail.copy_to_slice(&mut block.data);
     }
 
-    pub fn dir_remove_entry(&self, parent: &mut Ext4InodeRef, path: &ByteStr) -> Result<usize> {
+    pub fn dir_remove_entry(&self, parent: &mut Ext4InodeRef, path: &[u8]) -> Result<usize> {
         // get remove_entry pos in parent and its prev entry
         let mut result = Ext4DirSearchResult::new(Ext4DirEntry::default());
 
@@ -409,7 +407,7 @@ impl Ext4 {
                         continue;
                     }
                     // skip . and ..
-                    if de.get_name() == "." || de.get_name() == ".." {
+                    if de.get_name() == b"." || de.get_name() == b".." {
                         continue;
                     }
                     return true;
@@ -422,7 +420,7 @@ impl Ext4 {
         false
     }
 
-    pub fn dir_remove(&self, parent: u32, path: &ByteStr) -> Result<usize> {
+    pub fn dir_remove(&self, parent: u32, path: &[u8]) -> Result<usize> {
         let mut search_result = Ext4DirSearchResult::new(Ext4DirEntry::default());
 
         let r = self.dir_find_entry(parent, path, &mut search_result)?;

@@ -1,5 +1,6 @@
 use core::num::NonZero;
 
+pub mod bstr;
 pub mod console;
 pub mod debugger;
 pub mod global_allocator;
@@ -21,6 +22,9 @@ pub unsafe fn extend_lifetime<'a, T: ?Sized>(rf: &'_ T) -> &'a T {
 pub unsafe fn extend_lifetime_mut<'a, T: ?Sized>(rf: &'_ mut T) -> &'a mut T {
     unsafe { core::ptr::NonNull::from_mut(rf).as_mut() }
 }
+
+#[cold]
+pub fn cold_path() {}
 
 /// 一个在单次初始化后只读的包装器，提供方便的访问机制
 pub struct UnsafeInited<T> {
@@ -101,7 +105,9 @@ impl<T> core::ops::Deref for UnsafeInited<T> {
             "访问了未初始化的 UnsafeInited"
         );
 
-        unsafe { self.value.get().as_ref_unchecked().assume_init_ref() }
+        use uninit::extension_traits::MaybeUninitExt;
+
+        unsafe { self.value.get().as_ref_unchecked().assume_init_by_ref() }
     }
 }
 

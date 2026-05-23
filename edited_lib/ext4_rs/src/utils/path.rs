@@ -1,9 +1,8 @@
-use core::bstr::ByteStr;
 
 use alloc::string::String;
 use alloc::vec::Vec;
 
-pub fn path_check(path: &ByteStr, is_goal: &mut bool) -> usize {
+pub fn path_check(path: &[u8], is_goal: &mut bool) -> usize {
     // Iterate through each character and its index in the string
     for (i, &c) in path.iter().enumerate() {
         // Check if maximum filename length limit is reached
@@ -37,21 +36,21 @@ mod path_tests {
         let mut is_goal = false;
 
         // Test root path
-        assert_eq!(path_check(ByteStr::new("/"), &mut is_goal), 0);
+        assert_eq!(path_check(b"/", &mut is_goal), 0);
         assert!(!is_goal, "Root path should not set is_goal to true");
 
         // Test normal path
-        assert_eq!(path_check(ByteStr::new("/home/user/file.txt"), &mut is_goal), 0);
+        assert_eq!(path_check(b"/home/user/file.txt", &mut is_goal), 0);
         assert!(!is_goal, "Normal path should not set is_goal to true");
 
         // Test path without slashes
         let path = "file.txt";
-        assert_eq!(path_check(ByteStr::new(path), &mut is_goal), path.len());
+        assert_eq!(path_check(path.as_bytes(), &mut is_goal), path.len());
         assert!(is_goal, "Path without slashes should set is_goal to true");
 
         // Test null character at end of path
         let path = "home\0";
-        assert_eq!(path_check(ByteStr::new(path), &mut is_goal), 4);
+        assert_eq!(path_check(path.as_bytes(), &mut is_goal), 4);
         assert!(
             is_goal,
             "Path with null character should set is_goal to true"

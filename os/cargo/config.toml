@@ -12,4 +12,4 @@ rustflags = [
 
 [profile.dev]
 debug = 2
-rustflags = ["-Cdwarf-version=5"]
+# rustflags = ["-Cllvm-args=-dwarf-version=5"]

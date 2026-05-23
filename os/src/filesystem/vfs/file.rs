@@ -5,11 +5,12 @@ use core::{
     sync::atomic::Ordering,
 };
 
-use alloc::{bstr::ByteString, sync::Arc};
+use alloc::sync::Arc;
 use bitflags::bitflags;
+use uninit::extension_traits::MaybeUninitExt;
 
 use crate::{
-    basic::{extend_lifetime, sync::Mutex},
+    basic::{bstr::ByteString, extend_lifetime, sync::Mutex},
     filesystem::vfs::{INode, INodeDirtyState, Path, VfsError, VfsResult},
     memory::PAGE_BYTES,
 };
@@ -180,7 +181,7 @@ impl<T: ?Sized + FileOps> FileData<T> {
         self.pos += count;
         let filled_len = k_buffer_uninit.len() - k_buffer_rest;
         Ok((
-            unsafe { k_buffer_uninit[base_off..filled_len].assume_init_mut() },
+            unsafe { k_buffer_uninit[base_off..filled_len].assume_init_by_mut() },
             count,
         ))
     }
@@ -269,7 +270,7 @@ impl File {
             }
         };
 
-        Ok(unsafe { extend_lifetime(page.visit_memory()[..bytes].assume_init_ref()) })
+        Ok(unsafe { extend_lifetime(page.visit_memory()[..bytes].assume_init_by_ref()) })
     }
 }
 

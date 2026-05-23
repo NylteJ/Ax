@@ -1,19 +1,19 @@
 use core::{
     cell::SyncUnsafeCell,
-    hint::cold_path,
     marker::{PhantomData, PhantomPinned},
     mem::{ManuallyDrop, MaybeUninit},
     ops::Deref,
     pin::Pin,
     ptr::NonNull,
-    sync::atomic::{Atomic, AtomicU32, Ordering},
+    sync::atomic::{AtomicU8, AtomicU32, Ordering},
 };
 
 use bitflags::bitflags;
 use intrusive_collections::LinkedListLink;
+use uninit::extension_traits::MaybeUninitExt;
 
 use crate::{
-    basic::shared_with_asm::SharedWithAsm,
+    basic::{cold_path, shared_with_asm::SharedWithAsm},
     filesystem::vfs::PageCache,
     memory::{
         MEMORY_SIZE, MEMORY_START, PAGE_BYTES,
@@ -26,7 +26,7 @@ pub struct PageMeta {
     /// 引用计数
     ref_count: AtomicU32,
     /// 页标志
-    pub flags: Atomic<PageFlagsUnderlying>,
+    pub flags: AtomicU8,
     /// 页类型，注意它在整个页的生命周期内为常量，因此不必是原子的
     pub page_type: PageType,
 
@@ -72,7 +72,10 @@ bitflags! {
     }
 }
 
-const METAS_ARRAY_OFFSET: usize = MEMORY_START.div_exact(PAGE_BYTES).unwrap();
+static_assertions::assert_type_eq_all!(PageFlagsUnderlying, u8);
+
+const METAS_ARRAY_OFFSET: usize = MEMORY_START / PAGE_BYTES;
+static_assertions::const_assert_eq!(MEMORY_START % PAGE_BYTES, 0);
 
 impl PageMeta {
     pub(self) fn get_index(&self) -> usize {
@@ -163,7 +166,7 @@ impl PageMetas {
 
         let raw_ref = item.write(PageMeta {
             ref_count: AtomicU32::new(if page_is_phantom { u32::MAX } else { 1 }),
-            flags: Atomic::<PageFlagsUnderlying>::new(PageFlags::empty().bits()),
+            flags: AtomicU8::new(PageFlags::empty().bits()),
             page_type,
             _pin: PhantomPinned,
         });
@@ -221,7 +224,7 @@ unsafe impl SharedWithAsm for PageMetaGuard {
         let index = asm_value.0 - METAS_ARRAY_OFFSET;
         let ptr = &PAGE_METADATAS.pages[index].get();
         let raw_ref = unsafe { ptr.as_ref_unchecked() };
-        let raw_ref = unsafe { raw_ref.assume_init_ref() };
+        let raw_ref = unsafe { raw_ref.assume_init_by_ref() };
         Self {
             reference: unsafe { Pin::new_unchecked(raw_ref) },
         }

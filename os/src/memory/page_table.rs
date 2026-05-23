@@ -14,7 +14,8 @@ use crate::{
     },
 };
 
-const PAGE_TABLE_SIZE: usize = PAGE_BYTES.div_exact(size_of::<usize>()).unwrap();
+const PAGE_TABLE_SIZE: usize = PAGE_BYTES / size_of::<usize>();
+static_assertions::const_assert_eq!(PAGE_BYTES % size_of::<usize>(), 0);
 
 /// 页表
 ///
@@ -235,7 +236,7 @@ impl PageTable<2> {
         let mut ret = Self::new_table();
         let table = unsafe { ret.as_mut().get_unchecked_mut() };
 
-        const NO_WRITE: usize = !PTEFlagsNative::from(PTEFlags::Write).bits();
+        let no_write = !PTEFlagsNative::from(PTEFlags::Write).bits();
 
         for (idx, entry) in this.frames[..256].iter_mut().enumerate() {
             let flags_native = PTEFlagsNative::from_bits_truncate(entry.bits);
@@ -246,7 +247,7 @@ impl PageTable<2> {
 
             if flags.intersects(PTEFlags::Read | PTEFlags::Write | PTEFlags::Execute) {
                 // 大页
-                entry.bits &= NO_WRITE;
+                entry.bits &= no_write;
                 table.frames[idx] = *entry;
                 todo!();
             } else {
@@ -274,7 +275,7 @@ impl PageTable<2> {
 
                     if flags.intersects(PTEFlags::Read | PTEFlags::Write | PTEFlags::Execute) {
                         // 大页
-                        entry.bits &= NO_WRITE;
+                        entry.bits &= no_write;
                         ret_next_table.frames[idx] = *entry;
                         todo!();
                     } else {
@@ -301,7 +302,7 @@ impl PageTable<2> {
                                 continue;
                             }
 
-                            entry.bits &= NO_WRITE;
+                            entry.bits &= no_write;
                             ret_next_table.frames[idx] = *entry;
                             unsafe { PageMetaGuard::clone_asm(PhysPageNum::<0>::from_pte(entry)) };
                         }

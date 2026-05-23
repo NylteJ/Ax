@@ -1,4 +1,3 @@
-#![feature(bstr)]
 #![no_std]
 #![allow(unused)]
 

@@ -1,7 +1,6 @@
 use core::{
     any::type_name,
     hash::Hash,
-    marker::MetaSized,
     ops::{Deref, DerefMut},
     sync::atomic::{AtomicU32, Ordering},
 };
@@ -10,7 +9,7 @@ use hashbrown::HashMap;
 
 use crate::basic::lru::LruNode;
 
-pub unsafe trait CachedValue: MetaSized {
+pub unsafe trait CachedValue {
     const DEBUG_NAME: &'static str = type_name::<Self>();
 
     fn mem_refcount(&self) -> &AtomicU32;

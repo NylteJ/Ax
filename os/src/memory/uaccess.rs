@@ -1,9 +1,12 @@
 use core::{ffi::c_char, mem::MaybeUninit, slice};
 
-use alloc::{bstr::ByteString, vec::Vec};
+use alloc::vec::Vec;
+
+use uninit::extension_traits::MaybeUninitExt;
 
 use crate::{
     arch::{self, interfaces::UAccessRaw},
+    basic::bstr::ByteString,
     memory::address::{VIRTUAL_ADDRESS_HIGH_BASE, VIRTUAL_ADDRESS_LOW_HIGHEST},
 };
 
@@ -37,7 +40,7 @@ pub fn copy_from_user_uninit(
     disallow_uaccess();
 
     if copy_ret == 0 {
-        Ok(unsafe { k_dest.assume_init_mut() })
+        Ok(unsafe { k_dest.assume_init_by_mut() })
     } else {
         Err(CopyError::BadAccess)
     }

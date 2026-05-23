@@ -1,5 +1,7 @@
 #![no_std]
 #![no_main]
+//
+#![feature(integer_sign_cast)]
 
 use core::ffi::c_void;
 use core::fmt::Write;
