@@ -45,10 +45,10 @@ pub extern "C" fn exit(ec: isize) -> ! {
 }
 
 pub extern "C" fn yield_() -> isize {
-    log::trace!(
-        "Task {} yielded.",
-        unsafe { current_task().as_ref_unchecked() }.tid
-    );
+    // log::trace!(
+    //     "Task {} yielded.",
+    //     unsafe { current_task().as_ref_unchecked() }.tid
+    // );
 
     let mut scheduler = TASK_SCHEDULER.lock();
     let cur = current_task();

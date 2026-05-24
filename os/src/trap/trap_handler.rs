@@ -28,10 +28,16 @@ extern "C" fn trap_handler(context: &mut NativeTrapContext) {
             let id = context.syscall_id();
             let args = context.syscall_args();
 
-            *context.ret_reg_mut() = match syscall::TABLE.get(id) {
+            let ret_value = match syscall::TABLE.get(id) {
                 Some(Some(func)) => func.call(args) as usize,
                 _ => ERRORCODE_NOSYS,
             };
+
+            if ret_value == ERRORCODE_NOSYS {
+                log::warn!("未知系统调用：id = {id}, args = {args:?}");
+            }
+
+            *context.ret_reg_mut() = ret_value;
         }
         Trap::Interrupt(Interrupt::TimerInterrupt) => {
             reset_timer_interrupt();

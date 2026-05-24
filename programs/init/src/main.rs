@@ -169,90 +169,14 @@ fn main() -> isize {
         return -1;
     }
 
-    println!("Hello from init!");
-
-    print!("请输入文本（不会回显）：");
-
-    let mut buffer = [1u8; 1024];
-    let read_bytes = read(stdin, buffer.as_mut_ptr().cast(), buffer.len());
-    if read_bytes < 0 {
-        return -2;
+    if fork() == 0 {
+        // 子进程，运行终端
+        let fail_code = execve(b"/sdcard/musl/busybox\0");
+        println!("execve 失败，返回值：{fail_code}");
+        return fail_code;
     }
 
-    print!("\n你输入了：");
-    let wbytes = write(stdout, buffer.as_ptr().cast(), read_bytes as usize);
-    if wbytes != read_bytes {
-        return -3;
-    }
-
-    let ret = syscall!(220, 0, 0) as isize;
-    if ret < 0 {
-        return -4;
-    }
-    println!("clone 返回值：{ret}");
-
-    if ret == 0 {
-        println!("子进程！父进程 PID 是 {}", syscall!(173));
-        let ret = syscall!(220, 0, 0) as isize;
-        if ret < 0 {
-            return -5;
-        }
-        println!("我的父进程 PID 是 {}, ret = {ret}", syscall!(173));
-
-        if ret != 0 {
-            let mut v: i32 = -1919810;
-            let status = syscall!(260, ret, &mut v, 0) as isize;
-            if status < 0 {
-                return -6;
-            }
-            println!("子进程 {ret} 退出了，状态码是 {:#04x}", v);
-        } else {
-            let ret = syscall!(220, 0, 0) as isize;
-            if ret < 0 {
-                return -6;
-            }
-
-            if ret == 0 {
-                println!("我是子进程，我会创建很多个线程做加法");
-
-                for i in 0..10 {
-                    let ret = syscall!(220, (1 << 8) | (1 << 16), (&raw mut STACKS[0]).add(i + 1))
-                        as isize;
-                    if ret < 0 {
-                        return -70;
-                    }
-                    if ret == 0 {
-                        println!("来自子线程：ret 地址 {:p}", &raw const ret);
-                        break;
-                    } else {
-                        println!("来自主线程：PID {ret}, ret 地址 {:p}", &raw const ret);
-                    }
-                }
-
-                for _ in 0..10000000 {
-                    SUM.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-                }
-
-                println!("sum = {}", SUM.load(core::sync::atomic::Ordering::Relaxed));
-            } else {
-                println!("我是父进程，我应该先死");
-            }
-
-            syscall!(93, 0x64);
-        }
-
-        syscall!(93, 100 + ret);
-    }
-
-    let mut status: i32 = -114514;
-    while let rt @ ..=0 = syscall!(260, ret, &mut status, 1) as isize {
-        if rt < 0 {
-            return -10;
-        }
-        println!("WNOHANG 失败一次");
-    }
-    println!("子进程 {ret} 退出了，状态码是 {:#04x}", status);
-
+    let mut status: usize = 0xBADC0DE;
     loop {
         let ret = syscall!(260, -1, &mut status, 0) as isize;
         if ret > 0 {
@@ -278,6 +202,16 @@ fn write(fd: isize, buf: *const c_void, count: usize) -> isize {
 
 fn read(fd: isize, buf: *mut c_void, count: usize) -> isize {
     syscall!(63, fd, buf, count).cast_signed()
+}
+
+fn fork() -> isize {
+    syscall!(220, 0, 0).cast_signed()
+}
+
+fn execve(path: &[u8]) -> isize {
+    let argv: [*const u8; 2] = [path.as_ptr(), core::ptr::null()];
+    let envp: [*const u8; 1] = [core::ptr::null()];
+    syscall!(221, path.as_ptr(), argv.as_ptr(), envp.as_ptr()).cast_signed()
 }
 
 struct ConsoleWriter;

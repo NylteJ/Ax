@@ -11,6 +11,7 @@ use crate::{
     basic::sync::Mutex,
     filesystem::vfs::{VfsError, VfsResult},
     memory::uaccess::CopyError,
+    multitask::task::LoadElfError,
 };
 
 pub mod basic;
@@ -176,6 +177,17 @@ impl FromResidual<Result<Infallible, VfsError>> for SyscallResult {
             VfsError::InvalidArguments(_) => EINVAL,
             VfsError::IoError => EIO,
             VfsError::Other(_) => EINVAL,
+        }
+    }
+}
+
+impl FromResidual<Result<Infallible, LoadElfError>> for SyscallResult {
+    fn from_residual(residual: Result<Infallible, LoadElfError>) -> Self {
+        use err_codes::*;
+        match residual.unwrap_err() {
+            LoadElfError::ArchMismatch => ENOEXEC,
+            LoadElfError::BadAlignment => ENOEXEC,
+            LoadElfError::NotYetImplemented => EOPNOTSUPP,
         }
     }
 }

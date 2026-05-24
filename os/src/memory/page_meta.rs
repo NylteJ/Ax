@@ -102,10 +102,10 @@ impl PageMeta {
 
                     FRAME_ALLOCATOR.lock().dealloc(physical_page_num, 1);
 
-                    crate::println!(
-                        "Page {physical_page_num:#x} released (type: {:?})",
-                        self.page_type
-                    );
+                    // crate::println!(
+                    //     "Page {physical_page_num:#x} released (type: {:?})",
+                    //     self.page_type
+                    // );
                 }
 
                 PageType::Phantom => cold_path(), // 什么都不做，下一个减少引用计数的会将其回绕到 MAX
@@ -171,7 +171,7 @@ impl PageMetas {
             _pin: PhantomPinned,
         });
 
-        crate::println!("Page {:#x} allocated", page_num.0);
+        // crate::println!("Page {:#x} allocated", page_num.0);
 
         // SAFETY: PageMetas 的成员为模块私有，外界只能使用 PAGE_METADATAS，它不可变因此不可能被移动
         PageMetaGuard {

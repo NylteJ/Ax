@@ -150,7 +150,7 @@ pub fn copy_str_from_user(
         buffer.reserve(length_hint);
         let len = copy_str_from_user_raw_uninit(u_src, buffer.spare_capacity_mut())?.len();
 
-        unsafe { buffer.set_len(len) };
+        unsafe { buffer.set_len(len + buffer.len()) };
         u_src = unsafe { u_src.add(len) };
     }
 

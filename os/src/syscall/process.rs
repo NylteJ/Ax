@@ -5,17 +5,20 @@ use core::{
     ptr::addr_eq,
 };
 
-use alloc::sync::Arc;
+use alloc::{sync::Arc, vec::Vec};
 use bit_field::BitField;
 use bitflags::bitflags;
 use intrusive_collections::PointerOps;
 
 use crate::{
     filesystem::vfs::{FileFlags, PathToWalk, walk_path},
-    memory::uaccess::{CopyError, copy_str_from_user, copy_to_user},
+    memory::{
+        STACK_ALIGN,
+        uaccess::{CopyError, copy_from_user, copy_str_from_user, copy_to_user},
+    },
     multitask::{
         current_task,
-        task::{Task, TaskArc},
+        task::{Task, TaskArc, USER_STACK_BYTES},
         task_manager::get_task_by_pid,
     },
     syscall::{
@@ -143,11 +146,109 @@ pub extern "C" fn execve(
         .ops
         .open(file_path.1, FileFlags::Read)?;
 
-    log::error!("TODO: argv/envp");
+    // 接下来从用户侧读取 argv 和 envp
+    // TODO: 这里其实也能优化，提前把新的栈内存分配好，然后直接拷贝到栈内存，以减少一次复制并完全避免 Vec 扩容
+    let mut data = Vec::new();
+    let envp_idxs = read_str_arr_from_user(envp, 32, 2048, &mut data)?;
+    let argv_idxs = read_str_arr_from_user(argv, 16, 512, &mut data)?;
 
-    task.replace_execute(file);
+    let argc = argv_idxs.len();
 
-    SyscallResult::success(0)
+    // 由于执行 replace_execute 后便不能再回头，这里需要提前检查，而且后面就不能再返回失败
+    let args_bytes_unaligned = {
+        let data_bytes = data.len();
+        let auxv_bytes = size_of::<usize>() * 2; // FIXME
+        let ptrs_bytes = (envp_idxs.len() + 1 + argv_idxs.len() + 1) * size_of::<*const c_char>();
+        let argc_bytes = size_of::<usize>();
+
+        auxv_bytes + data_bytes + ptrs_bytes + argc_bytes
+    };
+    let args_bytes_padding = STACK_ALIGN - args_bytes_unaligned % STACK_ALIGN;
+    let args_bytes = args_bytes_unaligned + args_bytes_padding;
+
+    let args_bytes_max = USER_STACK_BYTES / 4;
+    if args_bytes > args_bytes_max {
+        log::warn!("用户侧传入的 execve 参数过大（{args_bytes} 字节 > {args_bytes_max} 字节）",);
+        return E2BIG;
+    }
+
+    log::trace!(
+        "data: {}, argv_idxs: {argv_idxs:?}, envp_idxs: {envp_idxs:?}",
+        crate::basic::bstr::ByteStr::new(&data)
+    );
+
+    task.replace_execute(file)?;
+
+    let current_sp = &mut unsafe { task.get_trap_context().cast_mut().as_mut_unchecked() }
+        .regs
+        .sp;
+    debug_assert_eq!(*current_sp % STACK_ALIGN, 0);
+
+    let args_end = *current_sp;
+
+    *current_sp -= args_bytes_padding;
+
+    *current_sp -= data.len();
+    let data_begin = *current_sp;
+    copy_to_user(data_begin as *mut u8, bytemuck::cast_slice(&data)).expect("此时栈不应溢出");
+
+    *current_sp -= size_of::<usize>() * 2;
+    copy_to_user(*current_sp as *mut u8, &[0u8; size_of::<usize>() * 2]).expect("此时栈不应溢出");
+
+    push_indexes(envp_idxs, data_begin, current_sp);
+    push_indexes(argv_idxs, data_begin, current_sp);
+
+    *current_sp -= size_of::<usize>();
+    copy_to_user(*current_sp as *mut u8, &argc.to_ne_bytes()).expect("此时栈不应溢出");
+
+    debug_assert_eq!(*current_sp % STACK_ALIGN, 0);
+    debug_assert_eq!(*current_sp + args_bytes, args_end);
+
+    SyscallResult::success(0) // 这个返回值其实没什么意义，它会成为新程序启动时的 a0，但除此之外不会有更多作用
+}
+
+fn read_str_arr_from_user(
+    u_src: *const *const c_char,
+    entry_len_hint: usize,
+    entry_len_max: usize,
+    data: &mut Vec<c_char>,
+) -> Result<Vec<usize>, CopyError> {
+    let mut indexes = Vec::new();
+
+    let mut cur_ptr = 1 as *const c_char;
+    let mut src = u_src;
+    loop {
+        let cur_ptr_bytes = unsafe {
+            (&raw mut cur_ptr)
+                .cast::<[u8; size_of::<*const c_char>()]>()
+                .as_mut_unchecked()
+        };
+        copy_from_user(cur_ptr_bytes, src.cast())?;
+
+        if cur_ptr.is_null() {
+            break;
+        }
+
+        // TODO: 这里可以优化，用底层版本的函数直接读到 data 中，避免两次复制
+        let arg = copy_str_from_user(cur_ptr, entry_len_hint, entry_len_max)?;
+        indexes.push(data.len());
+        data.reserve(arg.len() + 1);
+        data.extend(arg.0);
+        data.push(b'\0');
+
+        src = unsafe { src.add(1) };
+    }
+
+    Ok(indexes)
+}
+
+fn push_indexes(mut indexes: Vec<usize>, data_begin: usize, current_sp: &mut usize) {
+    for idx in &mut indexes {
+        *idx += data_begin;
+    }
+    indexes.push(0);
+    *current_sp -= indexes.len() * size_of::<usize>();
+    copy_to_user(*current_sp as *mut u8, bytemuck::cast_slice(&indexes)).expect("此时栈不应溢出");
 }
 
 /// * 功能：等待进程改变状态;

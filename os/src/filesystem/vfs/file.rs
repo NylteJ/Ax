@@ -254,7 +254,8 @@ impl File {
 
         let page = match page_cache.get(page_index) {
             Some(cache_page) => {
-                bytes = inode_data_rguard.file_size as usize - page_index as usize * PAGE_BYTES;
+                bytes = PAGE_BYTES
+                    .min(inode_data_rguard.file_size as usize - page_index as usize * PAGE_BYTES);
 
                 cache_page
             }

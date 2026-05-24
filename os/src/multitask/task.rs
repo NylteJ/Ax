@@ -106,10 +106,14 @@ const KERNEL_STACK_LAYOUT: alloc::alloc::Layout = unsafe {
 
 const USER_STACK_HIGHEST: usize = VIRTUAL_ADDRESS_LOW_HIGHEST + 1;
 
+pub const USER_STACK_BYTES: usize = 2048 * PAGE_BYTES;
+
 impl Task {
     /// 执行 init 进程。此调用不会返回。
     ///
     /// 和一般进程不同，init 进程直接由内核创建、PID 固定为 [`INIT_PID`] 且永不终止。内核会屏蔽向其发出的所有信号。
+    ///
+    /// 此函数不会向 init 进程传递任何参数。（FIXME？）
     pub fn execute_init(
         policy: SchedulePolicy,
         priority: TaskPriority,
@@ -169,7 +173,7 @@ impl Task {
 
         // 注意这里不能改为传入 &mut AddressSpace，因为内部它可能触发缺页异常，缺页异常处理时要获取 AddressSpace 的写权限，
         // 因此传入大粒度的可变引用会导致死锁或违反别名规则。
-        let entry = Self::load_elf(&file, &task.address_space);
+        let entry = Self::load_elf(&file, &task.address_space).unwrap();
 
         register_task(task.clone());
         unsafe { UnsafeInited::init_unsafe(&INIT_TASK, task) };
@@ -324,10 +328,10 @@ impl Task {
         ret
     }
 
-    /// 将当前任务替换为 `file` 对应可执行文件的内容。
+    /// 将当前任务替换为 `file` 对应可执行文件的内容。不传递任何参数。
     ///
     /// 注意此函数在内核端就是普通函数，返回用户态后替换后的任务才可能被执行。
-    pub fn replace_execute(&self, file: FileArc) {
+    pub fn replace_execute(&self, file: FileArc) -> Result<(), LoadElfError> {
         // 创建新的地址空间，并替换当前地址空间
         {
             let mut my_addr_space = self.address_space.write();
@@ -336,7 +340,7 @@ impl Task {
         }
 
         // 加载 ELF 文件并获取入口地址
-        let entry = Self::load_elf(&file, &self.address_space);
+        let entry = Self::load_elf(&file, &self.address_space)?;
 
         // 将入口地址和栈指针写入到 TrapContext 中
         // 特别注意，和前面几个函数不同，我们并没有更换内核栈，因此不需要伪造任何东西，只要修改 ret_pc 和 sp 即可
@@ -346,6 +350,7 @@ impl Task {
         trap_context.regs.sp = USER_STACK_HIGHEST;
 
         // OK，这样就可以了！
+        Ok(())
     }
 
     pub unsafe fn set_current_task(task_ptr: *const Task) {
@@ -409,8 +414,6 @@ impl Task {
     fn new_addr_space() -> AddressSpace {
         let mut ret = AddressSpace::new();
 
-        const USER_STACK_BYTES: usize = 2048 * PAGE_BYTES;
-
         static_assertions::const_assert!(USER_STACK_BYTES % PAGE_BYTES == 0);
         static_assertions::const_assert!(USER_STACK_BYTES > PAGE_BYTES);
 
@@ -425,10 +428,26 @@ impl Task {
         ret
     }
 
-    fn load_elf(file: &FileArc, address_space: &RwLock<AddressSpace>) -> usize {
+    fn load_elf(
+        file: &FileArc,
+        address_space: &RwLock<AddressSpace>,
+    ) -> Result<usize, LoadElfError> {
         let head = unsafe { File::kernel_read_page(file.get_inode(), 0) }.unwrap();
 
         let elf = ElfBytes::<NativeEndian>::minimal_parse_no_section_headers(head).unwrap();
+
+        #[cfg(target_arch = "riscv64")]
+        const EXPECTED_MACHINE: u16 = elf::abi::EM_RISCV;
+        #[cfg(target_arch = "loongarch64")]
+        const EXPECTED_MACHINE: u16 = elf::abi::EM_LOONGARCH;
+
+        if elf.ehdr.e_machine != EXPECTED_MACHINE {
+            log::error!(
+                "ELF 文件的 e_machine 字段不匹配（应当为 {EXPECTED_MACHINE:#x}，得到 {:#x}），无法加载",
+                elf.ehdr.e_machine
+            );
+            return Err(LoadElfError::ArchMismatch);
+        }
 
         let segs = elf.segments().unwrap();
         for seg in segs {
@@ -447,7 +466,7 @@ impl Task {
                             "ELF 的 P_LOAD 段的 p_align（{}）错误，无法加载",
                             seg.p_align
                         );
-                        todo!("错误处理");
+                        return Err(LoadElfError::BadAlignment);
                     }
 
                     let inseg_offset = seg.p_offset % seg.p_align;
@@ -459,7 +478,7 @@ impl Task {
                             seg.p_vaddr,
                             seg.p_offset
                         );
-                        todo!("错误处理");
+                        return Err(LoadElfError::BadAlignment);
                     }
 
                     // 注意 inseg_offset 相等也推出了 inpage_offset 相等（读者自证不难）
@@ -540,7 +559,7 @@ impl Task {
                 }
                 PT_DYNAMIC => {
                     log::error!("暂不支持动态链接的程序");
-                    todo!("错误处理");
+                    return Err(LoadElfError::NotYetImplemented);
                 }
                 PT_GNU_STACK => {
                     log::info!(
@@ -551,7 +570,7 @@ impl Task {
             }
         }
 
-        elf.ehdr.e_entry as usize
+        Ok(elf.ehdr.e_entry as usize)
     }
 
     fn transfer_children_to_init(&self) {
@@ -602,4 +621,11 @@ impl Drop for Task {
 
         crate::println!("Task {} dropped", self.tid);
     }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum LoadElfError {
+    ArchMismatch,
+    BadAlignment,
+    NotYetImplemented,
 }
