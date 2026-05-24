@@ -13,24 +13,29 @@ use virtio_drivers::{
 };
 
 use crate::{
-    basic::sync::{OnceInited, RwLock},
-    devices::{BLOCK_DEVICES, hal::VirtIOHal},
+    basic::sync::Mutex,
+    devices::{Devices, hal::VirtIOHal},
     memory::address::PhysAddr,
 };
 
-pub fn scan_pci_devices(fdt: &Fdt) {
+pub fn scan_pci_devices(fdt: &Fdt, devices: &mut Devices) {
     if let Some(pci_node) = fdt.find_compatible(&["pci-host-cam-generic"]) {
         log::debug!("PCI: {}", pci_node.name);
-        do_scan(pci_node, Cam::MmioCam);
+        do_scan(pci_node, Cam::MmioCam, devices);
     }
 
     if let Some(pcie_node) = fdt.find_compatible(&["pci-host-ecam-generic"]) {
         log::debug!("PCIE: {}", pcie_node.name);
-        do_scan(pcie_node, Cam::Ecam);
+        do_scan(pcie_node, Cam::Ecam, devices);
     }
 }
 
-fn do_scan(node: FdtNode, cam: Cam) {
+enum MyDeviceType {
+    Block,
+    Network,
+}
+
+fn do_scan(node: FdtNode, cam: Cam, devices: &mut Devices) {
     assert!(
         node.property("dma-coherent").is_some(),
         "不支持硬件不维护一致性的设备"
@@ -80,9 +85,9 @@ fn do_scan(node: FdtNode, cam: Cam) {
             for (dev_pos, info) in pci_root.enumerate_bus(bus_id) {
                 log::info!("在 {} {dev_pos} 上发现设备：{info}", node.name);
 
-                let handle_func = match virtio_device_type(&info) {
-                    Some(DeviceType::Block) => handle_block_device,
-                    Some(DeviceType::Network) => handle_network_device,
+                let device_type = match virtio_device_type(&info) {
+                    Some(DeviceType::Block) => MyDeviceType::Block,
+                    Some(DeviceType::Network) => MyDeviceType::Network,
                     Some(vd_type) => {
                         log::info!(
                             "设备 {info}（位于 {} {dev_pos}）的类型 {vd_type:?} 暂不支持，跳过后续步骤...",
@@ -164,7 +169,12 @@ fn do_scan(node: FdtNode, cam: Cam) {
                     Command::IO_SPACE | Command::MEMORY_SPACE | Command::BUS_MASTER,
                 );
 
-                handle_func(PciTransport::new::<VirtIOHal, _>(&mut pci_root, dev_pos).unwrap());
+                let transport = PciTransport::new::<VirtIOHal, _>(&mut pci_root, dev_pos).unwrap();
+
+                match device_type {
+                    MyDeviceType::Block => handle_block_device(transport, devices),
+                    MyDeviceType::Network => handle_network_device(transport, devices),
+                }
             }
         }
     }
@@ -214,15 +224,10 @@ fn select_pci_range_32(pci_ranges: impl Iterator<Item = MemoryRange>) -> Option<
     })
 }
 
-fn handle_block_device(transport: PciTransport) {
-    // FIXME: 现在这样不支持多块设备（虽然我们可能也没必要支持）
-    log::warn!("初始化块设备，且将此块设备当作唯一的块设备");
-
-    let device_box = Box::new(RwLock::new(VirtIOBlk::new(transport).unwrap()));
-
-    OnceInited::init(&BLOCK_DEVICES, [Box::leak(device_box)]);
+fn handle_block_device(transport: PciTransport, devices: &mut Devices) {
+    devices.add_block_device(Box::new(Mutex::new(VirtIOBlk::new(transport).unwrap())));
 }
 
-fn handle_network_device(_transport: PciTransport) {
+fn handle_network_device(_transport: PciTransport, _devices: &mut Devices) {
     log::warn!("网络设备的后续步骤暂未实现");
 }

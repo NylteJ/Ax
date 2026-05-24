@@ -1,10 +1,6 @@
 use core::ptr::NonNull;
 
-use crate::{
-    basic::sync::{OnceInited, RwLock},
-    devices::BLOCK_DEVICES,
-    memory::address::PhysAddr,
-};
+use crate::{basic::sync::Mutex, devices::Devices, memory::address::PhysAddr};
 use alloc::boxed::Box;
 use flat_device_tree::Fdt;
 use virtio_drivers::{
@@ -12,7 +8,7 @@ use virtio_drivers::{
     transport::{Transport, mmio::MmioTransport},
 };
 
-pub fn scan_virtio_devices(fdt: &Fdt) {
+pub fn scan_virtio_devices(fdt: &Fdt, devices: &mut Devices) {
     let vmmios = fdt.all_nodes().filter(|node| {
         node.compatible()
             .is_some_and(|v| v.all().any(|s| s == "virtio,mmio"))
@@ -58,12 +54,7 @@ pub fn scan_virtio_devices(fdt: &Fdt) {
         match transport.device_type() {
             DeviceType::Network => log::error!("TODO: VirtIO 网络设备"),
             DeviceType::Block => {
-                // FIXME: 现在这样不支持多块设备（虽然我们可能也没必要支持）
-                log::warn!("初始化块设备，且将此块设备当作唯一的块设备");
-
-                let device_box = Box::new(RwLock::new(VirtIOBlk::new(transport).unwrap()));
-
-                OnceInited::init(&BLOCK_DEVICES, [Box::leak(device_box)]);
+                devices.add_block_device(Box::new(Mutex::new(VirtIOBlk::new(transport).unwrap())));
             }
             _ => log::warn!(
                 "忽略暂不支持的 VirtIO 设备 {}（其类型为 {:?}）",

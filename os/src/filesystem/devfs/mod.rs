@@ -21,6 +21,7 @@ use alloc::{borrow::ToOwned, boxed::Box, sync::Arc, vec::Vec};
 
 use crate::{
     basic::bstr::ByteStr,
+    devices::block_device::BlockDevice,
     filesystem::{
         devfs::{dentry::DevDEntry, filesystem::DevFs, inode::DevINode},
         filesystems::{FileSystemType, FileSystemTypeOps, register_filesystem_type},
@@ -31,7 +32,8 @@ use crate::{
 struct DevFsType;
 
 impl FileSystemTypeOps for DevFsType {
-    fn new_fs(&self) -> Pin<Arc<vfs::FileSystem>> {
+    fn new_fs(&self, block_device: Option<&'static dyn BlockDevice>) -> Pin<Arc<vfs::FileSystem>> {
+        debug_assert!(block_device.is_none(), "devfs 不应该绑定块设备");
         vfs::FileSystem::new(
             |fs, _| {
                 let root_inode = vfs::INode::new_raw(0, fs, vfs::INodeData {

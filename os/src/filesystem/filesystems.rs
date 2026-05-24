@@ -2,7 +2,7 @@ use core::pin::Pin;
 
 use alloc::{boxed::Box, sync::Arc, vec::Vec};
 
-use crate::{basic::sync::RwLock, filesystem::vfs::FileSystem};
+use crate::{basic::sync::RwLock, devices::block_device::BlockDevice, filesystem::vfs::FileSystem};
 
 pub struct FileSystemType<T: ?Sized + FileSystemTypeOps = dyn FileSystemTypeOps> {
     pub name: &'static str,
@@ -10,7 +10,7 @@ pub struct FileSystemType<T: ?Sized + FileSystemTypeOps = dyn FileSystemTypeOps>
 }
 
 pub trait FileSystemTypeOps: Send + Sync {
-    fn new_fs(&self) -> Pin<Arc<FileSystem>>;
+    fn new_fs(&self, block_device: Option<&'static dyn BlockDevice>) -> Pin<Arc<FileSystem>>;
 }
 
 static FILE_SYSTEM_TYPES: RwLock<Vec<&'static FileSystemType>> = RwLock::new(Vec::new());

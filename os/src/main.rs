@@ -42,7 +42,6 @@ extern crate alloc;
 use core::arch::asm;
 use core::arch::global_asm;
 use core::intrinsics::volatile_set_memory;
-use core::ops::Deref;
 
 use flat_device_tree::Fdt;
 
@@ -52,7 +51,7 @@ use crate::basic::debugger::backtrace;
 use crate::basic::global_allocator::init_heap;
 use crate::basic::logger;
 use crate::basic::shared_with_asm::SharedWithAsm;
-use crate::devices::BLOCK_DEVICES;
+use crate::devices::DEVICES;
 use crate::devices::pci::scan_pci_devices;
 use crate::devices::virtio::scan_virtio_devices;
 use crate::filesystem::vfs;
@@ -162,11 +161,15 @@ pub extern "C" fn main(_: usize, dtb: PhysAddr) -> ! {
     log::debug!("设备树物理地址：{:#x}", dtb.0);
     let fdt = unsafe { Fdt::from_ptr(dtb.to_virtual_address().0 as *const u8) }.unwrap();
 
-    scan_virtio_devices(&fdt);
-    scan_pci_devices(&fdt);
+    let mut devices = devices::Devices::new();
+
+    scan_virtio_devices(&fdt, &mut devices);
+    scan_pci_devices(&fdt, &mut devices);
+
+    unsafe { basic::UnsafeInited::init_unsafe(&DEVICES, devices) };
 
     log::info!("设备树扫描完毕！");
-    for device in BLOCK_DEVICES.deref() {
+    for device in &DEVICES.block {
         log::info!(
             "识别到块设备: {name}, 块大小 {block_size} 字节, 总大小 {block_size} * {block_count} 字节",
             name = match &device.device_id() {
@@ -205,7 +208,22 @@ pub extern "C" fn main(_: usize, dtb: PhysAddr) -> ! {
         let tmpfs_type = filesystem::filesystems::get_filesystem_type("tmpfs").unwrap();
         let devfs_type = filesystem::filesystems::get_filesystem_type("devfs").unwrap();
 
-        filesystem::init_root(ext4_type);
+        // FIXME
+        let block_device_1 = &*DEVICES.block[0];
+        let block_device_2 = &*DEVICES.block[1];
+
+        const ROOT_BLOCK_COUNT: u64 = 2048;
+
+        let (root_device, sdcard_device) = if block_device_1.block_count() == ROOT_BLOCK_COUNT {
+            log::info!("已选定块设备 1 作为根文件系统");
+            (block_device_1, block_device_2)
+        } else {
+            assert!(block_device_2.block_count() == ROOT_BLOCK_COUNT);
+            log::info!("已选定块设备 2 作为根文件系统");
+            (block_device_2, block_device_1)
+        };
+
+        filesystem::init_root(ext4_type, root_device);
 
         let root_fs = ROOT_PATH.1.sub_fs.clone();
 
@@ -225,17 +243,23 @@ pub extern "C" fn main(_: usize, dtb: PhysAddr) -> ! {
         }
 
         let tmp_1 = get_or_create_path(&root_fs, "/tmp");
-        let tmp_fs = tmpfs_type.ops.new_fs();
+        let tmp_fs = tmpfs_type.ops.new_fs(None);
         let tmp_2 = tmp_fs.root_dentry.clone();
         vfs::MountPoint::mount(tmp_1, tmp_fs, tmp_2);
         log::info!("已将 tmpfs 挂载到 /tmp");
 
         let dev_1 = get_or_create_path(&root_fs, "/dev");
-        let dev_fs = devfs_type.ops.new_fs();
+        let dev_fs = devfs_type.ops.new_fs(None);
         let dev_2 = dev_fs.root_dentry.clone();
         vfs::MountPoint::mount(dev_1, dev_fs, dev_2);
         log::info!("已将 devfs 挂载到 /dev");
         init_devs();
+
+        let sdcard_1 = get_or_create_path(&root_fs, "/sdcard");
+        let sdcard_fs = ext4_type.ops.new_fs(Some(sdcard_device));
+        let sdcard_2 = sdcard_fs.root_dentry.clone();
+        vfs::MountPoint::mount(sdcard_1, sdcard_fs, sdcard_2);
+        log::info!("已将 sdcard 挂载到 /sdcard");
     }
 
     let zero_page_num = unsafe {

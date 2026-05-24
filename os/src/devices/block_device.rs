@@ -8,7 +8,7 @@ use virtio_drivers::{
 };
 
 use crate::{
-    basic::sync::RwLock,
+    basic::sync::Mutex,
     devices::{DeviceResult, hal::VirtIOHal},
 };
 
@@ -40,7 +40,7 @@ pub trait BlockDevice: Send + Sync {
     fn device_id(&self) -> DeviceResult<String>;
 }
 
-impl<T: Transport + Send + Sync> BlockDevice for RwLock<VirtIOBlk<VirtIOHal, T>> {
+impl<T: Transport + Send + Sync> BlockDevice for Mutex<VirtIOBlk<VirtIOHal, T>> {
     fn read<'a>(
         &self,
         block_id: usize,
@@ -51,7 +51,7 @@ impl<T: Transport + Send + Sync> BlockDevice for RwLock<VirtIOBlk<VirtIOHal, T>>
 
         // read_blocks 内部会检测大小是否为块大小的非零整数倍
         // TODO: 避免阻塞
-        self.write().read_blocks(block_id, buf)?;
+        self.lock().read_blocks(block_id, buf)?;
 
         Ok(buf)
     }
@@ -59,13 +59,13 @@ impl<T: Transport + Send + Sync> BlockDevice for RwLock<VirtIOBlk<VirtIOHal, T>>
     fn write(&self, block_id: usize, data: &[u8]) -> DeviceResult<()> {
         // read_blocks 内部会检测大小是否为块大小的非零整数倍
         // TODO: 避免阻塞
-        self.write().write_blocks(block_id, data)?;
+        self.lock().write_blocks(block_id, data)?;
 
         Ok(())
     }
 
     fn flush(&self) -> DeviceResult<()> {
-        Ok(self.write().flush()?)
+        Ok(self.lock().flush()?)
     }
 
     fn block_size(&self) -> usize {
@@ -73,12 +73,12 @@ impl<T: Transport + Send + Sync> BlockDevice for RwLock<VirtIOBlk<VirtIOHal, T>>
     }
 
     fn block_count(&self) -> u64 {
-        self.read().capacity()
+        self.lock().capacity()
     }
 
     fn device_id(&self) -> DeviceResult<String> {
         let mut buffer = [0u8; 20];
-        let length = self.write().device_id(&mut buffer)?;
+        let length = self.lock().device_id(&mut buffer)?;
         Ok(String::from_utf8_lossy(&buffer[..length]).into_owned())
     }
 }

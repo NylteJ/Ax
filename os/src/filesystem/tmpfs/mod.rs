@@ -9,6 +9,7 @@ use alloc::{borrow::ToOwned, boxed::Box, sync::Arc};
 
 use crate::{
     basic::bstr::ByteStr,
+    devices::block_device::BlockDevice,
     filesystem::{
         filesystems::{FileSystemType, FileSystemTypeOps, register_filesystem_type},
         vfs::{self, DEntry},
@@ -23,7 +24,8 @@ pub use inode::*;
 struct TmpFsType {}
 
 impl FileSystemTypeOps for TmpFsType {
-    fn new_fs(&self) -> Pin<Arc<vfs::FileSystem>> {
+    fn new_fs(&self, block_device: Option<&'static dyn BlockDevice>) -> Pin<Arc<vfs::FileSystem>> {
+        debug_assert!(block_device.is_none(), "tmpfs 不应该绑定块设备");
         vfs::FileSystem::new(
             |fs, _| {
                 let root_inode = TmpFsINode::new_root(fs);

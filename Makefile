@@ -30,7 +30,7 @@ clean:
 		rm -f ../kernel-rv ../kernel-la; \
 		rm -f ./src/linker_rv.ld ./src/linker_la.ld; \
 		rm -f ./kernel-rv.debug ./kernel-la.debug; \
-		rm -f ./disk.img; \
+		rm -f ./disk.img ./disk-la.img; \
 		rm -f ./disk_img/rv-init ./disk_img/la-init; \
 		rm -rf ./.cargo; \
 		cd ../programs/init; \
@@ -145,8 +145,8 @@ RV_QEMU_CMD_BASE := \
 		-rtc base=utc \
 		-drive file=/repo/disk.img,if=none,format=raw,id=x0 \
 		-device virtio-blk-device,drive=x0,bus=virtio-mmio-bus.0 \
-# 		-drive file=disk.img,if=none,format=raw,id=x1 \
-# 		-device virtio-blk-device,drive=x1,bus=virtio-mmio-bus.1 \
+		-drive file=/repo/sdcard-rv.img,if=none,format=raw,id=x1 \
+		-device virtio-blk-device,drive=x1,bus=virtio-mmio-bus.1 \
 
 LA_QEMU_CMD_BASE := \
 	qemu-system-loongarch64 \
@@ -154,14 +154,15 @@ LA_QEMU_CMD_BASE := \
 		-m $(MEMORY) \
 		-nographic \
 		-smp $(SMP) \
-		-drive file=/repo/disk.img,if=none,format=raw,id=x0 \
+		-drive file=/repo/disk-la.img,if=none,format=raw,id=x0 \
  		-device virtio-blk-pci,drive=x0 \
 		-no-reboot \
 		-device virtio-net-pci,netdev=net0 \
 		-netdev user,id=net0,hostfwd=tcp::5555-:5555,hostfwd=udp::5555-:5555 \
 		-rtc base=utc \
+		-drive file=/repo/sdcard-la.img,if=none,format=raw,id=x1 \
+		-device virtio-blk-pci,drive=x1 \
 # 		-device virtio-blk-pci,drive=x0,bus=virtio-mmio-bus.0 \
-# 		-drive file=disk-la.img,if=none,format=raw,id=x1 \
 # 		-device virtio-blk-pci,drive=x1,bus=virtio-mmio-bus.1 \
 
 WINDOWS_TERMINAL_PATH ?= /mnt/d/Downloads/Chrome/terminal-1.22.11751.0/wt.exe
@@ -216,10 +217,13 @@ clippy-la:
 disk.img: $(wildcard disk_img/*)
 	mkfs.ext4 -F -d ./disk_img disk.img 1M
 
+disk-la.img: disk.img
+	cp disk.img disk-la.img
+
 .PHONY: regen-disk
 regen-disk:
-	rm -f disk.img
-	$(MAKE) disk.img
+	rm -f disk.img disk-la.img
+	$(MAKE) disk.img disk-la.img
 
 .PHONY: mount-disk
 mount-disk: disk.img

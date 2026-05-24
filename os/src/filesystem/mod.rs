@@ -13,8 +13,11 @@ pub fn register_all() {
     devfs::register();
 }
 
-pub fn init_root(fs_type: &filesystems::FileSystemType) {
-    let fs = fs_type.ops.new_fs();
+pub fn init_root(
+    fs_type: &filesystems::FileSystemType,
+    block_device: &'static dyn crate::devices::block_device::BlockDevice,
+) {
+    let fs = fs_type.ops.new_fs(Some(block_device));
 
     let root = fs.root_dentry.clone();
 
