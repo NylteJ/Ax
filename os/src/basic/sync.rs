@@ -32,6 +32,10 @@ impl<T> RwLock<T> {
     pub const fn from_value(val: NonNull<T>) -> NonNull<Self> {
         unsafe { val.byte_sub(offset_of!(Self, value)).cast() }
     }
+
+    pub fn into_inner(self) -> T {
+        self.value.into_inner()
+    }
 }
 
 impl<T: ?Sized> RwLock<T> {

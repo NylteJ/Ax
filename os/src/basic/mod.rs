@@ -125,6 +125,34 @@ where
     }
 }
 
+pub struct DropGuard<F: FnOnce()> {
+    func: core::mem::ManuallyDrop<F>,
+}
+
+impl<F: FnOnce()> DropGuard<F> {
+    pub fn new(func: F) -> Self {
+        Self {
+            func: core::mem::ManuallyDrop::new(func),
+        }
+    }
+
+    #[must_use]
+    pub fn release(self) -> F {
+        use core::mem::ManuallyDrop;
+
+        let mut this = ManuallyDrop::new(self);
+        unsafe { ManuallyDrop::take(&mut this.func) }
+    }
+}
+
+impl<F: FnOnce()> Drop for DropGuard<F> {
+    fn drop(&mut self) {
+        let func = unsafe { core::mem::ManuallyDrop::take(&mut self.func) };
+
+        func();
+    }
+}
+
 pub fn cleanup_and_shutdown() -> ! {
     log::debug!("已进入清理并关机流程");
 

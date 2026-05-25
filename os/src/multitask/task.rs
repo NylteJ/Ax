@@ -1,6 +1,6 @@
 use core::{
     marker::PhantomPinned,
-    mem::offset_of,
+    mem::{offset_of, replace},
     num::NonZero,
     ops::Deref,
     pin::Pin,
@@ -17,7 +17,7 @@ use crate::{
         interfaces::{Basic, Regs, Trap, TrapContext},
     },
     basic::{
-        UnsafeInited,
+        DropGuard, UnsafeInited,
         shared_with_asm::SharedWithAsm,
         stack::TaskKernelStackPtr,
         sync::{Mutex, RwLock},
@@ -336,11 +336,14 @@ impl Task {
     /// 注意此函数在内核端就是普通函数，返回用户态后替换后的任务才可能被执行。
     pub fn replace_execute(&self, file: FileArc) -> Result<AuxiliaryVec, LoadElfError> {
         // 创建新的地址空间，并替换当前地址空间
-        {
-            let mut my_addr_space = self.address_space.write();
-            *my_addr_space = Self::new_addr_space();
-            my_addr_space.get_page_table().activitate();
-        }
+
+        let old_addr_space = replace(&mut *self.address_space.write(), Self::new_addr_space());
+        self.address_space.read().get_page_table().activitate();
+
+        let guard = DropGuard::new(|| {
+            old_addr_space.get_page_table().activitate();
+            *self.address_space.write() = old_addr_space;
+        });
 
         // 加载 ELF 文件并获取入口地址
         let (entry, auxv) = Self::load_elf(&file, &self.address_space)?;
@@ -353,6 +356,7 @@ impl Task {
         trap_context.regs.sp = USER_STACK_HIGHEST;
 
         // OK，这样就可以了！
+        let _ = DropGuard::release(guard);
         Ok(auxv)
     }
 
