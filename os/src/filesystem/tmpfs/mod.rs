@@ -12,6 +12,7 @@ use crate::{
     devices::block_device::BlockDevice,
     filesystem::{
         filesystems::{FileSystemType, FileSystemTypeOps, register_filesystem_type},
+        get_new_anon_block_device_id,
         vfs::{self, DEntry},
     },
 };
@@ -37,6 +38,7 @@ impl FileSystemTypeOps for TmpFsType {
                 );
                 (root_inode, init_root_dentry)
             },
+            get_new_anon_block_device_id(),
             TmpFs {
                 inode_id: AtomicU32::new(1),
             },

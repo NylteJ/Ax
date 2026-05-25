@@ -25,7 +25,7 @@ use crate::{
     filesystem::{
         devfs::{dentry::DevDEntry, filesystem::DevFs, inode::DevINode},
         filesystems::{FileSystemType, FileSystemTypeOps, register_filesystem_type},
-        vfs,
+        get_new_anon_block_device_id, vfs,
     },
 };
 
@@ -51,6 +51,7 @@ impl FileSystemTypeOps for DevFsType {
                 );
                 (root_inode, root_dentry)
             },
+            get_new_anon_block_device_id(),
             DevFs {
                 inode_id: AtomicU32::new(1),
             },

@@ -31,7 +31,7 @@ pub fn copy_from_user_uninit(
         return Err(CopyError::UserPointerNotInUserSpace);
     }
 
-    debug_assert!(k_dest.as_ptr() as usize >= VIRTUAL_ADDRESS_HIGH_BASE);
+    debug_assert!(k_dest.as_ptr() as usize >= VIRTUAL_ADDRESS_HIGH_BASE || k_dest.is_empty());
 
     allow_uaccess();
     let copy_ret = unsafe {
@@ -69,7 +69,7 @@ pub fn copy_to_user(u_dest: *mut u8, k_src: &[u8]) -> Result<(), CopyError> {
         return Err(CopyError::UserPointerNotInUserSpace);
     }
 
-    debug_assert!(k_src.as_ptr() as usize >= VIRTUAL_ADDRESS_HIGH_BASE);
+    debug_assert!(k_src.as_ptr() as usize >= VIRTUAL_ADDRESS_HIGH_BASE || k_src.is_empty());
 
     allow_uaccess();
     let copy_ret =

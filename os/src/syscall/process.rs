@@ -18,7 +18,7 @@ use crate::{
     },
     multitask::{
         current_task,
-        task::{Task, TaskArc, USER_STACK_BYTES},
+        task::{AuxiliaryEntry, Task, TaskArc, USER_STACK_BYTES},
         task_manager::get_task_by_pid,
     },
     syscall::{
@@ -155,20 +155,21 @@ pub extern "C" fn execve(
     let argc = argv_idxs.len();
 
     // 由于执行 replace_execute 后便不能再回头，这里需要提前检查，而且后面就不能再返回失败
+    // 注意这里的大小不包括 auxv，因为 auxv 完全由我们控制
     let args_bytes_unaligned = {
         let data_bytes = data.len();
-        let auxv_bytes = size_of::<usize>() * 2; // FIXME
         let ptrs_bytes = (envp_idxs.len() + 1 + argv_idxs.len() + 1) * size_of::<*const c_char>();
         let argc_bytes = size_of::<usize>();
 
-        auxv_bytes + data_bytes + ptrs_bytes + argc_bytes
+        data_bytes + ptrs_bytes + argc_bytes
     };
-    let args_bytes_padding = STACK_ALIGN - args_bytes_unaligned % STACK_ALIGN;
-    let args_bytes = args_bytes_unaligned + args_bytes_padding;
 
-    let args_bytes_max = USER_STACK_BYTES / 4;
-    if args_bytes > args_bytes_max {
-        log::warn!("用户侧传入的 execve 参数过大（{args_bytes} 字节 > {args_bytes_max} 字节）",);
+    const MAX_ARGS_BYTES: usize = USER_STACK_BYTES / 4;
+    if args_bytes_unaligned > MAX_ARGS_BYTES {
+        // 这实际上只是一个估算，但一般来讲这个限制都是 MB 级的，所以并不会有多大影响
+        log::warn!(
+            "用户侧传入的 execve 参数过大（{args_bytes_unaligned} 字节 > {MAX_ARGS_BYTES} 字节）",
+        );
         return E2BIG;
     }
 
@@ -177,32 +178,48 @@ pub extern "C" fn execve(
         crate::basic::bstr::ByteStr::new(&data)
     );
 
-    task.replace_execute(file)?;
+    let auxv = task.replace_execute(file)?;
+    debug_assert!(
+        auxv.last()
+            .is_some_and(|entry| entry.0 == 0 && entry.1 == 0)
+    );
+
+    let auxv_bytes = auxv.len() * size_of::<AuxiliaryEntry>();
+    let data_bytes_unaligned = args_bytes_unaligned + auxv_bytes;
+    let data_bytes_padding = STACK_ALIGN - data_bytes_unaligned % STACK_ALIGN;
+    let data_bytes = data_bytes_unaligned + data_bytes_padding;
+
+    debug_assert!(data_bytes <= USER_STACK_BYTES);
 
     let current_sp = &mut unsafe { task.get_trap_context().cast_mut().as_mut_unchecked() }
         .regs
         .sp;
     debug_assert_eq!(*current_sp % STACK_ALIGN, 0);
 
-    let args_end = *current_sp;
+    let data_end = *current_sp;
 
-    *current_sp -= args_bytes_padding;
+    // 对齐填充
+    *current_sp -= data_bytes_padding;
 
+    // argv、envp 的具体数据
     *current_sp -= data.len();
     let data_begin = *current_sp;
     copy_to_user(data_begin as *mut u8, bytemuck::cast_slice(&data)).expect("此时栈不应溢出");
 
-    *current_sp -= size_of::<usize>() * 2;
-    copy_to_user(*current_sp as *mut u8, &[0u8; size_of::<usize>() * 2]).expect("此时栈不应溢出");
+    // auxv
+    *current_sp -= auxv_bytes;
+    copy_to_user(*current_sp as *mut u8, bytemuck::cast_slice(&auxv)).expect("此时栈不应溢出");
 
+    // argv、envp 的指针数组，指向之前写入的具体数据
     push_indexes(envp_idxs, data_begin, current_sp);
     push_indexes(argv_idxs, data_begin, current_sp);
 
+    // argc
     *current_sp -= size_of::<usize>();
     copy_to_user(*current_sp as *mut u8, &argc.to_ne_bytes()).expect("此时栈不应溢出");
 
     debug_assert_eq!(*current_sp % STACK_ALIGN, 0);
-    debug_assert_eq!(*current_sp + args_bytes, args_end);
+    debug_assert_eq!(*current_sp + data_bytes, data_end);
 
     SyscallResult::success(0) // 这个返回值其实没什么意义，它会成为新程序启动时的 a0，但除此之外不会有更多作用
 }
@@ -211,7 +228,7 @@ fn read_str_arr_from_user(
     u_src: *const *const c_char,
     entry_len_hint: usize,
     entry_len_max: usize,
-    data: &mut Vec<c_char>,
+    data: &mut Vec<u8>,
 ) -> Result<Vec<usize>, CopyError> {
     let mut indexes = Vec::new();
 
@@ -401,4 +418,9 @@ pub extern "C" fn getpid() -> usize {
 pub extern "C" fn gettid() -> usize {
     let task = unsafe { current_task().as_ref_unchecked() };
     task.tid
+}
+
+// FIXME
+pub extern "C" fn set_tid_address() -> usize {
+    0
 }

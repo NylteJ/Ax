@@ -108,6 +108,9 @@ const USER_STACK_HIGHEST: usize = VIRTUAL_ADDRESS_LOW_HIGHEST + 1;
 
 pub const USER_STACK_BYTES: usize = 2048 * PAGE_BYTES;
 
+static_assertions::const_assert!(USER_STACK_BYTES % PAGE_BYTES == 0);
+static_assertions::const_assert!(USER_STACK_BYTES > PAGE_BYTES);
+
 impl Task {
     /// 执行 init 进程。此调用不会返回。
     ///
@@ -173,7 +176,7 @@ impl Task {
 
         // 注意这里不能改为传入 &mut AddressSpace，因为内部它可能触发缺页异常，缺页异常处理时要获取 AddressSpace 的写权限，
         // 因此传入大粒度的可变引用会导致死锁或违反别名规则。
-        let entry = Self::load_elf(&file, &task.address_space).unwrap();
+        let entry = Self::load_elf(&file, &task.address_space).unwrap().0;
 
         register_task(task.clone());
         unsafe { UnsafeInited::init_unsafe(&INIT_TASK, task) };
@@ -328,10 +331,10 @@ impl Task {
         ret
     }
 
-    /// 将当前任务替换为 `file` 对应可执行文件的内容。不传递任何参数。
+    /// 将当前任务替换为 `file` 对应可执行文件的内容。不传递任何参数。返回辅助向量。
     ///
     /// 注意此函数在内核端就是普通函数，返回用户态后替换后的任务才可能被执行。
-    pub fn replace_execute(&self, file: FileArc) -> Result<(), LoadElfError> {
+    pub fn replace_execute(&self, file: FileArc) -> Result<AuxiliaryVec, LoadElfError> {
         // 创建新的地址空间，并替换当前地址空间
         {
             let mut my_addr_space = self.address_space.write();
@@ -340,7 +343,7 @@ impl Task {
         }
 
         // 加载 ELF 文件并获取入口地址
-        let entry = Self::load_elf(&file, &self.address_space)?;
+        let (entry, auxv) = Self::load_elf(&file, &self.address_space)?;
 
         // 将入口地址和栈指针写入到 TrapContext 中
         // 特别注意，和前面几个函数不同，我们并没有更换内核栈，因此不需要伪造任何东西，只要修改 ret_pc 和 sp 即可
@@ -350,7 +353,7 @@ impl Task {
         trap_context.regs.sp = USER_STACK_HIGHEST;
 
         // OK，这样就可以了！
-        Ok(())
+        Ok(auxv)
     }
 
     pub unsafe fn set_current_task(task_ptr: *const Task) {
@@ -414,9 +417,6 @@ impl Task {
     fn new_addr_space() -> AddressSpace {
         let mut ret = AddressSpace::new();
 
-        static_assertions::const_assert!(USER_STACK_BYTES % PAGE_BYTES == 0);
-        static_assertions::const_assert!(USER_STACK_BYTES > PAGE_BYTES);
-
         ret.add_vma(VirtualMemoryArea {
             start: VirtAddr(USER_STACK_HIGHEST - PAGE_BYTES),
             end: VirtAddr(USER_STACK_HIGHEST),
@@ -428,10 +428,16 @@ impl Task {
         ret
     }
 
+    /// 从 ELF 文件中加载程序，填入对应地址空间中，并返回入口地址和辅助向量
+    ///
+    /// 它也负责设置初始堆区 VMA 和 brk。
+    /// （和 Linux 不同，我们初始时就有一个很短的堆区 VMA，因为反正虚拟地址多得用不完，这样只会掩盖少量用户态越界访问）
     fn load_elf(
         file: &FileArc,
         address_space: &RwLock<AddressSpace>,
-    ) -> Result<usize, LoadElfError> {
+    ) -> Result<(usize, AuxiliaryVec), LoadElfError> {
+        use aux_ids::*;
+
         let head = unsafe { File::kernel_read_page(file.get_inode(), 0) }.unwrap();
 
         let elf = ElfBytes::<NativeEndian>::minimal_parse_no_section_headers(head).unwrap();
@@ -448,6 +454,10 @@ impl Task {
             );
             return Err(LoadElfError::ArchMismatch);
         }
+
+        let mut auxv = Vec::new();
+
+        let mut max_load_seg_end_addr = None;
 
         let segs = elf.segments().unwrap();
         for seg in segs {
@@ -556,6 +566,8 @@ impl Task {
                             growth: VMAGrowth::Fixed,
                         });
                     }
+
+                    max_load_seg_end_addr.replace(zeros_end); // ELF 标准规定 PT_LOAD 段必须按地址升序排列
                 }
                 PT_DYNAMIC => {
                     log::error!("暂不支持动态链接的程序");
@@ -570,7 +582,36 @@ impl Task {
             }
         }
 
-        Ok(elf.ehdr.e_entry as usize)
+        // 初始化堆区 VMA 和 brk
+        {
+            let Some(program_data_end) = max_load_seg_end_addr else {
+                log::error!("ELF 文件没有有效的 PT_LOAD 段，无法加载");
+                return Err(LoadElfError::NoLoadSegment);
+            };
+
+            debug_assert_eq!(program_data_end.0 % PAGE_BYTES, 0);
+
+            let init_brk = VirtAddr(program_data_end.0 + PAGE_BYTES);
+
+            let mut addr_space = address_space.write();
+
+            addr_space.brk = init_brk;
+            addr_space.add_vma(VirtualMemoryArea {
+                start: program_data_end,
+                end: init_brk,
+                flags: VMAFlags::Read | VMAFlags::Write | VMAFlags::User,
+                vma_type: VMAType::Anonymous,
+                growth: VMAGrowth::Fixed,
+            });
+        }
+
+        let entry = elf.ehdr.e_entry as usize;
+
+        auxv.push(AuxiliaryEntry(AT_ENTRY, entry));
+        auxv.push(AuxiliaryEntry(AT_PAGESZ, PAGE_BYTES));
+
+        auxv.push(AuxiliaryEntry(AT_NULL, 0));
+        Ok((entry, auxv))
     }
 
     fn transfer_children_to_init(&self) {
@@ -627,5 +668,21 @@ impl Drop for Task {
 pub enum LoadElfError {
     ArchMismatch,
     BadAlignment,
+    NoLoadSegment,
     NotYetImplemented,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct AuxiliaryEntry(pub usize, pub usize);
+
+unsafe impl bytemuck::NoUninit for AuxiliaryEntry {}
+
+pub type AuxiliaryVec = Vec<AuxiliaryEntry>;
+
+mod aux_ids {
+    pub const AT_NULL: usize = 0;
+    pub const AT_PHENT: usize = 4;
+    pub const AT_PAGESZ: usize = 6;
+    pub const AT_ENTRY: usize = 9;
 }

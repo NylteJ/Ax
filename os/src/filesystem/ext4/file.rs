@@ -1,12 +1,14 @@
 use core::slice;
 
+use ext4_rs::ext4_defs::Ext4InodeRef;
 use uninit::extension_traits::MaybeUninitExt;
 
 use crate::{
+    basic::bstr::ByteString,
     filesystem::{
-        ext4::filesystem::Ext4Fs,
+        ext4::{filesystem::Ext4Fs, inode::Ext4INode},
         utils::{FileIoPgCacheMissResult, file_io_common},
-        vfs::{self, FileFlags, FileOps, VfsResult, default_fseek},
+        vfs::{self, FileFlags, FileOps, VfsError, VfsResult, default_fseek},
     },
     memory::{
         PAGE_BYTES,
@@ -103,7 +105,73 @@ impl FileOps for Ext4File {
         todo!()
     }
 
-    fn get_dir(&self, pos: u64) -> VfsResult<Option<vfs::IterateDirData>> {
-        todo!()
+    fn get_dir(&self, mut pos: u64) -> VfsResult<Option<vfs::IterateDirData>> {
+        let this = vfs::File::from_dyn(self);
+        let inode = unsafe { this.inode.cast::<vfs::INode<Ext4INode>>().as_ref() };
+        let ext4 = unsafe { &inode.fs.cast::<vfs::FileSystem<Ext4Fs>>().as_ref().ops.ext4 };
+
+        let inode_rguard = inode.data.read();
+
+        if !inode_rguard.ops.inode.is_dir() {
+            return Err(VfsError::NotADirectory);
+        }
+
+        let inode_ref = Ext4InodeRef {
+            inode_num: inode.id,
+            inode: inode_rguard.ops.inode,
+        };
+
+        use ext4_rs::ext4_defs::{Block, Ext4DirEntry, Ext4DirEntryTail};
+
+        const BLOCK_SIZE: u64 = ext4_rs::BLOCK_SIZE as u64;
+
+        let inode_size = inode_ref.inode.size();
+        while pos < inode_size {
+            let iblock = pos / BLOCK_SIZE;
+            let block_offset = pos % BLOCK_SIZE;
+
+            let search_path = ext4.find_extent(&inode_ref, iblock as u32);
+
+            let Ok(path) = search_path else {
+                pos = (iblock + 1) * BLOCK_SIZE;
+                continue;
+            };
+
+            let pblock = path.path.last().unwrap().pblock;
+            let ext4block = Block::load(&ext4.block_device, (pblock * BLOCK_SIZE) as usize);
+
+            if block_offset >= BLOCK_SIZE - (size_of::<Ext4DirEntryTail>() as u64) {
+                pos = (iblock + 1) * BLOCK_SIZE;
+                continue;
+            }
+
+            let de: Ext4DirEntry = ext4block.read_offset_as(block_offset as usize);
+            let entry_len: u64 = de.entry_len().into();
+
+            if entry_len == 0 {
+                pos = (iblock + 1) * BLOCK_SIZE;
+                continue;
+            }
+
+            if de.unused() {
+                pos += entry_len;
+                continue;
+            }
+
+            let next_pos = pos + entry_len;
+            return Ok(Some(vfs::IterateDirData {
+                name: ByteString(de.get_name()),
+                next_pos,
+                inode_id: de.inode,
+                entry_type: match de.get_de_type() {
+                    4 => vfs::IterateDirEntryType::Directory,
+                    8 => vfs::IterateDirEntryType::RegularFile,
+                    10 => vfs::IterateDirEntryType::Symlink,
+                    _ => vfs::IterateDirEntryType::Unknown,
+                },
+            }));
+        }
+
+        Ok(None)
     }
 }

@@ -21,9 +21,13 @@ use crate::{
         lru::{LruNode, LruPtr},
         sync::{Mutex, RwLock},
     },
-    filesystem::vfs::{
-        DEntry, DEntryArc, DEntryData, INode, INodeArc, INodeDirtyState, Mount, VfsError,
-        VfsResult, cache::get_value_arc_from_cache, dentry_arc::DCacheArc, inode_arc::ICacheArc,
+    filesystem::{
+        devfs::drivers::DeviceId,
+        vfs::{
+            DEntry, DEntryArc, DEntryData, INode, INodeArc, INodeDirtyState, INodeMode, Mount,
+            VfsError, VfsResult, cache::get_value_arc_from_cache, dentry_arc::DCacheArc,
+            inode_arc::ICacheArc,
+        },
     },
     memory::{
         PAGE_BYTES,
@@ -34,6 +38,8 @@ use crate::{
 /// 描述整个文件系统，对应 Linux 中的超级块（super block）
 #[derive(Debug)]
 pub struct FileSystem<T: ?Sized + FileSystemOps = dyn FileSystemOps> {
+    pub dev: DeviceId,
+
     pub(super) dcache: RwLock<HashMap<DCacheKey, DCacheArc>>,
     pub(super) icache: RwLock<HashMap<u32, ICacheArc>>,
     pub root_inode: INodeArc,
@@ -57,12 +63,15 @@ pub struct FileSystem<T: ?Sized + FileSystemOps = dyn FileSystemOps> {
 impl<T: FileSystemOps + 'static> FileSystem<T> {
     pub fn new(
         roots: fn(NonNull<FileSystem>, &T) -> (INodeArc, DEntryArc),
+        dev: DeviceId,
         ops: T,
     ) -> Pin<Arc<FileSystem>> {
         let mut arc = Arc::new_cyclic(|weak| {
             let addr = NonNull::new(weak.as_ptr() as *mut FileSystem<T>).unwrap();
             let (root_inode, init_root_dentry) = roots(addr, &ops);
+            root_inode.data.write().mode |= INodeMode::Directory; // 根目录一定要是目录 \o/
             FileSystem {
+                dev,
                 dcache: RwLock::new(HashMap::new()),
                 icache: RwLock::new(HashMap::new()),
                 root_inode,

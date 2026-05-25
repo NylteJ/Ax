@@ -9,6 +9,7 @@ use crate::{
         ext4::{dentry::Ext4DEntry, filesystem::Ext4Fs},
         vfs::{self, INodeOps, PageCache, VfsError, VfsResult},
     },
+    syscall::filesystem::{KstatInner, Time},
 };
 
 pub struct Ext4INode {
@@ -256,6 +257,22 @@ impl INodeOps for Ext4INode {
         flags: vfs::INodeRenameFlags,
     ) -> VfsResult<()> {
         todo!()
+    }
+
+    fn get_kstat(&self) -> VfsResult<KstatInner> {
+        let inode = &self.inode;
+
+        Ok(KstatInner {
+            st_uid: inode.uid().into(),
+            st_gid: inode.gid().into(),
+            st_size: inode.size(),
+            st_blksize: ext4_rs::BLOCK_SIZE as u32,
+            st_blocks: inode.size() / ext4_rs::BLOCK_SIZE as u64, // FIXME
+            st_atime: Time::from_sec(inode.atime().into()),
+            st_mtime: Time::from_sec(inode.mtime().into()),
+            st_ctime: Time::from_sec(inode.ctime().into()),
+            ..Default::default()
+        })
     }
 
     fn evictable_when_mem_ref_zero(&mut self) -> bool {

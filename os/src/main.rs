@@ -34,6 +34,10 @@
 #![feature(integer_sign_cast)]
 #![feature(new_zeroed_alloc)]
 #![feature(trait_upcasting)]
+#![feature(array_windows)]
+#![feature(try_with_capacity)]
+#![feature(try_reserve_kind)]
+#![feature(pointer_is_aligned_to)]
 //
 #![deny(unused_must_use)]
 

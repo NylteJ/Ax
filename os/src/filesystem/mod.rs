@@ -33,3 +33,11 @@ pub fn init_root(
         );
     }
 }
+
+static ANONYMOUS_BLOCK_DEVICE_ID: core::sync::atomic::AtomicU32 =
+    core::sync::atomic::AtomicU32::new(65536);
+
+pub(self) fn get_new_anon_block_device_id() -> devfs::drivers::DeviceId {
+    let minor = ANONYMOUS_BLOCK_DEVICE_ID.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+    devfs::drivers::DeviceId(0, minor)
+}

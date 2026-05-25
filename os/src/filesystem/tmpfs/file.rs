@@ -88,8 +88,13 @@ impl vfs::FileOps for TmpFsFile {
 
         Ok(dir_vec.get(pos as usize).map(|(name, _)| IterateDirData {
             name: name.clone(),
-            next_pos: pos as i64 + 1,
+            next_pos: pos + 1,
             inode_id: inode.id,
+            entry_type: match inode.data.read().ops.inode_type {
+                INodeType::File => vfs::IterateDirEntryType::RegularFile,
+                INodeType::Directory(..) => vfs::IterateDirEntryType::Directory,
+                INodeType::Symlink(..) => vfs::IterateDirEntryType::Symlink,
+            },
         }))
     }
 }

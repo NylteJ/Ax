@@ -15,6 +15,7 @@ use crate::{
         },
         vfs::{self, INodeOps, VfsError, VfsResult},
     },
+    syscall::filesystem::KstatInner,
 };
 
 pub(super) enum DevINode {
@@ -127,6 +128,17 @@ impl INodeOps for DevINode {
         children.insert(pos, (name, new_inode.clone()));
 
         Ok(new_inode)
+    }
+
+    fn get_kstat(&self) -> VfsResult<KstatInner> {
+        match self {
+            DevINode::Directory(..) => Ok(Default::default()), // FIXME
+            DevINode::DeviceFile(_, device_id) => Ok(KstatInner {
+                st_rdev: device_id.to_u64(),
+                ..Default::default() // FIXME?
+            }),
+            DevINode::Symlink(x) => *x,
+        }
     }
 
     fn evictable_when_mem_ref_zero(&mut self) -> bool {

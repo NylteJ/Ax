@@ -418,6 +418,7 @@ pub struct Dirent {
 
 #[repr(C)]
 #[repr(packed)]
+#[derive(Debug)]
 pub struct DirentHead {
     pub d_ino: u64,         // 索引结点号
     pub d_off: i64,         // 到下一个dirent的偏移
@@ -465,11 +466,12 @@ pub extern "C" fn getdents64(fd: isize, buf: *mut c_void, len: usize) -> Syscall
     let files_guard = cur_task.files.read();
     let file = files_guard.get(fd).cloned().ok_or(EBADF)?;
 
-    let mut k_buffer = Vec::<u8>::with_capacity(len + 7); // TODO: 提防恶意用户导致的 OOM
+    let mut k_buffer = Vec::<u8>::try_with_capacity(len + 7)?;
 
-    let k_buffer_uninit = k_buffer.spare_capacity_mut();
+    let align_off = k_buffer.as_mut_ptr().align_offset(align_of::<DirentHead>());
 
-    let (data, _) = file.data.lock().iterate_dir(k_buffer_uninit)?;
+    let buffer = &mut k_buffer.spare_capacity_mut()[align_off..len + align_off];
+    let (data, _) = file.data.lock().iterate_dir(buffer)?;
 
     debug_assert!(data.len() <= len);
     copy_to_user(buf as *mut u8, data);
@@ -533,6 +535,45 @@ pub extern "C" fn write(fd: isize, buf: *const c_void, count: usize) -> SyscallR
     let len = file.data.lock().write(buf as *const u8, count as u64)?;
 
     SyscallResult::success(len as usize)
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct IoVec {
+    iov_base: *mut c_void,
+    iov_len: usize,
+}
+
+pub extern "C" fn writev(fd: isize, iov: *mut IoVec, iovcnt: usize) -> SyscallResult {
+    if fd < 0 {
+        return EBADF;
+    }
+    let fd = fd.cast_unsigned();
+
+    let cur_task = unsafe { current_task().as_ref_unchecked() };
+
+    let file = cur_task.files.read().get(fd).ok_or(EBADF)?.clone();
+
+    let mut kernel_iov = Vec::<IoVec>::try_with_capacity(iovcnt)?;
+    let k_buffer = &mut kernel_iov.spare_capacity_mut()[..iovcnt];
+    let k_buffer = unsafe {
+        slice::from_raw_parts_mut(
+            k_buffer.as_mut_ptr() as *mut MaybeUninit<u8>,
+            size_of_val(k_buffer),
+        )
+    };
+    let bytes = copy_from_user_uninit(k_buffer, iov.cast())?.len();
+    debug_assert_eq!(bytes % size_of::<IoVec>(), 0);
+    unsafe { kernel_iov.set_len(bytes / size_of::<IoVec>()) };
+
+    let mut total_written = 0;
+
+    // 关于原子性，我们不支持内核抢占，因此直接写就可以了
+    for IoVec { iov_base, iov_len } in kernel_iov {
+        total_written += file.data.lock().write(iov_base.cast(), iov_len as u64)?;
+    }
+
+    SyscallResult::success(total_written as usize)
 }
 
 /// 功能：创建文件的链接；
@@ -707,26 +748,68 @@ pub extern "C" fn mount(
 ///
 /// TODO：最好搞清楚 dev_t 这种类型的具体定义
 #[repr(C)]
+#[derive(Debug, Default, Clone, Copy)]
 pub struct Kstat {
+    /// 此文件所在设备
     pub st_dev: u64,
+    /// inode id
     pub st_ino: u64,
     pub st_mode: u32,
+    /// 硬链接数
     pub st_nlink: u32,
+    pub inner: KstatInner,
+}
+
+unsafe impl bytemuck::NoUninit for Kstat {}
+
+#[repr(C)]
+#[derive(Debug, Default, Clone, Copy)]
+pub struct KstatInner {
+    /// 拥有者 UID
     pub st_uid: u32,
+    /// 拥有者 GID
     pub st_gid: u32,
+    /// 此文件（inode）所代表的设备（如果有）
     pub st_rdev: u64,
     pub __pad: c_ulong,
+    /// 以字节为单位的文件大小。对符号链接而言则是其包含的路径字符串长度（不含终止空字节）
     pub st_size: u64,
+    /// 为高效文件系统 I/O 的首选块大小
     pub st_blksize: u32,
     pub __pad2: c_int,
+    /// 分配给文件的块数，以 512 字节为单位
+    ///
+    /// 其值和 `st_size` 没有必然联系，因为文件允许存在空洞
     pub st_blocks: u64,
-    pub st_atime_sec: c_long,
-    pub st_atime_nsec: c_long,
-    pub st_mtime_sec: c_long,
-    pub st_mtime_nsec: c_long,
-    pub st_ctime_sec: c_long,
-    pub st_ctime_nsec: c_long,
+    pub st_atime: Time,
+    pub st_mtime: Time,
+    pub st_ctime: Time,
     pub __unused: [c_uint; 2],
+}
+
+#[repr(C)]
+#[derive(Debug, Default, Clone, Copy)]
+pub struct Time {
+    pub sec: c_long,
+    pub nsec: c_long,
+}
+
+impl Time {
+    pub fn from_ns(ns: u64) -> Self {
+        Self {
+            sec: (ns / 1_000_000_000) as c_long,
+            nsec: (ns % 1_000_000_000) as c_long,
+        }
+    }
+    pub fn from_ms(ms: u64) -> Self {
+        Self::from_ns(ms * 1_000_000)
+    }
+    pub fn from_sec(sec: u64) -> Self {
+        Self {
+            sec: sec as c_long,
+            nsec: 0,
+        }
+    }
 }
 
 /// * 功能：获取文件状态；
@@ -763,5 +846,63 @@ pub struct Kstat {
 /// int ret = syscall(SYS_fstat, fd, &kst);
 /// ```
 pub extern "C" fn fstat(fd: isize, kst: *mut Kstat) -> SyscallResult {
-    ENOSYS
+    if fd < 0 {
+        return EBADF;
+    }
+    let fd = fd.cast_unsigned();
+
+    let cur_task = unsafe { current_task().as_ref_unchecked() };
+    let path = cur_task
+        .files
+        .read()
+        .get(fd)
+        .ok_or(EBADF)?
+        .data
+        .lock()
+        .path
+        .clone();
+
+    fstat_common(path, kst)
+}
+
+pub extern "C" fn fstatat(
+    dirfd: isize,
+    pathname: *const c_char,
+    buf: *mut Kstat,
+    flags: usize,
+) -> SyscallResult {
+    let flags = FstatatFlags::from_bits(flags.try_into().map_err(|_| EINVAL)?).ok_or(EINVAL)?;
+
+    let pathname = copy_str_from_user(pathname, FILENAME_LEN_HINT, PATH_LEN_MAX)?;
+
+    log::trace!("fstatat dirfd: {dirfd}, pathname: `{pathname}`, flags: {flags:?}");
+
+    let wpf = parse_walk_path_from(dirfd, pathname.as_ref())?;
+
+    fstat_common(walk_path(wpf)?.ensure()?, buf)
+}
+
+bitflags! {
+    #[derive(Debug)]
+    struct FstatatFlags: u16 {
+        const AT_SYMLINK_NOFOLLOW = 1 << 8;
+        const AT_NO_AUTOMOUNT = 1 << 11;
+    }
+}
+
+fn fstat_common(path: Path, buf: *mut Kstat) -> SyscallResult {
+    let Path(dentry, mount) = path;
+
+    let inode = dentry.data.lock().inode.clone().ok_or(ENOENT)?;
+
+    let kstat = Kstat {
+        st_dev: mount.sub_fs.dev.to_u64(),
+        st_ino: inode.id.into(),
+        st_mode: inode.data.read().mode.bits().into(),
+        st_nlink: inode.data.read().hard_links,
+        inner: inode.data.read().get_kstat()?,
+    };
+    copy_to_user(buf.cast(), bytemuck::cast_slice(slice::from_ref(&kstat)))?;
+
+    SyscallResult::success(0)
 }

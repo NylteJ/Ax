@@ -34,7 +34,10 @@ extern "C" fn trap_handler(context: &mut NativeTrapContext) {
             };
 
             if ret_value == ERRORCODE_NOSYS {
-                log::warn!("未知系统调用：id = {id}, args = {args:?}");
+                log::warn!(
+                    "未知系统调用：id = {id} ({}), args = {args:x?} (HEX)",
+                    syscall::SYSCALL_ID_NAME_MAP.get(id).unwrap_or(&"???")
+                );
             }
 
             *context.ret_reg_mut() = ret_value;

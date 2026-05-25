@@ -23,6 +23,7 @@ use crate::{
             inode_arc::{ICacheArc, INodeArc},
         },
     },
+    syscall::filesystem::KstatInner,
 };
 
 type HardLinksType = u32;
@@ -179,6 +180,8 @@ pub trait INodeOps: Any {
         Err(VfsError::OperationNotSupported)
     }
 
+    fn get_kstat(&self) -> VfsResult<KstatInner>;
+
     /// 当内存引用计数归零时调用。若返回 `true` 则 INode 可以被销毁或压入 LRU 链表。实现无需顾虑页缓存问题。
     ///
     /// 建议实现至少在硬链接计数也归零时返回 `true`。
@@ -239,8 +242,9 @@ impl<T: INodeOps> INodeData<T> {
 impl<T: ?Sized + INodeOps> INodeData<T> {
     /// 在当前 INode 下创建一个普通文件节点，该节点原本对应的负 DEntry 是 `dentry`。返回创建的节点。
     ///
-    /// 和 [`INodeOps::create`] 不同，它会自动将新节点放入 `dentry` 中。
+    /// 和 [`INodeOps::create`] 不同，它会自动将新节点放入 `dentry` 中，且会自动为 mode 设置文件位。
     pub fn create(&mut self, mode: INodeMode, dentry: DEntryArc) -> VfsResult<INodeArc> {
+        let mode = mode | INodeMode::RegularFile;
         let new_node = self.ops.create(mode, dentry.clone())?;
         dentry.data.lock().inode.replace(new_node.clone());
         Ok(new_node)
@@ -272,8 +276,9 @@ impl<T: ?Sized + INodeOps> INodeData<T> {
 
     /// 在当前 INode 中创建一个目录节点，该节点原本对应的负 DEntry 是 `dentry`。返回创建的节点。
     ///
-    /// 和 `INodeOps::mkdir` 不同，它会自动将新节点放入 `dentry` 中。
+    /// 和 [`INodeOps::mkdir`] 不同，它会自动将新节点放入 `dentry` 中，且会自动为 mode 设置目录位。
     pub fn mkdir(&mut self, dentry: DEntryArc, mode: INodeMode) -> VfsResult<INodeArc> {
+        let mode = mode | INodeMode::Directory;
         let new_node = self.ops.mkdir(dentry.clone(), mode)?;
         dentry.data.lock().inode.replace(new_node.clone());
         Ok(new_node)
@@ -288,6 +293,10 @@ impl<T: ?Sized + INodeOps> INodeData<T> {
         unhash(dentry.deref());
         // dentry.data.lock().children().for_each(unhash);
         Ok(())
+    }
+
+    pub fn get_kstat(&self) -> VfsResult<KstatInner> {
+        self.ops.get_kstat()
     }
 }
 

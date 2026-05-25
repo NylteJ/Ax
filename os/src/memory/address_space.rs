@@ -1,6 +1,6 @@
 use core::{intrinsics::volatile_set_memory, mem::replace, pin::Pin, sync::atomic::Ordering};
 
-use alloc::vec::Vec;
+use alloc::{boxed::Box, vec::Vec};
 
 use crate::{
     arch::{self, interfaces::Basic},
@@ -28,6 +28,9 @@ pub struct AddressSpace {
     ///
     /// 注意内核态映射不体现在 VMA 列表中，且 VMA 中存在的映射不一定落实到了页表中（但反过来，用户态映射一定存在对应的 VMA）
     page_table: PageTableBox<2>,
+
+    /// 当前堆顶
+    pub brk: VirtAddr,
 }
 
 impl AddressSpace {
@@ -35,6 +38,7 @@ impl AddressSpace {
         Self {
             vmas: Vec::new(),
             page_table: PageTable::new_table(),
+            brk: VirtAddr(0),
         }
     }
 
@@ -103,6 +107,60 @@ impl AddressSpace {
             let vma = &self.vmas[upper_bound - 1];
             if addr < vma.end { Some(vma) } else { None }
         }
+    }
+
+    /// 设置 brk，会同步修改 VMA。如果因 VMA 冲突或传入 brk 过小而无法修改则返回旧值，否则返回新值。
+    ///
+    /// 如果有意不想修改 VMA，请直接修改 [`brk`][`Self::brk`] 字段。
+    ///
+    /// 除此之外，使用它意味着你需要先创立一个至少一页的堆 VMA，并对应直接设置 `brk` 字段。
+    pub fn set_brk(&mut self, new_brk: VirtAddr) -> VirtAddr {
+        let old_brk_ceiled = self.brk.ceil_to_page();
+        let new_brk_ceiled = new_brk.ceil_to_page();
+
+        // FIXME: 现在的实现忽略了很多边界情况，例如：
+        // - 用户 unmap 了堆区
+        // - 用户在堆区后执行了 mmap，两个 VMA 合并了
+
+        if new_brk_ceiled == old_brk_ceiled {
+            // 仍在同一页内，无需改动 VMA，修改 brk 字段即可
+            // 注意堆区 VMA 至少有一页，因此这里是没问题的（用户看来可能还是有问题就是了）
+            self.brk = new_brk;
+            return new_brk;
+        }
+
+        let index = self
+            .vmas
+            .binary_search_by(|vma| vma.end.cmp(&old_brk_ceiled))
+            .expect("应当始终存在一个以 brk 结尾的 VMA");
+        let heap_vma = &mut self.vmas[index];
+
+        if new_brk < heap_vma.start {
+            // 新的 brk 过小，无法修改
+            return self.brk;
+        }
+
+        if new_brk_ceiled > old_brk_ceiled {
+            let has_sufficient_space = self
+                .vmas
+                .get(index + 1)
+                .map_or(true, |vma| vma.start >= new_brk_ceiled);
+
+            if has_sufficient_space {
+                self.vmas[index].end = new_brk_ceiled;
+                self.brk = new_brk;
+            }
+        } else {
+            // 已经验证过了可以修改
+            heap_vma.end = new_brk_ceiled;
+            self.brk = new_brk;
+
+            // 除此之外，和扩张不同，收缩堆区意味着 unmap 现有内存
+            self.page_table
+                .unmap(new_brk_ceiled.into(), old_brk_ceiled.into());
+        }
+
+        return self.brk;
     }
 
     /// 删除所有位于 [start, end) 内的 VMA。对于部分位于其中的 VMA，会删除位于此范围内的部分。
@@ -175,8 +233,8 @@ impl AddressSpace {
         self.page_table.as_ref().get_ref()
     }
 
-    pub fn get_page_table_mut(&mut self) -> Pin<&mut PageTable<2>> {
-        self.page_table.as_mut()
+    pub fn get_page_table_mut(&mut self) -> &mut Pin<Box<PageTable<2>>> {
+        &mut self.page_table
     }
 
     pub fn handle_page_fault(
@@ -276,7 +334,7 @@ impl AddressSpace {
                         } else {
                             // 复制等价于清零，此时清零往往更快
                             unsafe { volatile_set_memory(memory.as_mut_ptr(), 0, memory.len()) };
-                            log::trace!("zeroed, {:#x}", physical_memory.0);
+                            // log::trace!("zeroed, {:#x}", physical_memory.0);
                         }
 
                         if let Some(old_entry) = old_entry {
@@ -395,6 +453,79 @@ impl AddressSpace {
         Self {
             vmas: self.vmas.clone(),
             page_table,
+            brk: self.brk,
+        }
+    }
+
+    /// 执行 mmap，将 `vma` 插入到当前地址空间中。返回插入 VMA 的起始地址。若长度过长则返回 [`Err`]。
+    ///
+    /// `vma` 的 `start` 字段相当于 mmap 的 `start` 参数，在 `fixed` 为 false 时是提示，在 `fixed` 为 true 时是强制要求，此时可能会解除现有映射。
+    /// 特别地，当 `fixed` 为 false 且 `vma.start` 为 0 时，`start` 字段会直接被忽略。
+    pub fn mmap(&mut self, vma: VirtualMemoryArea, fixed: bool) -> Result<VirtAddr, ()> {
+        log::trace!("mmap: {vma:x?}, fixed: {fixed}");
+
+        let lower_bound = self.find_vma_index_lower_bound(vma.start);
+        let index = lower_bound.map_or(0, |x| x + 1);
+
+        let good_to_place = (vma.start.0 != 0 || fixed)
+            && self.vmas.get(index).map_or(true, |v| v.start >= vma.end);
+
+        if good_to_place {
+            let ret = vma.start;
+            self.vmas.insert(index, vma);
+            return Ok(ret);
+        }
+
+        if fixed {
+            // 解除重叠区域的映射
+            self.remove_vmas_between(vma.start, vma.end);
+            self.get_page_table_mut()
+                .unmap(vma.start.into(), vma.end.into());
+
+            let ret = vma.start;
+            self.add_vma(vma); // 使用这个以便自动合并 VMA
+            return Ok(ret);
+        } else {
+            // 退化到自动寻址
+            let length = vma.end.0 - vma.start.0;
+
+            let (index, address) = 'find_place: {
+                const MMAP_START: VirtAddr = VirtAddr(0x8_0000_0000);
+                const MMAP_END: VirtAddr = VirtAddr(0x10_0000_0000);
+
+                let mmap_start_idx = self.vmas.partition_point(|v| v.start < MMAP_START);
+                let mmap_end_idx = self.vmas.partition_point(|v| v.start < MMAP_END);
+
+                let mmap_vmas = &mut self.vmas[mmap_start_idx..mmap_end_idx];
+
+                for (index, [vma_1, vma_2]) in mmap_vmas.array_windows().enumerate() {
+                    if vma_2.start.0 - vma_1.end.0 >= length {
+                        break 'find_place (index + 1 + mmap_start_idx, vma_1.end);
+                    }
+                }
+
+                let end = mmap_vmas.last().map_or(MMAP_START, |v| v.end);
+                if end.0 + length <= MMAP_END.0 {
+                    break 'find_place (mmap_vmas.len() + mmap_start_idx, end);
+                } else {
+                    return Err(());
+                }
+            };
+
+            log::trace!(
+                "mmap 自动寻址: [{:#x}, {:#x}) ==> [{:#x}, {:#x})",
+                vma.start.0,
+                vma.end.0,
+                address.0,
+                address.0 + length
+            );
+
+            self.vmas.insert(index, VirtualMemoryArea {
+                start: address,
+                end: VirtAddr(address.0 + length),
+                ..vma
+            });
+            return Ok(address);
         }
     }
 
@@ -421,7 +552,7 @@ impl Drop for AddressSpace {
             let start = vma.start;
             let end = vma.end;
 
-            unsafe { self.page_table.as_mut().get_unchecked_mut() }.unmap(start.into(), end.into());
+            self.page_table.unmap(start.into(), end.into());
         }
     }
 }

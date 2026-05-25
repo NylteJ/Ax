@@ -317,7 +317,7 @@ impl PageTable<2> {
     /// 取消映射 `[start, end)` 范围内的页表项，支持大页，自动忽略无效项
     ///
     /// 不刷新 TLB，请手动刷新
-    pub fn unmap(&mut self, start: VirtPageNum<0>, end: VirtPageNum<0>) {
+    pub fn unmap(self: &mut Pin<Box<Self>>, start: VirtPageNum<0>, end: VirtPageNum<0>) {
         if start == end {
             return;
         }
@@ -327,7 +327,8 @@ impl PageTable<2> {
 
         // 现在取消映射 `[start_addr, end_addr]` 内的页表项即可
 
-        unsafe { unmap_page_table_range(self.as_mut_usize_array(), start_addr.0, end_addr.0, 2) };
+        let table = unsafe { self.as_mut().get_unchecked_mut().as_mut_usize_array() };
+        unsafe { unmap_page_table_range(table, start_addr.0, end_addr.0, 2) };
     }
 }
 

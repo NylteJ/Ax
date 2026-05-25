@@ -7,6 +7,8 @@ use core::{
     ptr::NonNull,
 };
 
+use alloc::collections::TryReserveError;
+
 use crate::{
     basic::sync::Mutex,
     filesystem::vfs::{VfsError, VfsResult},
@@ -16,7 +18,9 @@ use crate::{
 
 pub mod basic;
 pub mod filesystem;
+pub mod memory;
 pub mod process;
+pub mod user;
 
 #[derive(Clone, Copy)]
 #[repr(transparent)]
@@ -68,10 +72,12 @@ impl SyscallFn {
 
 static_assertions::const_assert_eq!(size_of::<Option<SyscallFn>>(), size_of::<*const ()>());
 
-pub static TABLE: [Option<SyscallFn>; 512] = const {
+const MAX_SYSCALL_COUNT: usize = 512;
+
+pub static TABLE: [Option<SyscallFn>; MAX_SYSCALL_COUNT] = const {
     use crate::syscall::*;
 
-    let mut table: [Option<SyscallFn>; 512] = [None; 512];
+    let mut table: [Option<SyscallFn>; MAX_SYSCALL_COUNT] = [None; MAX_SYSCALL_COUNT];
 
     macro_rules! define {
         ($id:expr, $func:expr) => {
@@ -100,6 +106,12 @@ pub static TABLE: [Option<SyscallFn>; 512] = const {
     define!(39, filesystem::umount2);
     define!(40, filesystem::mount);
     define!(80, filesystem::fstat);
+    define!(66, filesystem::writev);
+    define!(79, filesystem::fstatat);
+
+    define!(214, memory::brk);
+    define!(222, memory::mmap);
+    define!(215, memory::munmap);
 
     define!(172, process::getpid);
     define!(173, process::getppid);
@@ -107,6 +119,10 @@ pub static TABLE: [Option<SyscallFn>; 512] = const {
     define!(220, process::clone);
     define!(221, process::execve);
     define!(260, process::wait4);
+    define!(96, process::set_tid_address);
+
+    define!(174, user::getuid);
+    define!(176, user::getgid);
 
     table
 };
@@ -187,7 +203,19 @@ impl FromResidual<Result<Infallible, LoadElfError>> for SyscallResult {
         match residual.unwrap_err() {
             LoadElfError::ArchMismatch => ENOEXEC,
             LoadElfError::BadAlignment => ENOEXEC,
+            LoadElfError::NoLoadSegment => ENOEXEC,
             LoadElfError::NotYetImplemented => EOPNOTSUPP,
+        }
+    }
+}
+
+impl FromResidual<Result<Infallible, TryReserveError>> for SyscallResult {
+    fn from_residual(residual: Result<Infallible, TryReserveError>) -> Self {
+        use alloc::collections::TryReserveErrorKind::*;
+        use err_codes::*;
+        match residual.unwrap_err().kind() {
+            CapacityOverflow => EINVAL,
+            AllocError { .. } => ENOMEM,
         }
     }
 }
@@ -292,3 +320,206 @@ pub(self) mod err_codes {
 }
 
 pub const ERRORCODE_NOSYS: usize = err_codes::ENOSYS.value;
+
+/// 系统调用 ID 到名称的映射表，包括了尽可能多的系统调用（含未实现的那些），旨在用于调试输出。
+pub const SYSCALL_ID_NAME_MAP: [&str; MAX_SYSCALL_COUNT] = {
+    let mut map = ["???"; MAX_SYSCALL_COUNT];
+
+    map[0] = "io_setup";
+    map[1] = "io_destroy";
+    map[2] = "io_submit";
+    map[3] = "io_cancel";
+    map[4] = "io_getevents";
+    map[5] = "setxattr";
+    map[6] = "lsetxattr";
+    map[7] = "fsetxattr";
+    map[8] = "getxattr";
+    map[9] = "lgetxattr";
+    map[10] = "fgetxattr";
+    map[14] = "removexattr";
+    map[16] = "fremovexattr";
+    map[17] = "getcwd";
+    map[19] = "eventfd2";
+    map[20] = "epoll_create1";
+    map[21] = "epoll_ctl";
+    map[22] = "epoll_pwait";
+    map[23] = "dup";
+    map[24] = "dup3";
+    map[25] = "fcntl";
+    map[26] = "inotify_init1";
+    map[27] = "inotify_add_watch";
+    map[28] = "inotify_rm_watch";
+    map[29] = "ioctl";
+    map[33] = "mknodat";
+    map[34] = "mkdirat";
+    map[35] = "unlinkat";
+    map[36] = "symlinkat";
+    map[37] = "linkat";
+    map[39] = "umount2";
+    map[40] = "mount";
+    map[43] = "statfs";
+    map[45] = "truncate64";
+    map[46] = "ftruncate64";
+    map[47] = "fallocate";
+    map[48] = "faccessat";
+    map[49] = "chdir";
+    map[50] = "fchdir";
+    map[51] = "chroot";
+    map[53] = "fchmodat";
+    map[54] = "fchownat";
+    map[56] = "openat";
+    map[57] = "close";
+    map[59] = "pipe2";
+    map[61] = "getdents64";
+    map[62] = "lseek";
+    map[63] = "read";
+    map[64] = "write";
+    map[65] = "readv";
+    map[66] = "writev";
+    map[67] = "pread64";
+    map[68] = "pwrite64";
+    map[71] = "sendfile";
+    map[72] = "pselect6";
+    map[73] = "ppoll";
+    map[74] = "signalfd64";
+    map[76] = "splice";
+    map[78] = "readlinkat";
+    map[79] = "fstatat";
+    map[80] = "fstat";
+    map[81] = "sync";
+    map[82] = "fsync";
+    map[85] = "timerfd_create";
+    map[88] = "utimensat";
+    map[90] = "capget";
+    map[91] = "capset";
+    map[93] = "exit";
+    map[94] = "exit_group";
+    map[95] = "waitid";
+    map[96] = "set_tid_address";
+    map[98] = "futex";
+    map[99] = "set_robust_list";
+    map[100] = "get_robust_list";
+    map[101] = "nanosleep";
+    map[102] = "getitimer";
+    map[103] = "setitimer";
+    map[107] = "timer_create";
+    map[110] = "timer_settime";
+    map[112] = "clock_settime";
+    map[113] = "clock_gettime";
+    map[114] = "clock_getres";
+    map[115] = "clock_nanosleep";
+    map[116] = "syslog";
+    map[119] = "sched_setscheduler";
+    map[120] = "sched_getscheduler";
+    map[121] = "sched_getparam";
+    map[122] = "sched_setaffinity";
+    map[123] = "sched_getaffinity";
+    map[124] = "sched_yield";
+    map[129] = "kill";
+    map[130] = "tkill";
+    map[131] = "tgkill";
+    map[132] = "sigaltstack";
+    map[133] = "rt_sigsuspend";
+    map[134] = "rt_sigaction";
+    map[135] = "rt_sigprocmask";
+    map[136] = "rt_sigpending";
+    map[137] = "rt_sigtimedwait";
+    map[139] = "rt_sigreturn";
+    map[144] = "setgid";
+    map[145] = "setreuid";
+    map[146] = "setuid";
+    map[147] = "setresuid";
+    map[149] = "setresgid";
+    map[153] = "times";
+    map[154] = "setpgid";
+    map[155] = "getpgid";
+    map[156] = "getsid";
+    map[157] = "setsid";
+    map[158] = "getgroups";
+    map[159] = "setgroups";
+    map[160] = "uname";
+    map[165] = "getrusage";
+    map[166] = "umask";
+    map[167] = "prctl";
+    map[169] = "gettimeofday";
+    map[171] = "adjtimex";
+    map[172] = "getpid";
+    map[173] = "getppid";
+    map[174] = "getuid";
+    map[175] = "geteuid";
+    map[176] = "getgid";
+    map[177] = "getegid";
+    map[178] = "gettid";
+    map[179] = "sysinfo";
+    map[194] = "shmget";
+    map[195] = "shmctl";
+    map[196] = "shmat";
+    map[197] = "shmdt";
+    map[198] = "socket";
+    map[199] = "socketpair";
+    map[200] = "bind";
+    map[201] = "listen";
+    map[202] = "accept";
+    map[203] = "connect";
+    map[204] = "getsockname";
+    map[205] = "getpeername";
+    map[206] = "sendto";
+    map[207] = "recvfrom";
+    map[208] = "setsockopt";
+    map[209] = "getsockopt";
+    map[210] = "shutdown";
+    map[214] = "brk";
+    map[215] = "munmap";
+    map[216] = "mremap";
+    map[217] = "addkey";
+    map[219] = "keyctl";
+    map[220] = "clone";
+    map[221] = "execve";
+    map[222] = "mmap";
+    map[223] = "fadvise64_64";
+    map[226] = "mprotect";
+    map[227] = "msync";
+    map[228] = "mlock";
+    map[229] = "munlock";
+    map[233] = "madvise";
+    map[236] = "getmempolicy";
+    map[241] = "perf_event_open";
+    map[242] = "accept4";
+    map[243] = "recvmmsg";
+    map[260] = "wait4";
+    map[261] = "prlimit64";
+    map[262] = "fanotify_init";
+    map[263] = "fanotify_mark";
+    map[264] = "name_to_handle_at";
+    map[265] = "open_by_handle_at";
+    map[266] = "clock_adjtime";
+    map[269] = "sendmmsg";
+    map[276] = "renameat2";
+    map[278] = "getrandom";
+    map[279] = "memfd_create";
+    map[280] = "bpf";
+    map[282] = "userfaultfd";
+    map[283] = "membarrier";
+    map[285] = "copy_file_range";
+    map[288] = "pkey_mprotect";
+    map[289] = "pkey_alloc";
+    map[290] = "pkey_free";
+    map[291] = "statx";
+    map[424] = "pidfd_send_signal";
+    map[425] = "io_uring_setup";
+    map[426] = "io_uring_enter";
+    map[427] = "io_uring_register";
+    map[428] = "open_tree";
+    map[429] = "move_mount";
+    map[430] = "fsopen";
+    map[431] = "fsconfig";
+    map[432] = "fsmount";
+    map[433] = "fspick";
+    map[434] = "pidfd_open";
+    map[435] = "clone3";
+    map[436] = "close_range";
+    map[438] = "pidfd_getfd";
+    map[447] = "memfd_secret";
+
+    map
+};

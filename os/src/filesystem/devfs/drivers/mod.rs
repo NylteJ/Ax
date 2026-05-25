@@ -20,7 +20,14 @@ pub struct Driver {
 /// (主设备号, 次设备号)
 ///
 /// 注意块设备和字符设备使用两套 ID 空间
-pub type DeviceId = (u32, u32);
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct DeviceId(pub u16, pub u32);
+
+impl DeviceId {
+    pub fn to_u64(&self) -> u64 {
+        (self.0 as u64) << 20 | (self.1 as u64)
+    }
+}
 
 pub enum DeviceType {
     Char,
@@ -60,7 +67,7 @@ macro_rules! define_driver {
     }};
 }
 
-pub const DEV_TTY: DeviceId = (5, 0);
+pub const DEV_TTY: DeviceId = DeviceId(5, 0);
 
 fn init_char_drivers() {
     let mut types = HashMap::new();

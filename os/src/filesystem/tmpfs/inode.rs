@@ -12,6 +12,8 @@ use crate::filesystem::vfs::{
 };
 
 use crate::filesystem::vfs;
+use crate::memory::PAGE_BYTES;
+use crate::syscall::filesystem::{KstatInner, Time};
 
 pub enum INodeType {
     File,
@@ -21,6 +23,8 @@ pub enum INodeType {
 
 pub struct TmpFsINode {
     pub inode_type: INodeType,
+
+    pub stat: KstatInner,
 }
 
 impl INodeOps for TmpFsINode {
@@ -347,12 +351,31 @@ impl INodeOps for TmpFsINode {
         // Ok(())
     }
 
+    fn get_kstat(&self) -> VfsResult<KstatInner> {
+        Ok(self.stat)
+    }
+
     fn evictable_when_mem_ref_zero(&mut self) -> bool {
         default_evictable_when_mem_ref_zero(self)
     }
 }
 
 impl TmpFsINode {
+    fn get_stat() -> KstatInner {
+        KstatInner {
+            st_uid: 0, // FIXME
+            st_gid: 0, // FIXME
+            st_rdev: 0,
+            st_size: 0,
+            st_blksize: PAGE_BYTES as u32,
+            st_blocks: 0,
+            st_atime: Time::from_sec(0), // FIXME
+            st_mtime: Time::from_sec(0), // FIXME
+            st_ctime: Time::from_sec(0), // FIXME
+            ..Default::default()
+        }
+    }
+
     pub fn new_root(fs: NonNull<vfs::FileSystem>) -> vfs::INodeArc {
         vfs::INode::new_raw(0, fs, vfs::INodeData {
             file_size: 0,
@@ -361,6 +384,7 @@ impl TmpFsINode {
             page_cache: None,
             ops: TmpFsINode {
                 inode_type: INodeType::Directory(Default::default()),
+                stat: Self::get_stat(),
             },
         })
     }
@@ -382,6 +406,7 @@ impl TmpFsINode {
                     } else {
                         INodeType::File
                     },
+                    stat: Self::get_stat(),
                 },
             },
         );

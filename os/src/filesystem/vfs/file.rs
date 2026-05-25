@@ -68,10 +68,20 @@ pub enum SeekFrom {
     End(i64),
 }
 
+#[derive(Debug, Clone, Copy)]
+pub enum IterateDirEntryType {
+    RegularFile,
+    Directory,
+    Symlink,
+    Unknown,
+}
+
+#[derive(Debug)]
 pub struct IterateDirData {
     pub name: ByteString,
-    pub next_pos: i64,
+    pub next_pos: u64,
     pub inode_id: u32,
+    pub entry_type: IterateDirEntryType,
 }
 
 impl<T: FileOps + 'static> File<T> {
@@ -117,8 +127,6 @@ impl<T: ?Sized + FileOps> FileData<T> {
     /// 则说明目录已被遍历完毕。
     ///
     /// 会增加 `self.pos`，但返回 Err 时不会，即便已经读取了部分目录项。
-    ///
-    /// 特别注意，返回 slice 会抛去缓冲区前部可能存在的不对齐填充，因此请始终使用返回值。
     pub fn iterate_dir<'a>(
         &mut self,
         k_buffer_uninit: &'a mut [MaybeUninit<u8>],
@@ -127,23 +135,26 @@ impl<T: ?Sized + FileOps> FileData<T> {
 
         const DIRENT_ALIGNMENT: usize = 8;
 
-        let base_off = k_buffer_uninit.as_ptr().align_offset(DIRENT_ALIGNMENT);
+        debug_assert!(k_buffer_uninit.as_ptr().is_aligned_to(DIRENT_ALIGNMENT));
 
         let mut k_buffer_rest = k_buffer_uninit.len();
         let mut k_buffer_ptr = k_buffer_uninit.as_mut_ptr();
         let mut count = 0;
+        let mut pos = self.pos;
 
         while let Some(IterateDirData {
             name,
             next_pos,
             inode_id,
-        }) = self.ops.get_dir(self.pos + count)?
+            entry_type,
+        }) = self.ops.get_dir(pos)?
         {
-            let dirent_size = size_of::<DirentHead>() + name.len() + 1; // 注意要带末尾的 '\0
-            let start_off = k_buffer_ptr.align_offset(DIRENT_ALIGNMENT);
-            let end_off = start_off + dirent_size;
+            debug_assert!(k_buffer_ptr.is_aligned_to(DIRENT_ALIGNMENT));
 
-            if end_off > k_buffer_rest {
+            let dirent_size_unaligned = size_of::<DirentHead>() + name.len() + 1; // 注意要带末尾的 '\0'
+            let dirent_size = dirent_size_unaligned.next_multiple_of(DIRENT_ALIGNMENT);
+
+            if dirent_size > k_buffer_rest {
                 if count == 0 {
                     return Err(VfsError::InvalidArguments(
                         "提供的缓冲区太小，无法容纳一个目录项",
@@ -153,14 +164,19 @@ impl<T: ?Sized + FileOps> FileData<T> {
                 break;
             }
 
-            k_buffer_ptr = unsafe { k_buffer_ptr.add(start_off) };
+            let d_type = match entry_type {
+                IterateDirEntryType::RegularFile => 8,
+                IterateDirEntryType::Directory => 4,
+                IterateDirEntryType::Symlink => 10,
+                IterateDirEntryType::Unknown => 0,
+            };
 
             unsafe {
                 k_buffer_ptr.cast::<DirentHead>().write(DirentHead {
                     d_ino: inode_id as u64,
-                    d_off: next_pos,
+                    d_off: next_pos as i64,
                     d_reclen: dirent_size as core::ffi::c_ushort,
-                    d_type: 0, // TODO
+                    d_type,
                 })
             };
             k_buffer_ptr = unsafe { k_buffer_ptr.add(size_of::<DirentHead>()) };
@@ -171,17 +187,24 @@ impl<T: ?Sized + FileOps> FileData<T> {
             unsafe { k_buffer_ptr.cast::<u8>().write(0) }; // 写入末尾的 '\0'
             k_buffer_ptr = unsafe { k_buffer_ptr.add(1) };
 
-            k_buffer_rest -= end_off;
+            debug_assert_eq!(
+                k_buffer_ptr.align_offset(DIRENT_ALIGNMENT),
+                dirent_size - dirent_size_unaligned
+            );
+            k_buffer_ptr = unsafe { k_buffer_ptr.add(dirent_size - dirent_size_unaligned) };
+
+            k_buffer_rest -= dirent_size;
             count += 1;
+            pos = next_pos;
         }
 
         if count == 0 {
             return Ok((&mut [], 0));
         }
-        self.pos += count;
+        self.pos = pos;
         let filled_len = k_buffer_uninit.len() - k_buffer_rest;
         Ok((
-            unsafe { k_buffer_uninit[base_off..filled_len].assume_init_by_mut() },
+            unsafe { k_buffer_uninit[..filled_len].assume_init_by_mut() },
             count,
         ))
     }

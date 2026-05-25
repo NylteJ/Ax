@@ -6,9 +6,10 @@ use crate::{
     basic::bstr::ByteStr,
     devices::block_device::BlockDevice,
     filesystem::{
+        devfs::drivers::DeviceId,
         ext4::{dentry::Ext4DEntry, filesystem::Ext4Fs, inode::Ext4INode},
         filesystems::{FileSystemType, FileSystemTypeOps, register_filesystem_type},
-        vfs,
+        get_new_anon_block_device_id, vfs,
     },
 };
 
@@ -21,6 +22,8 @@ pub struct Ext4FsType;
 
 impl FileSystemTypeOps for Ext4FsType {
     fn new_fs(&self, block_device: Option<&'static dyn BlockDevice>) -> Pin<Arc<vfs::FileSystem>> {
+        let block_device = block_device.expect("Ext4 文件系统必须与某个块设备绑定");
+
         vfs::FileSystem::new(
             |fs, ext4| {
                 let root_inode = Ext4INode::new_root(fs, &ext4.ext4);
@@ -32,7 +35,8 @@ impl FileSystemTypeOps for Ext4FsType {
                 );
                 (root_inode, init_root_dentry)
             },
-            Ext4Fs::new(block_device.expect("Ext4 文件系统必须与某个块设备绑定")),
+            DeviceId(8, get_new_anon_block_device_id().1), // FIXME
+            Ext4Fs::new(block_device),
         )
     }
 }

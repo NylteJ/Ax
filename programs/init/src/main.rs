@@ -164,14 +164,21 @@ static SUM: AtomicU32 = AtomicU32::new(0);
 fn main() -> isize {
     let stdin = openat(-100, b"/dev/tty\0".as_ptr(), 0b00, 0);
     let stdout = openat(-100, b"/dev/tty\0".as_ptr(), 0b01, 0);
+    let stderr = openat(-100, b"/dev/tty\0".as_ptr(), 0b01, 0);
 
-    if stdin != 0 || stdout != 1 {
+    if stdin != 0 || stdout != 1 || stderr != 2 {
         return -1;
     }
 
     if fork() == 0 {
         // 子进程，运行终端
-        let fail_code = execve(b"/sdcard/musl/busybox\0");
+        let argv: [*const u8; 3] = [
+            b"/sdcard/musl/busybox\0".as_ptr(),
+            b"sh\0".as_ptr(),
+            core::ptr::null(),
+        ];
+        let envp: [*const u8; 1] = [core::ptr::null()];
+        let fail_code = syscall!(221, argv[0], argv.as_ptr(), envp.as_ptr()).cast_signed();
         println!("execve 失败，返回值：{fail_code}");
         return fail_code;
     }
@@ -206,12 +213,6 @@ fn read(fd: isize, buf: *mut c_void, count: usize) -> isize {
 
 fn fork() -> isize {
     syscall!(220, 0, 0).cast_signed()
-}
-
-fn execve(path: &[u8]) -> isize {
-    let argv: [*const u8; 2] = [path.as_ptr(), core::ptr::null()];
-    let envp: [*const u8; 1] = [core::ptr::null()];
-    syscall!(221, path.as_ptr(), argv.as_ptr(), envp.as_ptr()).cast_signed()
 }
 
 struct ConsoleWriter;
