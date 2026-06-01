@@ -28,6 +28,7 @@ uninit = { version = "0.6.2", default-features = false }
 elf = { path = "../edited_lib/rust-elf", default-features = false }
 bit_field = "0.10.3"
 bytemuck = "1.25.0"
+ringbuf = { version = "0.4.8", default-features = false, features = ["alloc"] }
 
 [features]
 framepointer = []

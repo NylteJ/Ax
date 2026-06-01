@@ -7,7 +7,6 @@ pub mod page_table;
 pub mod uaccess;
 pub mod virtual_memory_area;
 
-#[cfg(target_arch = "loongarch64")]
 pub mod tlb_refill_handler;
 
 // 注意：以下常量的值均由硬件决定，不能在此处随意修改。

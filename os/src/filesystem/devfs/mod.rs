@@ -61,7 +61,7 @@ impl FileSystemTypeOps for DevFsType {
 
 pub fn register() {
     register_filesystem_type(Box::new(FileSystemType {
-        name: "devfs",
+        name: ByteStr::new("devfs"),
         ops: DevFsType,
     }));
 }

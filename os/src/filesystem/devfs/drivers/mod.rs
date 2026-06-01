@@ -25,7 +25,10 @@ pub struct DeviceId(pub u16, pub u32);
 
 impl DeviceId {
     pub fn to_u64(&self) -> u64 {
-        (self.0 as u64) << 20 | (self.1 as u64)
+        ((self.0 as u64) << 20) | (self.1 as u64)
+    }
+    pub fn from_u64(raw: u64) -> Self {
+        Self((raw >> 20) as u16, (raw & 0xFFFFF) as u32)
     }
 }
 

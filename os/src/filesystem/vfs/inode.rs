@@ -307,7 +307,7 @@ fn unhash(entry: &(impl CachedValue + ?Sized)) {
     if *in_cache {
         let cache = entry.remove_from_cache(&mut cache_write_guard);
 
-        crate::println!("{:p} unhashed", entry);
+        log::trace!("{:p} unhashed", entry);
 
         if entry.mem_refcount().load(Ordering::Relaxed) == 0 {
             // 无引用的纯缓存情形（注意 dcache_write_guard 不能提前 drop，否则清理线程可能与这里发生竞态）

@@ -19,13 +19,14 @@ use crate::{
 pub mod basic;
 pub mod filesystem;
 pub mod memory;
+pub mod misc;
 pub mod process;
 pub mod user;
 
 #[derive(Clone, Copy)]
 #[repr(transparent)]
 pub struct SyscallFn {
-    pub(self) ptr: NonNull<()>,
+    ptr: NonNull<()>,
 }
 
 // SAFETY: 外部无法构造 SyscallFn，只能访问 TABLE，它是只读的，也没有内部可变性
@@ -89,6 +90,7 @@ pub static TABLE: [Option<SyscallFn>; MAX_SYSCALL_COUNT] = const {
     }
     define!(93, basic::exit);
     define!(124, basic::yield_);
+    define!(153, basic::times);
 
     define!(17, filesystem::getcwd);
     define!(59, filesystem::pipe2);
@@ -108,6 +110,8 @@ pub static TABLE: [Option<SyscallFn>; MAX_SYSCALL_COUNT] = const {
     define!(80, filesystem::fstat);
     define!(66, filesystem::writev);
     define!(79, filesystem::fstatat);
+    define!(25, filesystem::fcntl);
+    define!(291, filesystem::statx);
 
     define!(214, memory::brk);
     define!(222, memory::mmap);
@@ -119,10 +123,14 @@ pub static TABLE: [Option<SyscallFn>; MAX_SYSCALL_COUNT] = const {
     define!(220, process::clone);
     define!(221, process::execve);
     define!(260, process::wait4);
+    define!(101, process::nanosleep);
     define!(96, process::set_tid_address);
 
     define!(174, user::getuid);
     define!(176, user::getgid);
+
+    define!(169, misc::gettimeofday);
+    define!(160, misc::uname);
 
     table
 };
@@ -189,6 +197,8 @@ impl FromResidual<Result<Infallible, VfsError>> for SyscallResult {
             VfsError::OperationNotSupported => EOPNOTSUPP,
             VfsError::OutOfRange => ERANGE,
             VfsError::DeviceNotFound => ENXIO,
+            VfsError::IsPipeOrSocket => ESPIPE,
+            VfsError::BadPipeEnd | VfsError::BrokenPipe => EPIPE,
             VfsError::InvalidUserPointer(copy_error) => Self::from_residual(Err(copy_error)),
             VfsError::InvalidArguments(_) => EINVAL,
             VfsError::IoError => EIO,
@@ -204,6 +214,7 @@ impl FromResidual<Result<Infallible, LoadElfError>> for SyscallResult {
             LoadElfError::ArchMismatch => ENOEXEC,
             LoadElfError::BadAlignment => ENOEXEC,
             LoadElfError::NoLoadSegment => ENOEXEC,
+            LoadElfError::BadElfHead => ENOEXEC,
             LoadElfError::NotYetImplemented => EOPNOTSUPP,
         }
     }
@@ -231,7 +242,7 @@ impl SyscallResult {
     }
 }
 
-pub(self) mod err_codes {
+mod err_codes {
     macro_rules! err_code {
         ($name:ident, $val:expr) => {
             pub const $name: SyscallResult = SyscallResult {

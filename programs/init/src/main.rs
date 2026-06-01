@@ -2,6 +2,7 @@
 #![no_main]
 //
 #![feature(integer_sign_cast)]
+#![feature(concat_bytes)]
 
 use core::ffi::c_void;
 use core::fmt::Write;
@@ -172,9 +173,16 @@ fn main() -> isize {
 
     if fork() == 0 {
         // 子进程，运行终端
-        let argv: [*const u8; 3] = [
-            b"/sdcard/musl/busybox\0".as_ptr(),
+        let argv: [*const u8; 5] = [
+            b"/sdcd/musl/busybox\0".as_ptr(),
             b"sh\0".as_ptr(),
+            b"-c\0".as_ptr(),
+            concat_bytes!(
+                b"echo \"#### OS COMP TEST GROUP START basic-musl ####\" && cd /sdcd/musl/basic && /sdcd/musl/busybox sh /sdcd/musl/basic/run-all.sh && echo \"#### OS COMP TEST GROUP END basic-musl ####\"",
+                b"&&",
+                b"echo \"#### OS COMP TEST GROUP START basic-glibc ####\" && cd /sdcd/glibc/basic && /sdcd/musl/busybox sh /sdcd/glibc/basic/run-all.sh && echo \"#### OS COMP TEST GROUP END basic-glibc ####\"",
+                b'\0',
+            ).as_ptr(),
             core::ptr::null(),
         ];
         let envp: [*const u8; 1] = [core::ptr::null()];
@@ -188,6 +196,7 @@ fn main() -> isize {
         let ret = syscall!(260, -1, &mut status, 0) as isize;
         if ret > 0 {
             println!("init 进程回收了 {ret}, status: {:#04x}", status);
+            return 0; // FIXME: temp
         }
     }
 }

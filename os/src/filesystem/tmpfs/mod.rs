@@ -48,7 +48,7 @@ impl FileSystemTypeOps for TmpFsType {
 
 pub fn register() {
     register_filesystem_type(Box::new(FileSystemType {
-        name: "tmpfs",
+        name: ByteStr::new("tmpfs"),
         ops: TmpFsType {},
     }));
 }

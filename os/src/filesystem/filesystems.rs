@@ -2,10 +2,14 @@ use core::pin::Pin;
 
 use alloc::{boxed::Box, sync::Arc, vec::Vec};
 
-use crate::{basic::sync::RwLock, devices::block_device::BlockDevice, filesystem::vfs::FileSystem};
+use crate::{
+    basic::{bstr::ByteStr, sync::RwLock},
+    devices::block_device::BlockDevice,
+    filesystem::vfs::FileSystem,
+};
 
 pub struct FileSystemType<T: ?Sized + FileSystemTypeOps = dyn FileSystemTypeOps> {
-    pub name: &'static str,
+    pub name: &'static ByteStr,
     pub ops: T,
 }
 
@@ -15,7 +19,7 @@ pub trait FileSystemTypeOps: Send + Sync {
 
 static FILE_SYSTEM_TYPES: RwLock<Vec<&'static FileSystemType>> = RwLock::new(Vec::new());
 
-pub fn get_filesystem_type(name: &str) -> Option<&'static FileSystemType> {
+pub fn get_filesystem_type(name: &ByteStr) -> Option<&'static FileSystemType> {
     let types = FILE_SYSTEM_TYPES.read();
     types.iter().find(|t| t.name == name).copied()
 }

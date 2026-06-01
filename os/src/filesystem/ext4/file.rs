@@ -1,6 +1,5 @@
 use core::slice;
 
-use ext4_rs::ext4_defs::Ext4InodeRef;
 use uninit::extension_traits::MaybeUninitExt;
 
 use crate::{
@@ -59,7 +58,7 @@ impl FileOps for Ext4File {
     fn write(&mut self, mut user_data: *const u8, len: u64) -> VfsResult<u64> {
         let this = vfs::File::from_dyn_mut(self);
 
-        let inode = unsafe { this.inode.as_ref() };
+        let inode = unsafe { this.inode.cast::<vfs::INode<Ext4INode>>().as_ref() };
         let fs = unsafe { inode.fs.cast::<vfs::FileSystem<Ext4Fs>>().as_ref() };
 
         let mut inode_write_guard = inode.data.write();
@@ -93,7 +92,9 @@ impl FileOps for Ext4File {
             },
         )?;
 
-        inode_write_guard.file_size = inode_write_guard.file_size.max(old_pos + len);
+        let new_file_size = inode_write_guard.file_size.max(old_pos + len);
+        inode_write_guard.file_size = new_file_size;
+        inode_write_guard.ops.inode.inode.set_size(new_file_size);
         Ok(ret)
     }
 
@@ -112,14 +113,11 @@ impl FileOps for Ext4File {
 
         let inode_rguard = inode.data.read();
 
-        if !inode_rguard.ops.inode.is_dir() {
+        if !inode_rguard.ops.inode.inode.is_dir() {
             return Err(VfsError::NotADirectory);
         }
 
-        let inode_ref = Ext4InodeRef {
-            inode_num: inode.id,
-            inode: inode_rguard.ops.inode,
-        };
+        let inode_ref = &inode_rguard.ops.inode;
 
         use ext4_rs::ext4_defs::{Block, Ext4DirEntry, Ext4DirEntryTail};
 

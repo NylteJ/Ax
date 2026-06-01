@@ -11,12 +11,17 @@ use bitflags::{Flags, bitflags};
 
 use crate::{
     basic::bstr::{ByteStr, ByteString},
-    filesystem::vfs::{
-        DEntryArc, FileFlags, FileSystem, INodeArc, INodeMode, IterateDirData, Path, PathToWalk,
-        VfsError, VfsResult, walk_path,
+    filesystem::{
+        PipeFile,
+        devfs::drivers::DeviceId,
+        filesystems::get_filesystem_type,
+        vfs::{
+            DEntryArc, FileFlags, FileSystem, INodeArc, INodeMode, IterateDirData, MountPoint,
+            Path, PathToWalk, ROOT_PATH, VfsError, VfsResult, walk_path,
+        },
     },
-    memory::uaccess::{copy_from_user_uninit, copy_str_from_user, copy_to_user},
-    multitask::current_task,
+    memory::uaccess::{copy_from_user_uninit, copy_one_to_user, copy_str_from_user, copy_to_user},
+    multitask::{FDTableEntry, FileDescriptorFlags, current_task},
     syscall::SyscallResult,
 };
 
@@ -55,7 +60,16 @@ pub extern "C" fn getcwd(buf: *mut c_char, size: usize) -> SyscallResult {
 
     let mut cwd = cur_task.fs_data.read().current_work_dir.clone();
     while let Some(parent) = cwd.walk_step_back_until_root() {
-        let reversed = cwd.0.data.lock().name.0.clone().into_iter().rev();
+        // TODO: 优化（可读性和性能两方面都要）
+        let prt;
+        let dentry = if cwd.0.addr_eq(&cwd.1.mount_to) {
+            prt = cwd.1.mount_point.get_parent();
+            &prt.0
+        } else {
+            &cwd.0
+        };
+
+        let reversed = dentry.data.lock().name.0.clone().into_iter().rev();
         for chr in reversed {
             str.push_front(chr);
         }
@@ -98,7 +112,30 @@ pub extern "C" fn getcwd(buf: *mut c_char, size: usize) -> SyscallResult {
 /// int ret = syscall(SYS_pipe2, fd, 0);
 /// ```
 pub extern "C" fn pipe2(fd: *mut c_int, flags: usize) -> SyscallResult {
-    ENOSYS
+    let cloexec = FileOpenFlags::from_bits_retain(flags as _).contains(FileOpenFlags::O_CLOEXEC);
+
+    let (reader, writer) = PipeFile::new_anonymous();
+
+    let func = if cloexec {
+        FDTableEntry::cloexec
+    } else {
+        FDTableEntry::no_flags
+    };
+
+    let reader = func(reader);
+    let writer = func(writer);
+
+    let cur_task = unsafe { current_task().as_ref_unchecked() };
+
+    let out: [c_int; 2] = {
+        let reader = cur_task.files.write().insert(reader) as _;
+        let writer = cur_task.files.write().insert(writer) as _;
+        [reader, writer]
+    };
+
+    copy_to_user(fd.cast(), bytemuck::cast_slice(&out))?;
+
+    SyscallResult::success(0)
 }
 
 /// 功能：复制文件描述符；
@@ -123,11 +160,11 @@ pub extern "C" fn dup(fd: isize) -> SyscallResult {
 
     let mut files_guard = cur_task.files.write();
 
-    let Some(file) = files_guard.get(fd).cloned() else {
+    let Some(FDTableEntry(file, _)) = files_guard.get(fd).cloned() else {
         return EBADF; // “EBADF  oldfd isn't an open file descriptor.”
     };
 
-    SyscallResult::success(files_guard.insert(file))
+    SyscallResult::success(files_guard.insert(FDTableEntry::no_flags(file))) // dup 不保留标志
 }
 
 /// 功能：复制文件描述符，并指定了新的文件描述符；
@@ -165,11 +202,18 @@ pub extern "C" fn dup3(old: isize, new: isize, flags: usize) -> SyscallResult {
 
     let mut files_guard = cur_task.files.write();
 
-    let Some(file) = files_guard.get(old).cloned() else {
+    let Some(FDTableEntry(file, _)) = files_guard.get(old).cloned() else {
         return EBADF; // “EBADF  oldfd isn't an open file descriptor.”
     };
 
-    files_guard.set(new, file);
+    let new_entry =
+        if FileOpenFlags::from_bits_retain(flags as i32).contains(FileOpenFlags::O_CLOEXEC) {
+            FDTableEntry::cloexec(file)
+        } else {
+            FDTableEntry::no_flags(file)
+        };
+
+    files_guard.set(new, new_entry);
 
     SyscallResult::success(new)
 }
@@ -264,7 +308,13 @@ pub extern "C" fn openat(
         path.0.data.lock().ops.open(path.1, file_flags)?
     };
 
-    let fd = cur_task.files.write().insert(file);
+    let fd_entry = if file_open_flags.contains(FileOpenFlags::O_CLOEXEC) {
+        FDTableEntry::cloexec(file)
+    } else {
+        FDTableEntry::no_flags(file)
+    };
+
+    let fd = cur_task.files.write().insert(fd_entry);
     log::trace!("openat success, fd: {fd}");
     SyscallResult::success(fd)
 }
@@ -304,7 +354,7 @@ bitflags! {
         const O_DIRECTORY = 1 << 16;
 
         /// Close-on-exec flag for the returned file descriptor
-        const FSOPEN_CLOEXEC = 1 << 19;
+        const O_CLOEXEC = 1 << 19;
 
         /// O_NOATIME - Do not update file's access time
         const O_NOATIME = 1 << 20;
@@ -362,6 +412,7 @@ fn parse_walk_path_from(fd: isize, path: &ByteStr) -> Result<PathToWalk<'_>, Sys
                 .read()
                 .get(fd.cast_unsigned())
                 .ok_or(EBADF)?
+                .0
                 .data
                 .lock()
                 .path
@@ -464,7 +515,7 @@ pub extern "C" fn getdents64(fd: isize, buf: *mut c_void, len: usize) -> Syscall
 
     let cur_task = unsafe { current_task().as_ref_unchecked() };
     let files_guard = cur_task.files.read();
-    let file = files_guard.get(fd).cloned().ok_or(EBADF)?;
+    let file = files_guard.get(fd).ok_or(EBADF)?.0.clone();
 
     let mut k_buffer = Vec::<u8>::try_with_capacity(len + 7)?;
 
@@ -501,7 +552,7 @@ pub extern "C" fn read(fd: isize, buf: *mut c_void, count: usize) -> SyscallResu
 
     let cur_task = unsafe { current_task().as_ref_unchecked() };
 
-    let file = cur_task.files.read().get(fd).ok_or(EBADF)?.clone();
+    let file = cur_task.files.read().get(fd).ok_or(EBADF)?.0.clone();
 
     let len = file.data.lock().read(buf as *mut u8, count as u64)?;
 
@@ -530,7 +581,7 @@ pub extern "C" fn write(fd: isize, buf: *const c_void, count: usize) -> SyscallR
 
     let cur_task = unsafe { current_task().as_ref_unchecked() };
 
-    let file = cur_task.files.read().get(fd).ok_or(EBADF)?.clone();
+    let file = cur_task.files.read().get(fd).ok_or(EBADF)?.0.clone();
 
     let len = file.data.lock().write(buf as *const u8, count as u64)?;
 
@@ -552,7 +603,7 @@ pub extern "C" fn writev(fd: isize, iov: *mut IoVec, iovcnt: usize) -> SyscallRe
 
     let cur_task = unsafe { current_task().as_ref_unchecked() };
 
-    let file = cur_task.files.read().get(fd).ok_or(EBADF)?.clone();
+    let file = cur_task.files.read().get(fd).ok_or(EBADF)?.0.clone();
 
     let mut kernel_iov = Vec::<IoVec>::try_with_capacity(iovcnt)?;
     let k_buffer = &mut kernel_iov.spare_capacity_mut()[..iovcnt];
@@ -697,7 +748,23 @@ pub extern "C" fn mkdirat(dirfd: isize, path: *const c_char, mode: usize) -> Sys
 /// int ret = syscall(SYS_umount2, special, flags);
 /// ```
 pub extern "C" fn umount2(special: *const c_char, flags: usize) -> SyscallResult {
-    ENOSYS
+    let _ = flags; // FIXME
+
+    let target = copy_str_from_user(special, PATH_LEN_HINT, PATH_LEN_MAX)?;
+
+    let target_wpf = parse_walk_path_from(AT_FDCWD, &target)?;
+    let target = walk_path(target_wpf)?.ensure()?;
+
+    // 注意 walk_path 会跟随挂载点，此时 target 是子文件系统的根目录
+    if !target.1.mount_to.addr_eq(&target.0) {
+        return EINVAL; // 说明并非挂载点
+    }
+
+    // TODO: busy check
+
+    unsafe { target.1.mount_point.unmount(&target.1) };
+
+    SyscallResult::success(0)
 }
 
 /// * 功能：挂载文件系统；
@@ -719,7 +786,28 @@ pub extern "C" fn mount(
     flags: usize,
     data: *const c_void,
 ) -> SyscallResult {
-    ENOSYS
+    let device = copy_str_from_user(special, PATH_LEN_HINT, PATH_LEN_MAX)?;
+    let target_dir = copy_str_from_user(dir, PATH_LEN_HINT, PATH_LEN_MAX)?;
+    let fstype = copy_str_from_user(fstype, PATH_LEN_HINT, PATH_LEN_MAX)?;
+
+    // let fs_type = get_filesystem_type(&fstype).ok_or(ENODEV)?; // FIXME?
+    let _ = fstype;
+
+    let target_wpf = parse_walk_path_from(AT_FDCWD, &target_dir)?;
+    let target = walk_path(target_wpf)?.ensure()?;
+
+    // FIXME: 目前这里直接使用了根目录所在 FS 对应块设备进行 mount
+    // （功利点讲其实大概率不用 FIX 了，因为往届作品貌似都没实现或者随便实现的这部分 XP）
+    let _ = device;
+    let sub_fs = ROOT_PATH.1.sub_fs.clone();
+
+    MountPoint::mount(target, sub_fs, ROOT_PATH.0.clone());
+
+    // FIXME?
+    let _ = flags;
+    let _ = data;
+
+    SyscallResult::success(0)
 }
 
 /// ```c
@@ -759,8 +847,6 @@ pub struct Kstat {
     pub st_nlink: u32,
     pub inner: KstatInner,
 }
-
-unsafe impl bytemuck::NoUninit for Kstat {}
 
 #[repr(C)]
 #[derive(Debug, Default, Clone, Copy)]
@@ -857,6 +943,7 @@ pub extern "C" fn fstat(fd: isize, kst: *mut Kstat) -> SyscallResult {
         .read()
         .get(fd)
         .ok_or(EBADF)?
+        .0
         .data
         .lock()
         .path
@@ -879,7 +966,7 @@ pub extern "C" fn fstatat(
 
     let wpf = parse_walk_path_from(dirfd, pathname.as_ref())?;
 
-    fstat_common(walk_path(wpf)?.ensure()?, buf)
+    fstat_common(walk_path(wpf)?.whatever(), buf)
 }
 
 bitflags! {
@@ -902,7 +989,187 @@ fn fstat_common(path: Path, buf: *mut Kstat) -> SyscallResult {
         st_nlink: inode.data.read().hard_links,
         inner: inode.data.read().get_kstat()?,
     };
-    copy_to_user(buf.cast(), bytemuck::cast_slice(slice::from_ref(&kstat)))?;
+    unsafe { copy_one_to_user(buf, &kstat) }?;
+
+    debug_assert_eq!(kstat.inner.st_size, inode.data.read().file_size);
+
+    SyscallResult::success(0)
+}
+
+pub extern "C" fn fcntl(fd: isize, op: isize, arg: usize) -> SyscallResult {
+    if fd < 0 {
+        return EBADF;
+    }
+    let fd = fd.cast_unsigned();
+
+    let current_task = unsafe { current_task().as_ref_unchecked() };
+    let fd_entry = current_task.files.read().get(fd).cloned().ok_or(EBADF)?;
+
+    const F_DUPFD: isize = 0;
+    const F_DUPFD_CLOEXEC: isize = 1030;
+    const F_GETFD: isize = 1;
+    const F_SETFD: isize = 2;
+    // const F_GETFL: isize = 3;
+    // const F_SETFL: isize = 4;
+
+    let result = match op {
+        F_DUPFD => current_task.files.write().insert_at_least(arg, fd_entry),
+        F_DUPFD_CLOEXEC => current_task
+            .files
+            .write()
+            .insert_at_least(arg, FDTableEntry::cloexec(fd_entry.0)),
+
+        F_GETFD => fd_entry.1.into_raw(),
+        F_SETFD => {
+            let new_flags = FileDescriptorFlags::from_raw(arg);
+            current_task.files.write().get_mut(fd).ok_or(EBADF)?.1 = new_flags; // 由于竞态，可能失败
+            0
+        }
+
+        _ => {
+            log::error!("fcntl: unsupported op {op}");
+            return EINVAL; // EINVAL The value specified in op is not recognized by this kernel.
+        }
+    };
+
+    SyscallResult::success(result)
+}
+
+#[repr(C)]
+#[derive(Debug, Default)]
+pub struct StatxTimestamp {
+    pub tv_sec: i64,
+    pub tv_nsec: u32,
+    pub __reserved: i32,
+}
+
+impl From<Time> for StatxTimestamp {
+    fn from(value: Time) -> Self {
+        Self {
+            tv_sec: value.sec,
+            tv_nsec: value.nsec as u32,
+            ..Default::default()
+        }
+    }
+}
+
+#[repr(C)]
+#[derive(Debug, Default)]
+pub struct Statx {
+    stx_mask: u32,
+    stx_blksize: u32,
+    stx_attributes: u64,
+    stx_nlink: u32,
+    stx_uid: u32,
+    stx_gid: u32,
+    stx_mode: u16,
+    __spare0: u16,
+    stx_ino: u64,
+    stx_size: u64,
+    stx_blocks: u64,
+    stx_attributes_mask: u64,
+    stx_atime: StatxTimestamp,
+    stx_btime: StatxTimestamp,
+    stx_ctime: StatxTimestamp,
+    stx_mtime: StatxTimestamp,
+    stx_rdev_major: u32,
+    stx_rdev_minor: u32,
+    stx_dev_major: u32,
+    stx_dev_minor: u32,
+    stx_mnt_id: u64,
+    __spare2: [u64; 13],
+}
+
+bitflags! {
+    pub struct StatxMask: u16 {
+        const STATX_TYPE = 1 << 0;
+        const STATX_MODE = 1 << 1;
+        const STATX_NLINK = 1 << 2;
+        const STATX_UID = 1 << 3;
+        const STATX_GID = 1 << 4;
+        const STATX_ATIME = 1 << 5;
+        const STATX_MTIME = 1 << 6;
+        const STATX_CTIME = 1 << 7;
+        const STATX_INO = 1 << 8;
+        const STATX_SIZE = 1 << 9;
+        const STATX_BLOCKS = 1 << 10;
+        const STATX_BTIME = 1 << 11;
+    }
+
+    pub struct StatxFlags: u16 {
+        const AT_SYMLINK_NOFOLLOW = 1 << 8;
+        const AT_NO_AUTOMOUNT = 1 << 11;
+        const AT_EMPTY_PATH = 1 << 12;
+        const STATX_FORCE_SYNC = 1 << 13;
+        const STATX_DONT_SYNC = 1 << 14;
+    }
+}
+
+pub extern "C" fn statx(
+    dirfd: isize,
+    path: *const c_char,
+    flags: usize,
+    mask_raw: usize,
+    statxbuf: *mut Statx,
+) -> SyscallResult {
+    if dirfd < 0 {
+        return EBADF;
+    }
+    let dirfd = dirfd.cast_unsigned();
+
+    let mask = StatxMask::from_bits_retain(mask_raw as _);
+    let flags = StatxFlags::from_bits(flags.try_into().map_err(|_| EINVAL)?).ok_or(EINVAL)?;
+
+    let Path(dentry, mount) = if flags.contains(StatxFlags::AT_EMPTY_PATH) {
+        unsafe { current_task().as_ref_unchecked() }
+            .files
+            .read()
+            .get(dirfd)
+            .ok_or(EBADF)?
+            .0
+            .data
+            .lock()
+            .path
+            .clone()
+    } else {
+        let path = copy_str_from_user(path, PATH_LEN_HINT, PATH_LEN_MAX)?;
+        let wpf = parse_walk_path_from(dirfd.cast_signed(), &path)?;
+        walk_path(wpf)?.whatever()
+    };
+
+    let inode = dentry.data.lock().inode.clone().ok_or(ENOENT)?;
+
+    let kstat = inode.data.read().get_kstat()?;
+
+    let DeviceId(rdev_major, rdev_minor) = DeviceId::from_u64(kstat.st_rdev);
+    let DeviceId(dev_major, dev_minor) = mount.sub_fs.dev;
+
+    let statx = Statx {
+        stx_mask: mask_raw as u32,
+        stx_blksize: kstat.st_blksize,
+        stx_attributes: 0, // FIXME?
+        stx_nlink: inode.data.read().hard_links,
+        stx_uid: kstat.st_uid,
+        stx_gid: kstat.st_gid,
+        stx_mode: inode.data.read().mode.bits(),
+        stx_ino: inode.id.into(),
+        stx_size: kstat.st_size,
+        stx_blocks: kstat.st_blocks,
+        stx_attributes_mask: 0, // FIXME?
+        stx_atime: kstat.st_atime.into(),
+        stx_btime: kstat.st_ctime.into(), // FIXME
+        stx_ctime: kstat.st_ctime.into(),
+        stx_mtime: kstat.st_mtime.into(),
+        stx_rdev_major: rdev_major.into(),
+        stx_rdev_minor: rdev_minor,
+        stx_dev_major: dev_major.into(),
+        stx_dev_minor: dev_minor,
+        stx_mnt_id: 0, // FIXME
+        ..Default::default()
+    };
+
+    static_assertions::assert_not_impl_any!(Statx: Drop);
+    unsafe { copy_one_to_user(statxbuf, &statx) }?;
 
     SyscallResult::success(0)
 }

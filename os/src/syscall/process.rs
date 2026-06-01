@@ -1,5 +1,6 @@
 use core::{
-    ffi::{c_char, c_int},
+    ffi::{c_char, c_int, c_long},
+    mem::MaybeUninit,
     num::NonZero,
     pin::Pin,
     ptr::addr_eq,
@@ -11,10 +12,13 @@ use bitflags::bitflags;
 use intrusive_collections::PointerOps;
 
 use crate::{
+    basic::timer::{get_cpu_tick, us_to_cpu_tick},
     filesystem::vfs::{FileFlags, PathToWalk, walk_path},
     memory::{
         STACK_ALIGN,
-        uaccess::{CopyError, copy_from_user, copy_str_from_user, copy_to_user},
+        uaccess::{
+            CopyError, copy_from_user, copy_from_user_uninit, copy_str_from_user, copy_to_user,
+        },
     },
     multitask::{
         current_task,
@@ -355,7 +359,13 @@ fn wait4_pred(
                 {
                     let child = cur_child.remove().unwrap();
                     report_status(status, signal, ret_value)?;
-                    return SyscallResult::success(child.tid as usize);
+
+                    unsafe { current_task().as_ref_unchecked() }
+                        .time_stats
+                        .lock()
+                        .update_children_times(&child.time_stats.lock());
+
+                    return SyscallResult::success(child.tid);
                 }
 
                 cur_child.move_next();
@@ -418,6 +428,65 @@ pub extern "C" fn getpid() -> usize {
 pub extern "C" fn gettid() -> usize {
     let task = unsafe { current_task().as_ref_unchecked() };
     task.tid
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct TimeSpec {
+    tv_sec: i64,
+    tv_nsec: c_long,
+}
+
+/// * 功能：执行线程睡眠，sleep()库函数基于此系统调用；
+/// * 输入：睡眠的时间间隔；
+/// ```c
+/// struct timespec {
+/// 	time_t tv_sec;        /* 秒 */
+/// 	long   tv_nsec;       /* 纳秒, 范围在0~999999999 */
+/// };
+/// ```
+/// * 返回值：成功返回0，失败返回-1;
+/// ```c
+/// const struct timespec *req, struct timespec *rem;
+/// int ret = syscall(SYS_nanosleep, req, rem);
+/// ```
+pub extern "C" fn nanosleep(req: *const TimeSpec, rem: *mut TimeSpec) -> SyscallResult {
+    let mut k_req = MaybeUninit::uninit();
+    copy_from_user_uninit(k_req.as_bytes_mut(), req.cast())?;
+    let req: TimeSpec = unsafe { k_req.assume_init() };
+
+    // 因为我们还没有实现信号系统或其它可能导致睡眠被打断的机制，此处 rem 暂时无用
+    let _ = rem;
+
+    let TimeSpec {
+        tv_sec: seconds @ 0..,
+        tv_nsec: nanos @ 0..=999999999,
+    } = req
+    else {
+        // EINVAL The value in the tv_nsec field was not in the range 0 to 999999999 or tv_sec was negative.
+        return EINVAL;
+    };
+
+    let nanos = seconds * 1000000000 + nanos;
+    let us = nanos.div_ceil(1000);
+
+    let target_tick = get_cpu_tick() + us_to_cpu_tick(us as usize);
+
+    loop {
+        let cur_tick = get_cpu_tick();
+
+        if cur_tick >= target_tick {
+            break;
+        }
+
+        const BUSY_WAIT_THRESHOLD: usize = 1024;
+
+        if cur_tick + BUSY_WAIT_THRESHOLD < target_tick {
+            syscall::basic::yield_(); // 假装睡眠
+        }
+    }
+
+    SyscallResult::success(0)
 }
 
 // FIXME

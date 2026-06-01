@@ -36,7 +36,7 @@ pub struct PageMeta {
 static_assertions::assert_not_impl_any!(PageMeta: Drop); // 因此我们不必操心销毁问题
 
 pub struct PageMetas {
-    pub(self) pages: [SyncUnsafeCell<MaybeUninit<PageMeta>>; MEMORY_SIZE / PAGE_BYTES],
+    pages: [SyncUnsafeCell<MaybeUninit<PageMeta>>; MEMORY_SIZE / PAGE_BYTES],
 }
 
 pub static PAGE_METADATAS: PageMetas = PageMetas {
@@ -78,7 +78,7 @@ const METAS_ARRAY_OFFSET: usize = MEMORY_START / PAGE_BYTES;
 static_assertions::const_assert_eq!(MEMORY_START % PAGE_BYTES, 0);
 
 impl PageMeta {
-    pub(self) fn get_index(&self) -> usize {
+    fn get_index(&self) -> usize {
         let my_addr = self as *const Self as usize;
         let array_addr = &raw const PAGE_METADATAS.pages as usize;
 
@@ -88,11 +88,11 @@ impl PageMeta {
         offset_bytes / size_of::<PageMeta>()
     }
 
-    pub(self) fn inc_ref(self: Pin<&Self>) {
+    fn inc_ref(self: Pin<&Self>) {
         self.ref_count.fetch_add(1, Ordering::Relaxed);
     }
 
-    pub(self) fn dec_ref_may_release_res(self: Pin<&Self>) {
+    fn dec_ref_may_release_res(self: Pin<&Self>) {
         let old = self.ref_count.fetch_sub(1, Ordering::Release);
 
         if old == 1 {
@@ -181,7 +181,7 @@ impl PageMetas {
 }
 
 pub struct PageMetaGuard {
-    pub(self) reference: Pin<&'static PageMeta>,
+    reference: Pin<&'static PageMeta>,
 }
 
 impl PageMetaGuard {

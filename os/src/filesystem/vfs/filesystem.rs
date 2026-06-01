@@ -62,10 +62,10 @@ pub struct FileSystem<T: ?Sized + FileSystemOps = dyn FileSystemOps> {
 
 impl<T: FileSystemOps + 'static> FileSystem<T> {
     pub fn new(
-        roots: fn(NonNull<FileSystem>, &T) -> (INodeArc, DEntryArc),
+        roots: impl FnOnce(NonNull<FileSystem>, &T) -> (INodeArc, DEntryArc),
         dev: DeviceId,
         ops: T,
-    ) -> Pin<Arc<FileSystem>> {
+    ) -> Pin<Arc<FileSystem<T>>> {
         let mut arc = Arc::new_cyclic(|weak| {
             let addr = NonNull::new(weak.as_ptr() as *mut FileSystem<T>).unwrap();
             let (root_inode, init_root_dentry) = roots(addr, &ops);
@@ -429,7 +429,7 @@ pub fn walk_path(path: PathToWalk) -> VfsResult<WalkedPath> {
 
         // 如果是挂载点则要转到对应文件系统
 
-        let dentry = if let Some(mount) = { dentry.data.lock().mount } {
+        let path = if let Some(mount) = { dentry.data.lock().mount } {
             debug_assert!(found);
 
             let mnt = unsafe { mount.as_ref() }.get_cur_mount();
@@ -442,12 +442,12 @@ pub fn walk_path(path: PathToWalk) -> VfsResult<WalkedPath> {
                 mnt_to.data.lock().name,
             );
 
-            mnt_to
+            Path(mnt_to, mnt)
         } else {
-            dentry
+            Path(dentry, cur_path.1.clone())
         };
 
-        return Ok((found, Path(dentry, cur_path.1.clone())));
+        return Ok((found, path));
     }
 
     let mut fs = unsafe { cur_path.0.filesystem.as_ref() };
@@ -501,6 +501,12 @@ impl WalkedPath {
         match self {
             WalkedPath::Positive(_) => Err(VfsError::FileAlreadyExists),
             WalkedPath::Negative(dentry) => Ok(dentry),
+        }
+    }
+    pub fn whatever(self) -> Path {
+        match self {
+            WalkedPath::Positive(dentry) => dentry,
+            WalkedPath::Negative(dentry) => dentry.0,
         }
     }
 }

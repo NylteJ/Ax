@@ -1,13 +1,18 @@
+use core::slice;
+
 use crate::{
-    basic::{cleanup_and_shutdown, shared_with_asm::SharedWithAsm},
-    memory::uaccess::copy_from_user,
+    basic::{cleanup_and_shutdown, shared_with_asm::SharedWithAsm, timer::get_cpu_tick},
+    memory::uaccess::{copy_from_user, copy_one_to_user, copy_to_user},
     multitask::{
         current_task,
         task::{INIT_PID, TaskArc},
         task_scheduler::TASK_SCHEDULER,
     },
     print, println,
+    syscall::SyscallResult,
 };
+
+use crate::syscall::err_codes::*;
 
 /// * 功能：触发进程终止，无返回值；
 /// * 输入：终止状态值；
@@ -31,7 +36,7 @@ pub extern "C" fn exit(ec: isize) -> ! {
     cur.on_exit(0, ec as u8);
 
     let Some(next_task) = TASK_SCHEDULER.lock().pick_next() else {
-        println!("所有用户程序运行完毕，关机");
+        log::info!("所有用户程序运行完毕，关机");
         cleanup_and_shutdown();
     };
 
@@ -58,4 +63,39 @@ pub extern "C" fn yield_() -> isize {
     next_task.switch_to();
 
     0
+}
+
+#[repr(C)]
+pub struct Tms {
+    tms_utime: usize,
+    tms_stime: usize,
+    tms_cutime: usize,
+    tms_cstime: usize,
+}
+
+/// * 功能：获取进程时间；
+/// * 输入：tms结构体指针，用于获取保存当前进程的运行时间数据；
+/// * 返回值：成功返回已经过去的滴答数，失败返回-1;
+/// ```c
+/// struct tms *tms;
+/// clock_t ret = syscall(SYS_times, tms);
+/// ```
+pub extern "C" fn times(tms: *mut Tms) -> SyscallResult {
+    if !tms.is_null() {
+        let cur_task = unsafe { current_task().as_ref_unchecked() };
+
+        let tms_data = {
+            let time_stats = cur_task.time_stats.lock();
+            Tms {
+                tms_utime: time_stats.user_time,
+                tms_stime: time_stats.kernel_time,
+                tms_cutime: time_stats.children_user_time,
+                tms_cstime: time_stats.children_kernel_time,
+            }
+        };
+
+        unsafe { copy_one_to_user(tms, &tms_data) }?;
+    }
+
+    SyscallResult::success(get_cpu_tick())
 }

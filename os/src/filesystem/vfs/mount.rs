@@ -28,7 +28,7 @@ pub struct Mount {
 
     pub mount_point: Arc<MountPoint>,
 
-    pub(self) link: LinkedListLink,
+    link: LinkedListLink,
 }
 
 unsafe impl Send for Mount {}
@@ -75,6 +75,7 @@ impl MountPoint {
         unsafe { self.mounts.write().cursor_mut_from_ptr(mount).remove() }.unwrap();
     }
 
+    #[must_use]
     pub unsafe fn mount_root(fs: Pin<Arc<FileSystem>>) -> Arc<Mount> {
         let root_dentry = fs.root_dentry.clone();
 

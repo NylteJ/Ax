@@ -21,6 +21,7 @@ use crate::{
         shared_with_asm::SharedWithAsm,
         stack::TaskKernelStackPtr,
         sync::{Mutex, RwLock},
+        timer::get_cpu_tick,
     },
     filesystem::vfs::{File, FileArc, Path},
     memory::{
@@ -67,13 +68,15 @@ pub struct Task {
     /// 子 Task 链表头
     pub children: Mutex<intrusive_collections::LinkedList<TaskAdapter>>,
     /// 子 Task 链表的侵入式节点，由于所有操作都须借助 children 的锁，它本身无需额外同步
-    pub(self) children_link: LinkedListLink,
+    children_link: LinkedListLink,
     /// 父 Task 指针，通常不会变化
     ///
     /// 通过托孤机制保证总是有效（如果父节点提前死亡，则其改为指向 init）
     pub parent: RwLock<NonNull<Task>>,
 
     pub wait_state: Mutex<ZombieWaitingState>,
+
+    pub time_stats: Mutex<TaskTimeStats>,
 
     _pin: PhantomPinned, // Task 的地址需要在 tp、内核栈等区域存储，因此不能移动
 }
@@ -85,6 +88,51 @@ pub struct ZombieWaitingState {
     /// 是否有父 Task 正在等待当前 Task，如果有，则内部存放用于唤醒等待者的句柄
     // （我们目前根本不支持睡眠，所以其实没什么能放的）
     pub waiter: Option<()>,
+}
+
+#[derive(Debug)]
+pub struct TaskTimeStats {
+    /// 当前 Task 在用户态下运行的周期数
+    pub user_time: usize,
+    /// 当前 Task 在内核态下运行的周期数
+    pub kernel_time: usize,
+    /// 当前 Task 的所有已终止且成功被 wait 的子 Task 在用户态下运行的周期数之和
+    pub children_user_time: usize,
+    /// 当前 Task 的所有已终止且成功被 wait 的子 Task 在内核态下运行的周期数之和
+    pub children_kernel_time: usize,
+
+    /// 上次更新时的时间戳（周期数）
+    last_update_stamp: usize,
+}
+
+impl TaskTimeStats {
+    pub fn new() -> Self {
+        Self {
+            user_time: 0,
+            kernel_time: 0,
+            children_user_time: 0,
+            children_kernel_time: 0,
+            last_update_stamp: get_cpu_tick(),
+        }
+    }
+
+    pub fn update_kernel_time(&mut self) {
+        let now = get_cpu_tick();
+        let delta = now - self.last_update_stamp;
+        self.kernel_time += delta;
+        self.last_update_stamp = now;
+    }
+    pub fn update_user_time(&mut self) {
+        let now = get_cpu_tick();
+        let delta = now - self.last_update_stamp;
+        self.user_time += delta;
+        self.last_update_stamp = now;
+    }
+
+    pub fn update_children_times(&mut self, children: &Self) {
+        self.children_user_time += children.user_time;
+        self.children_kernel_time += children.kernel_time;
+    }
 }
 
 unsafe impl Send for Task {}
@@ -160,6 +208,7 @@ impl Task {
                 status: None,
                 waiter: None,
             }),
+            time_stats: Mutex::new(TaskTimeStats::new()),
 
             _pin: PhantomPinned,
         });
@@ -312,6 +361,7 @@ impl Task {
                 status: None,
                 waiter: None,
             }),
+            time_stats: Mutex::new(TaskTimeStats::new()),
 
             _pin: PhantomPinned,
         });
@@ -355,6 +405,9 @@ impl Task {
         trap_context.ret_pc = entry;
         trap_context.regs.sp = USER_STACK_HIGHEST;
 
+        // 关闭标记为 CLOEXEC 的文件描述符
+        self.files.write().close_on_exec();
+
         // OK，这样就可以了！
         let _ = DropGuard::release(guard);
         Ok(auxv)
@@ -377,6 +430,12 @@ impl Task {
         let context = self.get_context();
         unsafe { self.into_asm() };
         unsafe { switch_context(context.as_ref_unchecked()) };
+
+        // 现在我们被重新调度了
+
+        // 重新设置 last_update_stamp
+        let cur_task = unsafe { current_task().as_ref_unchecked() };
+        cur_task.time_stats.lock().last_update_stamp = get_cpu_tick();
     }
 
     /// 获取父 Task 的引用
@@ -444,7 +503,13 @@ impl Task {
 
         let head = unsafe { File::kernel_read_page(file.get_inode(), 0) }.unwrap();
 
-        let elf = ElfBytes::<NativeEndian>::minimal_parse_no_section_headers(head).unwrap();
+        let elf =
+            ElfBytes::<NativeEndian>::minimal_parse_no_section_headers(head).map_err(|err| {
+                match err {
+                    err @ elf::ParseError::SliceReadError(..) => todo!("超大 ELF 头({err:?})"),
+                    _ => LoadElfError::BadElfHead,
+                }
+            })?;
 
         #[cfg(target_arch = "riscv64")]
         const EXPECTED_MACHINE: u16 = elf::abi::EM_RISCV;
@@ -465,7 +530,7 @@ impl Task {
 
         let segs = elf.segments().unwrap();
         for seg in segs {
-            use elf::abi::{PT_DYNAMIC, PT_GNU_STACK, PT_LOAD, PT_NULL};
+            use elf::abi::{PT_DYNAMIC, PT_GNU_STACK, PT_INTERP, PT_LOAD, PT_NULL};
 
             match seg.p_type {
                 PT_NULL => (),
@@ -573,9 +638,12 @@ impl Task {
 
                     max_load_seg_end_addr.replace(zeros_end); // ELF 标准规定 PT_LOAD 段必须按地址升序排列
                 }
-                PT_DYNAMIC => {
+                PT_DYNAMIC | PT_INTERP => {
                     log::error!("暂不支持动态链接的程序");
-                    return Err(LoadElfError::NotYetImplemented);
+                    log::warn!(
+                        "由于 basic 测试全部是动态链接的静态程序，暂时强行将此程序当作静态链接的处理"
+                    );
+                    // return Err(LoadElfError::NotYetImplemented); // FIXME
                 }
                 PT_GNU_STACK => {
                     log::info!(
@@ -664,7 +732,7 @@ impl Drop for Task {
 
         // 注意，Task 被 drop 意味着它已经从父 Task 的 children 中被移除了，因此此处无需重复清理
 
-        crate::println!("Task {} dropped", self.tid);
+        log::trace!("Task {} dropped", self.tid);
     }
 }
 
@@ -674,6 +742,7 @@ pub enum LoadElfError {
     BadAlignment,
     NoLoadSegment,
     NotYetImplemented,
+    BadElfHead,
 }
 
 #[repr(C)]

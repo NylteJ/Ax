@@ -4,7 +4,10 @@ use alloc::borrow::ToOwned;
 use ext4_rs::ext4_defs::ROOT_INODE;
 
 use crate::{
-    basic::bstr::{ByteStr, ByteString},
+    basic::{
+        bstr::{ByteStr, ByteString},
+        extend_lifetime,
+    },
     filesystem::{
         ext4::{dentry::Ext4DEntry, filesystem::Ext4Fs},
         vfs::{self, INodeOps, PageCache, VfsError, VfsResult},
@@ -13,7 +16,7 @@ use crate::{
 };
 
 pub struct Ext4INode {
-    pub inode: ext4_rs::ext4_defs::Ext4Inode,
+    pub inode: ext4_rs::ext4_defs::Ext4InodeRef,
 }
 
 impl INodeOps for Ext4INode {
@@ -61,41 +64,33 @@ impl INodeOps for Ext4INode {
     }
 
     fn link(&mut self, dentry: vfs::DEntryArc, target: &vfs::INodeArc) -> VfsResult<()> {
-        let mut my_inode_ref = ext4_rs::ext4_defs::Ext4InodeRef {
-            inode: self.inode,
-            inode_num: vfs::INode::get_id(self),
-        };
-        let mut target_inode_ref = ext4_rs::ext4_defs::Ext4InodeRef {
-            inode: target
-                .downcast_ref_or_vfserr::<Ext4INode>()?
-                .data
-                .read()
-                .ops
-                .inode,
-            inode_num: target.id,
-        };
+        let mut target_wguard = target.downcast_ref_or_vfserr::<Ext4INode>()?.data.write();
+        let target_data = &mut *target_wguard;
 
-        let fs = vfs::INode::get_filesystem::<Ext4Fs>(self);
+        let fs = unsafe { extend_lifetime(vfs::INode::get_filesystem::<Ext4Fs>(self)) };
         let ext4 = &fs.ops.ext4;
 
+        let my_inode_ref = &mut self.inode;
+        let target_inode_ref = &mut target_data.ops.inode;
+
         ext4.link(
-            &mut my_inode_ref,
-            &mut target_inode_ref,
+            my_inode_ref,
+            target_inode_ref,
             dentry.data.lock().name.as_ref(),
         )?;
 
         dentry.data.lock().inode.replace(target.clone());
 
-        target.data.write().hard_links += 1;
+        target_data.hard_links += 1;
         debug_assert_eq!(
-            target.data.read().hard_links,
+            target_data.hard_links,
             target_inode_ref.inode.links_count().into()
         );
 
-        ext4.write_back_inode(&mut target_inode_ref);
+        ext4.write_back_inode(target_inode_ref);
 
         debug_assert_eq!(
-            target.data.read().hard_links,
+            target_data.hard_links,
             ext4.get_inode_ref(target.id).inode.links_count().into()
         );
 
@@ -110,40 +105,36 @@ impl INodeOps for Ext4INode {
             .as_ref()
             .ok_or(VfsError::FileNotFound)?
             .clone();
+        let target = target.downcast_ref_or_vfserr::<Ext4INode>()?;
 
-        let mut my_inode_ref = ext4_rs::ext4_defs::Ext4InodeRef {
-            inode: self.inode,
-            inode_num: vfs::INode::get_id(self),
-        };
-        let mut target_inode_ref = ext4_rs::ext4_defs::Ext4InodeRef {
-            inode_num: target.id,
-            inode: target
-                .downcast_ref_or_vfserr::<Ext4INode>()?
-                .data
-                .read()
-                .ops
-                .inode,
-        };
+        let mut target_wguard = target.data.write();
+        let target_data = &mut *target_wguard;
 
-        let fs = vfs::INode::get_filesystem::<Ext4Fs>(self);
+        let fs = unsafe { extend_lifetime(vfs::INode::get_filesystem::<Ext4Fs>(self)) };
         let ext4 = &fs.ops.ext4;
 
+        let my_inode_ref = &mut self.inode;
+        let target_inode_ref = &mut target_data.ops.inode;
+
         ext4.unlink(
-            &mut my_inode_ref,
-            &mut target_inode_ref,
+            my_inode_ref,
+            target_inode_ref,
             dentry.data.lock().name.as_ref(),
         )?;
 
-        target.data.write().hard_links -= 1;
         debug_assert_eq!(
-            target.data.read().hard_links,
+            target_data.hard_links,
             target_inode_ref.inode.links_count().into()
         );
+        target_data.hard_links -= 1;
+        target_inode_ref
+            .inode
+            .set_links_count(target_data.hard_links as u16);
 
-        ext4.write_back_inode(&mut target_inode_ref);
+        ext4.write_back_inode(target_inode_ref);
 
         debug_assert_eq!(
-            target.data.read().hard_links,
+            target_data.hard_links,
             ext4.get_inode_ref(target.id).inode.links_count().into()
         );
 
@@ -168,26 +159,16 @@ impl INodeOps for Ext4INode {
             .ok_or(VfsError::FileNotFound)?
             .clone();
 
-        let mut my_inode_ref = ext4_rs::ext4_defs::Ext4InodeRef {
-            inode: self.inode,
-            inode_num: vfs::INode::get_id(self),
-        };
-        let mut target_inode_ref = ext4_rs::ext4_defs::Ext4InodeRef {
-            inode_num: target.id,
-            inode: target
-                .downcast_ref_or_vfserr::<Ext4INode>()?
-                .data
-                .read()
-                .ops
-                .inode,
-        };
+        let mut target_wguard = target.downcast_ref_or_vfserr::<Ext4INode>()?.data.write();
+        let target_data = &mut *target_wguard;
 
-        if !target_inode_ref.inode.is_dir() {
-            return Err(VfsError::NotADirectory);
-        }
-
-        let fs = vfs::INode::get_filesystem::<Ext4Fs>(self);
+        let fs = unsafe { extend_lifetime(vfs::INode::get_filesystem::<Ext4Fs>(self)) };
         let ext4 = &fs.ops.ext4;
+
+        let my_inode_ref = &mut self.inode;
+        let target_inode_ref = &mut target_data.ops.inode;
+
+        debug_assert!(target_inode_ref.inode.is_dir(), "这是 VFS 层的任务");
 
         {
             use ext4_rs::{
@@ -234,17 +215,17 @@ impl INodeOps for Ext4INode {
             }
         }
 
-        ext4.truncate_inode(&mut target_inode_ref, 0)?;
+        ext4.truncate_inode(target_inode_ref, 0)?;
 
         ext4.unlink(
-            &mut my_inode_ref,
-            &mut target_inode_ref,
+            my_inode_ref,
+            target_inode_ref,
             dentry.data.lock().name.as_ref(),
         )?;
 
-        ext4.write_back_inode(&mut my_inode_ref);
+        ext4.write_back_inode(my_inode_ref);
 
-        debug_assert_eq!(target.data.read().hard_links, 2);
+        debug_assert_eq!(target_data.hard_links, 2);
 
         Ok(())
     }
@@ -260,7 +241,7 @@ impl INodeOps for Ext4INode {
     }
 
     fn get_kstat(&self) -> VfsResult<KstatInner> {
-        let inode = &self.inode;
+        let inode = &self.inode.inode;
 
         Ok(KstatInner {
             st_uid: inode.uid().into(),
@@ -282,12 +263,12 @@ impl INodeOps for Ext4INode {
 
 impl Ext4INode {
     pub fn new_root(fs: NonNull<vfs::FileSystem>, ext4: &ext4_rs::Ext4) -> vfs::INodeArc {
-        let inode = ext4.get_inode_ref(ROOT_INODE).inode;
+        let inode = ext4.get_inode_ref(ROOT_INODE);
 
         vfs::INode::new_raw(ROOT_INODE, fs, vfs::INodeData {
-            file_size: inode.size(),
-            hard_links: inode.links_count().into(),
-            mode: vfs::INodeMode::from_bits_truncate(inode.mode()),
+            file_size: inode.inode.size(),
+            hard_links: inode.inode.links_count().into(),
+            mode: vfs::INodeMode::from_bits_truncate(inode.inode.mode()),
             page_cache: None,
             ops: Self { inode },
         })
@@ -308,7 +289,7 @@ impl Ext4INode {
             hard_links: inode.inode.links_count().into(),
             mode,
             page_cache: None,
-            ops: Self { inode: inode.inode },
+            ops: Self { inode },
         });
 
         unsafe { PageCache::init(ret.get_mut()) };
@@ -319,12 +300,12 @@ impl Ext4INode {
     fn load_normal(fs: &vfs::FileSystem<Ext4Fs>, id: u32) -> vfs::INodeArc {
         let ext4 = &fs.ops.ext4;
 
-        let inode = ext4.get_inode_ref(id).inode;
+        let inode = ext4.get_inode_ref(id);
 
         let mut ret = vfs::INode::new(id, NonNull::from_ref(fs), vfs::INodeData {
-            file_size: inode.size(),
-            hard_links: inode.links_count().into(),
-            mode: vfs::INodeMode::from_bits_truncate(inode.mode()),
+            file_size: inode.inode.size(),
+            hard_links: inode.inode.links_count().into(),
+            mode: vfs::INodeMode::from_bits_truncate(inode.inode.mode()),
             page_cache: None,
             ops: Self { inode },
         });

@@ -489,7 +489,7 @@ impl AddressSpace {
             // 退化到自动寻址
             let length = vma.end.0 - vma.start.0;
 
-            let (index, address) = 'find_place: {
+            let address = 'find_place: {
                 const MMAP_START: VirtAddr = VirtAddr(0x8_0000_0000);
                 const MMAP_END: VirtAddr = VirtAddr(0x10_0000_0000);
 
@@ -498,15 +498,15 @@ impl AddressSpace {
 
                 let mmap_vmas = &mut self.vmas[mmap_start_idx..mmap_end_idx];
 
-                for (index, [vma_1, vma_2]) in mmap_vmas.array_windows().enumerate() {
+                for [vma_1, vma_2] in mmap_vmas.array_windows() {
                     if vma_2.start.0 - vma_1.end.0 >= length {
-                        break 'find_place (index + 1 + mmap_start_idx, vma_1.end);
+                        break 'find_place vma_1.end;
                     }
                 }
 
                 let end = mmap_vmas.last().map_or(MMAP_START, |v| v.end);
                 if end.0 + length <= MMAP_END.0 {
-                    break 'find_place (mmap_vmas.len() + mmap_start_idx, end);
+                    break 'find_place end;
                 } else {
                     return Err(());
                 }
@@ -520,7 +520,7 @@ impl AddressSpace {
                 address.0 + length
             );
 
-            self.vmas.insert(index, VirtualMemoryArea {
+            self.add_vma(VirtualMemoryArea {
                 start: address,
                 end: VirtAddr(address.0 + length),
                 ..vma

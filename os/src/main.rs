@@ -38,6 +38,9 @@
 #![feature(try_with_capacity)]
 #![feature(try_reserve_kind)]
 #![feature(pointer_is_aligned_to)]
+#![feature(concat_bytes)]
+#![feature(maybe_uninit_as_bytes)]
+#![feature(int_roundings)]
 //
 #![deny(unused_must_use)]
 
@@ -157,7 +160,7 @@ pub extern "C" fn main(_: usize, dtb: PhysAddr) -> ! {
 
     basic::timer::init_clock_freq();
 
-    filesystem::register_all();
+    filesystem::init();
 
     #[cfg(debug_assertions)]
     basic::debugger::DEBUG_CONTEXT.init();
@@ -208,9 +211,11 @@ pub extern "C" fn main(_: usize, dtb: PhysAddr) -> ! {
 
     // 初始化文件系统
     {
-        let ext4_type = filesystem::filesystems::get_filesystem_type("ext4").unwrap();
-        let tmpfs_type = filesystem::filesystems::get_filesystem_type("tmpfs").unwrap();
-        let devfs_type = filesystem::filesystems::get_filesystem_type("devfs").unwrap();
+        use filesystem::filesystems::get_filesystem_type;
+
+        let ext4_type = get_filesystem_type(ByteStr::new("ext4")).unwrap();
+        let tmpfs_type = get_filesystem_type(ByteStr::new("tmpfs")).unwrap();
+        let devfs_type = get_filesystem_type(ByteStr::new("devfs")).unwrap();
 
         // FIXME
         let block_device_1 = &*DEVICES.block[0];
@@ -259,11 +264,11 @@ pub extern "C" fn main(_: usize, dtb: PhysAddr) -> ! {
         log::info!("已将 devfs 挂载到 /dev");
         init_devs();
 
-        let sdcard_1 = get_or_create_path(&root_fs, "/sdcard");
+        let sdcard_1 = get_or_create_path(&root_fs, "/sdcd");
         let sdcard_fs = ext4_type.ops.new_fs(Some(sdcard_device));
         let sdcard_2 = sdcard_fs.root_dentry.clone();
         vfs::MountPoint::mount(sdcard_1, sdcard_fs, sdcard_2);
-        log::info!("已将 sdcard 挂载到 /sdcard");
+        log::info!("已将 sdcard 挂载到 /sdcd");
     }
 
     let zero_page_num = unsafe {
@@ -296,12 +301,7 @@ pub extern "C" fn main(_: usize, dtb: PhysAddr) -> ! {
             .open(rv.1, vfs::FileFlags::Read)
             .unwrap();
 
-    Task::execute_init(
-        multitask::SchedulePolicy::RoundRobin,
-        50,
-        file,
-        ROOT_PATH.clone(),
-    );
+    Task::execute_init(multitask::SchedulePolicy::FIFO, 50, file, ROOT_PATH.clone());
 }
 
 fn clear_bss() {

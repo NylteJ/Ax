@@ -54,7 +54,7 @@ pub extern "C" fn mmap(
     fd: isize,
     off: usize,
 ) -> SyscallResult {
-    if len % PAGE_BYTES != 0 || len == 0 {
+    if len == 0 {
         return EINVAL;
     }
 
@@ -99,7 +99,7 @@ pub extern "C" fn mmap(
         }
         let fd = fd.cast_unsigned();
 
-        let file = cur_task.files.read().get(fd).ok_or(EBADF)?.clone();
+        let file = cur_task.files.read().get(fd).ok_or(EBADF)?.0.clone();
 
         VMAType::File { file, page_index }
     };
@@ -113,7 +113,7 @@ pub extern "C" fn mmap(
         return EINVAL;
     }
     let start = VirtAddr(start).floor_to_page();
-    let end = VirtAddr(start.0 + len);
+    let end = VirtAddr(start.0 + len).ceil_to_page();
 
     let result = cur_task
         .address_space
@@ -180,12 +180,12 @@ bitflags! {
 /// ```
 pub extern "C" fn munmap(start: *mut c_void, len: usize) -> SyscallResult {
     let start = start.addr();
-    if start % PAGE_BYTES != 0 || len % PAGE_BYTES != 0 || len == 0 {
+    if start % PAGE_BYTES != 0 || len == 0 {
         return EINVAL;
     }
 
     let start = VirtAddr(start);
-    let end = VirtAddr(start.0 + len);
+    let end = VirtAddr(start.0 + len).ceil_to_page();
 
     let cur_task = unsafe { current_task().as_ref_unchecked() };
     let mut address_space = cur_task.address_space.write();
@@ -193,10 +193,9 @@ pub extern "C" fn munmap(start: *mut c_void, len: usize) -> SyscallResult {
     address_space
         .get_page_table_mut()
         .unmap(start.into(), end.into());
-    if false {
-        // FIXME（假设用户都很善良）
-        arch::NativeBasic::tlb_invalidate_all();
-    }
+
+    // TODO: 避免全量刷新
+    arch::NativeBasic::tlb_invalidate_all();
 
     SyscallResult::success(0)
 }

@@ -7,7 +7,9 @@ use crate::{
         self, NativeTrapContext,
         interfaces::{Regs, Trap as Trap2, TrapContext},
     },
-    basic::{abort_and_shutdown, stack::TaskKernelStackPtr, timer::reset_timer_interrupt},
+    basic::{
+        DropGuard, abort_and_shutdown, stack::TaskKernelStackPtr, timer::reset_timer_interrupt,
+    },
     memory::address::VirtAddr,
     multitask::{current_task, task::Task, task_scheduler::TASK_SCHEDULER},
     syscall::{self, ERRORCODE_NOSYS},
@@ -19,6 +21,17 @@ use crate::{
 
 #[unsafe(no_mangle)]
 extern "C" fn trap_handler(context: &mut NativeTrapContext) {
+    let trap_is_from_kernel = context.is_trap_from_kernel();
+
+    let current_task = unsafe { current_task().as_ref_unchecked() };
+
+    let kernel_time_updater;
+    if !trap_is_from_kernel {
+        current_task.time_stats.lock().update_user_time();
+        kernel_time_updater =
+            DropGuard::new(|| current_task.time_stats.lock().update_kernel_time());
+    }
+
     match Trap::new() {
         Trap::Exception(Exception::Syscall) => {
             use crate::syscall;
@@ -46,16 +59,14 @@ extern "C" fn trap_handler(context: &mut NativeTrapContext) {
             reset_timer_interrupt();
 
             let mut brw = TASK_SCHEDULER.lock();
-            if let Some(next_task) =
-                brw.on_time_interrupt(unsafe { current_task().as_ref_unchecked() })
-            {
+            if let Some(next_task) = brw.on_time_interrupt(current_task) {
                 drop(brw);
                 next_task.switch_to();
             }
         }
         Trap::Exception(fault) if fault.is_page_fault() => {
             // log::trace!("fault: {fault:?}, bad address: {:#x}", arch::NativeTrap::get_bad_address());
-            if context.is_trap_from_kernel() {
+            if trap_is_from_kernel {
                 let fixup = FIXUPS.iter().find_map(|(addr_range, fixup_addr)| {
                     if addr_range.contains(&context.ret_pc) {
                         Some(*fixup_addr)
@@ -94,17 +105,17 @@ extern "C" fn trap_handler(context: &mut NativeTrapContext) {
                 }
             } else {
                 if try_handle_user_page_fault(fault).is_err() {
-                    log::info!(
+                    log::error!(
                         "=====================================☆\u{fe0f}喜报☆\u{fe0f}====================================="
                     );
-                    log::info!(
+                    log::error!(
                         "用户态程序（PID = {}）发生 PageFault（{fault:?}）",
-                        unsafe { current_task().as_ref_unchecked() }.tid,
+                        current_task.tid,
                     );
                     log::info!("其试图访问：{:#x}", arch::NativeTrap::get_bad_address());
                     log::info!("对应代码所在地址：{:#x}", context.ret_pc);
                     log::debug!("寄存器信息：\n{:#?}", context.regs);
-                    log::info!(
+                    log::error!(
                         "=================================================================================="
                     );
 

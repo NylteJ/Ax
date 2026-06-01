@@ -83,6 +83,17 @@ pub fn copy_to_user(u_dest: *mut u8, k_src: &[u8]) -> Result<(), CopyError> {
     }
 }
 
+/// 从内核态地址空间逐字节拷贝 `k_src` 到用户态
+///
+/// # Safety
+/// 此函数使用逐字节复制，调用方必须保证这不会产生任何问题
+pub unsafe fn copy_one_to_user<T: ?Sized>(u_dest: *mut T, k_src: &T) -> Result<(), CopyError> {
+    let src_bytes =
+        unsafe { slice::from_raw_parts((k_src as *const T).cast(), size_of_val(k_src)) };
+
+    copy_to_user(u_dest.cast(), src_bytes)
+}
+
 /// 从用户态地址空间复制空终止字符串到 k_buf，最多复制 k_buf.len() 字节，成功时返回复制完成部分的缓冲区。复制和返回值都不包含空字符。
 ///
 /// # Safety

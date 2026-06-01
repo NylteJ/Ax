@@ -43,7 +43,7 @@ impl FileSystemTypeOps for Ext4FsType {
 
 pub fn register() {
     register_filesystem_type(Box::new(FileSystemType {
-        name: "ext4",
+        name: ByteStr::new("ext4"),
         ops: Ext4FsType,
     }));
 }

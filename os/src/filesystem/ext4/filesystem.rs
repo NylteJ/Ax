@@ -29,15 +29,14 @@ impl FileSystemOps for Ext4Fs {
         let ino_data_rguard = inode.data.read();
         let file_size = ino_data_rguard.file_size;
 
-        let mut inode_ref = ext4_rs::ext4_defs::Ext4InodeRef {
-            inode_num: inode.id,
-            inode: unsafe {
-                (&raw const ino_data_rguard.ops)
-                    .cast::<Ext4INode>()
-                    .as_ref_unchecked()
-            }
-            .inode,
-        };
+        // FIXME: 是否当真不需要写回？
+        let mut inode_ref = unsafe {
+            (&raw const ino_data_rguard.ops)
+                .cast::<Ext4INode>()
+                .as_ref_unchecked()
+        }
+        .inode
+        .clone();
 
         drop(ino_data_rguard);
 
@@ -61,15 +60,14 @@ impl FileSystemOps for Ext4Fs {
 
         let ino_data_rguard = inode.data.read();
 
-        let mut inode_ref = ext4_rs::ext4_defs::Ext4InodeRef {
-            inode_num: inode.id,
-            inode: unsafe {
-                (&raw const ino_data_rguard.ops)
-                    .cast::<Ext4INode>()
-                    .as_ref_unchecked()
-            }
-            .inode,
-        };
+        // FIXME: 同上
+        let mut inode_ref = unsafe {
+            (&raw const ino_data_rguard.ops)
+                .cast::<Ext4INode>()
+                .as_ref_unchecked()
+        }
+        .inode
+        .clone();
 
         drop(ino_data_rguard);
 

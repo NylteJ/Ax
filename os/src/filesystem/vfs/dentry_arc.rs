@@ -9,7 +9,7 @@ use crate::filesystem::vfs::{
 
 #[derive(Debug)]
 pub struct DEntryArc {
-    pub(self) ptr: NonNull<DEntry>,
+    ptr: NonNull<DEntry>,
 }
 
 impl DEntryArc {

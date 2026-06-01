@@ -24,6 +24,12 @@ pub enum VfsError {
     OutOfRange,
     /// 未找到对应设备
     DeviceNotFound,
+    /// 试图在管道或套接字上调用其不支持的操作
+    IsPipeOrSocket,
+    /// 试图在管道的读端写，或在写端读
+    BadPipeEnd,
+    /// 试图写入的管道的另一端已关闭
+    BrokenPipe,
     /// 用户态程序输入了错误的指针
     InvalidUserPointer(uaccess::CopyError),
     /// 目标对象支持该操作，但输入参数无效（如果其它更具体的类型能满足要求，请使用其他类型）
