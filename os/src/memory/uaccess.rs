@@ -15,6 +15,16 @@ pub enum CopyError {
     UserPointerNotInUserSpace,
     BadAccess,
     TooLong,
+    OutOfMemory,
+}
+
+impl From<alloc::collections::TryReserveError> for CopyError {
+    fn from(value: alloc::collections::TryReserveError) -> Self {
+        match value.kind() {
+            alloc::collections::TryReserveErrorKind::CapacityOverflow => CopyError::TooLong,
+            alloc::collections::TryReserveErrorKind::AllocError { .. } => CopyError::OutOfMemory,
+        }
+    }
 }
 
 /// 从用户态地址空间复制数据到内核态，总是填满 k_dest
@@ -84,14 +94,47 @@ pub fn copy_to_user(u_dest: *mut u8, k_src: &[u8]) -> Result<(), CopyError> {
 }
 
 /// 从内核态地址空间逐字节拷贝 `k_src` 到用户态
-///
-/// # Safety
-/// 此函数使用逐字节复制，调用方必须保证这不会产生任何问题
-pub unsafe fn copy_one_to_user<T: ?Sized>(u_dest: *mut T, k_src: &T) -> Result<(), CopyError> {
+pub fn copy_one_to_user<T: ?Sized + Copy>(u_dest: *mut T, k_src: &T) -> Result<(), CopyError> {
     let src_bytes =
         unsafe { slice::from_raw_parts((k_src as *const T).cast(), size_of_val(k_src)) };
 
     copy_to_user(u_dest.cast(), src_bytes)
+}
+pub fn copy_slice_to_user<T: Copy>(u_dest: *mut T, k_src: &[T]) -> Result<(), CopyError> {
+    let src_bytes = unsafe { slice::from_raw_parts(k_src.as_ptr().cast(), size_of_val(k_src)) };
+
+    copy_to_user(u_dest.cast(), src_bytes)
+}
+/// 从用户态地址空间逐字节拷贝数据到内核态返回
+pub fn copy_one_from_user<T: Copy>(u_src: *const T) -> Result<T, CopyError> {
+    let mut ret = MaybeUninit::uninit();
+    copy_from_user_uninit(ret.as_bytes_mut(), u_src.cast())?;
+    Ok(unsafe { ret.assume_init() })
+}
+pub fn copy_slice_from_user<T: Copy>(
+    u_src: *const T,
+    k_dest: &mut [MaybeUninit<T>],
+) -> Result<&mut [T], CopyError> {
+    let elem_count = k_dest.len();
+
+    let k_dest_bytes = unsafe {
+        slice::from_raw_parts_mut(
+            k_dest.as_mut_ptr() as *mut MaybeUninit<u8>,
+            size_of_val(k_dest),
+        )
+    };
+
+    let result_bytes = copy_from_user_uninit(k_dest_bytes, u_src.cast())?;
+
+    Ok(unsafe { slice::from_raw_parts_mut(result_bytes.as_mut_ptr().cast(), elem_count) })
+}
+pub fn copy_vec_from_user<T: Copy>(u_src: *const [T]) -> Result<Vec<T>, CopyError> {
+    let mut ret = Vec::<T>::try_with_capacity(u_src.len())?;
+
+    copy_slice_from_user(u_src.as_ptr(), &mut ret.spare_capacity_mut()[..u_src.len()])?;
+    unsafe { ret.set_len(u_src.len()) };
+
+    Ok(ret)
 }
 
 /// 从用户态地址空间复制空终止字符串到 k_buf，最多复制 k_buf.len() 字节，成功时返回复制完成部分的缓冲区。复制和返回值都不包含空字符。
@@ -158,7 +201,7 @@ pub fn copy_str_from_user(
             return Err(CopyError::TooLong);
         }
 
-        buffer.reserve(length_hint);
+        buffer.try_reserve(length_hint)?;
         let len = copy_str_from_user_raw_uninit(u_src, buffer.spare_capacity_mut())?.len();
 
         unsafe { buffer.set_len(len + buffer.len()) };

@@ -78,7 +78,7 @@ impl interfaces::Basic for Basic {
         unsafe { asm!("csrrd {0}, 0x0", out(reg) prmd) }; // CRMD
         prmd.set_bits(0..2, 3);
         prmd.set_bit(2, true);
-        unsafe { asm!("csrwr {0}, 0x1", in(reg) prmd) };
+        unsafe { asm!("csrwr {0}, 0x1", inlateout(reg) prmd => _) };
 
         unsafe {
             asm!(

@@ -12,7 +12,11 @@ use uninit::extension_traits::MaybeUninitExt;
 use crate::{
     basic::{bstr::ByteString, extend_lifetime, sync::Mutex},
     filesystem::vfs::{INode, INodeDirtyState, Path, VfsError, VfsResult},
-    memory::PAGE_BYTES,
+    memory::{
+        PAGE_BYTES,
+        uaccess::{copy_from_user_uninit, copy_to_user},
+    },
+    syscall::filesystem::IoctlCommand,
 };
 
 /// 描述打开的文件，也许类似句柄的概念？
@@ -30,10 +34,11 @@ pub struct FileData<T: ?Sized + FileOps = dyn FileOps> {
     pub flags: FileFlags,
     pub pos: u64,
 
-    pub ops: T,
+    ops: T,
 }
 
 bitflags! {
+    #[derive(Clone, Copy)]
     pub struct FileFlags: u8 {
         const Read = 1 << 0;
         const Write = 1 << 1;
@@ -45,11 +50,42 @@ pub trait FileOps: Send + Sync {
     /// 从文件的当前位置开始读取最多 `len` 字节的数据到用户空间地址 `user_buf` 中。
     ///
     /// 返回成功读取的字节数，若用户提供的缓冲区无效则返回 Err（即便已经读取了部分字节）。
-    fn read(&mut self, user_buf: *mut u8, len: u64) -> VfsResult<u64>;
+    fn read(&mut self, mut user_buf: *mut u8, len: u64) -> VfsResult<u64> {
+        self.kread(
+            &mut |data| {
+                copy_to_user(user_buf, data)?;
+                user_buf = unsafe { user_buf.add(data.len()) };
+                Ok(data.len() as u64)
+            },
+            len,
+        )
+    }
     /// 从文件的当前位置开始写入 `len` 字节的来自用户的数据。
     ///
     /// 返回成功写入的字节数，若用户提供的缓冲区无效则返回 Err（即便已经写入了部分字节）。
-    fn write(&mut self, user_data: *const u8, len: u64) -> VfsResult<u64>;
+    fn write(&mut self, mut user_data: *const u8, len: u64) -> VfsResult<u64> {
+        self.kwrite(
+            &mut |buf| {
+                copy_from_user_uninit(buf, user_data)?;
+                user_data = unsafe { user_data.add(buf.len()) };
+                Ok(buf.len() as u64)
+            },
+            len,
+        )
+    }
+
+    /// 从文件的当前位置开始读取最多 `len` 字节的数据，数据会被传入 `visitor` 中。返回成功读取的字节数。
+    fn kread(
+        &mut self,
+        visitor: &mut dyn FnMut(&[u8]) -> VfsResult<u64>,
+        len: u64,
+    ) -> VfsResult<u64>;
+    /// 从文件的当前位置开始写入最多 `len` 字节的数据，数据会通过 `visitor` 获取。返回成功写入的字节数。
+    fn kwrite(
+        &mut self,
+        visitor: &mut dyn FnMut(&mut [MaybeUninit<u8>]) -> VfsResult<u64>,
+        len: u64,
+    ) -> VfsResult<u64>;
 
     /// 根据 `seek_from` 移动文件的当前位置。返回修改后的当前位置。
     fn fseek(&mut self, seek_from: SeekFrom) -> VfsResult<u64>;
@@ -60,12 +96,60 @@ pub trait FileOps: Send + Sync {
     ///
     /// 你可能更希望调用 `INodeData::iterate_dir`。
     fn get_dir(&self, pos: u64) -> VfsResult<Option<IterateDirData>>;
+
+    fn poll(&self) -> VfsResult<PollStatus>;
+
+    fn ioctl(&mut self, cmd: IoctlCommand, arg: *mut ()) -> VfsResult<usize> {
+        Err(VfsError::OperationNotSupported)
+    }
 }
 
 pub enum SeekFrom {
     Start(u64),
     Current(i64),
     End(i64),
+}
+
+bitflags! {
+    #[derive(Debug, Clone, Copy)]
+    pub struct PollStatus: i16 {
+        /// 有数据可读
+        const POLLIN = 1 << 0;
+        /// 有紧急数据可读（例如，TCP socket 上的带外数据；处于数据包模式的伪终端主设备侧从设备侧状态发生变化）
+        const POLLPRI = 1 << 1;
+        /// 现在写入不会阻塞
+        const POLLOUT = 1 << 2;
+        /// 错误条件（仅输出）
+        const POLLERR = 1 << 3;
+        /// 挂起（仅输出）
+        const POLLHUP = 1 << 4;
+        /// 无效请求：fd 未打开（仅输出）
+        const POLLNVAL = 1 << 5;
+        /// 等同于 POLLIN
+        const POLLRDNORM = 1 << 6;
+        /// 可读取优先级带数据（在 Linux 上通常未使用）
+        const POLLRDBAND = 1 << 7;
+        /// 等同于 POLLOUT
+        const POLLWRNORM = 1 << 8;
+        /// 可写入优先级数据
+        const POLLWRBAND = 1 << 9;
+        /// 不使用
+        const POLLMSG = 1 << 10;
+        /// 流式 socket 的对端关闭了连接，或关闭了连接写入那一半。
+        ///
+        /// Linux 扩展。
+        const POLLRDHUP = 1 << 12;
+
+        const Readable = Self::POLLIN.bits() | Self::POLLRDNORM.bits();
+        const Writable = Self::POLLOUT.bits() | Self::POLLWRNORM.bits();
+    }
+}
+
+impl PollStatus {
+    /// 通常文件的可读可写状态（可读、可写，没有紧急数据）
+    pub fn regular_io_ready() -> Self {
+        Self::Readable | Self::Writable
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -118,7 +202,7 @@ impl<T: FileOps + 'static> File<T> {
     }
 }
 
-pub type FileArc = Pin<Arc<File>>;
+pub type FileArc<T = dyn FileOps> = Pin<Arc<File<T>>>;
 
 impl<T: ?Sized + FileOps> FileData<T> {
     /// 从当前目录当前位置开始读取数据到内核态缓冲区 `k_buffer_uninit` 中，返回读取完毕部分的 slice 以及条目数。
@@ -220,7 +304,30 @@ impl<T: ?Sized + FileOps> FileData<T> {
     /// 返回成功写入的字节数，若用户提供的缓冲区无效则返回 Err（即便已经写入了部分字节）。
     pub fn write(&mut self, user_data: *const u8, len: u64) -> VfsResult<u64> {
         let ret = self.ops.write(user_data, len)?;
+        self.mark_inode_dirty();
+        Ok(ret)
+    }
 
+    /// 从文件的当前位置开始读取最多 `len` 字节的数据，数据会被传入 `visitor` 中。返回成功读取的字节数。
+    pub fn kread(
+        &mut self,
+        mut visitor: impl FnMut(&[u8]) -> VfsResult<u64>,
+        len: u64,
+    ) -> VfsResult<u64> {
+        self.ops.kread(&mut visitor, len)
+    }
+    /// 从文件的当前位置开始写入最多 `len` 字节的数据，数据会通过 `visitor` 获取。返回成功写入的字节数。
+    pub fn kwrite(
+        &mut self,
+        mut visitor: impl FnMut(&mut [MaybeUninit<u8>]) -> VfsResult<u64>,
+        len: u64,
+    ) -> VfsResult<u64> {
+        let ret = self.ops.kwrite(&mut visitor, len)?;
+        self.mark_inode_dirty();
+        Ok(ret)
+    }
+
+    fn mark_inode_dirty(&self) {
         let inode = self.path.0.data.lock().inode.as_ref().unwrap().clone();
         let prev = inode
             .dirty_state
@@ -240,8 +347,22 @@ impl<T: ?Sized + FileOps> FileData<T> {
                 inode.addr()
             );
         }
+    }
 
-        Ok(ret)
+    pub fn fseek(&mut self, seek_from: SeekFrom) -> VfsResult<u64> {
+        self.ops.fseek(seek_from)
+    }
+
+    pub fn fsync(&mut self) -> VfsResult<()> {
+        self.ops.fsync()
+    }
+
+    pub fn poll(&self) -> VfsResult<PollStatus> {
+        self.ops.poll()
+    }
+
+    pub fn ioctl(&mut self, cmd: IoctlCommand, arg: *mut ()) -> VfsResult<usize> {
+        self.ops.ioctl(cmd, arg)
     }
 }
 
@@ -266,7 +387,10 @@ pub fn default_fseek<T: FileOps + 'static>(this: &mut T, seek_from: SeekFrom) ->
 }
 
 impl File {
-    pub unsafe fn kernel_read_page(inode: &INode, page_index: u64) -> VfsResult<&[u8]> {
+    /// 获取文件指定页偏移处的页缓存页，注意文件末尾页可能只有前半截
+    ///
+    /// 若对应页暂不位于页缓存中，则从文件中读取，过程中可能发生 I/O
+    pub unsafe fn get_page_cache(inode: &INode, page_index: u64) -> VfsResult<&[u8]> {
         let inode_data_rguard = inode.data.read();
         let page_cache = inode_data_rguard
             .page_cache
@@ -295,6 +419,15 @@ impl File {
         };
 
         Ok(unsafe { extend_lifetime(page.visit_memory()[..bytes].assume_init_by_ref()) })
+    }
+
+    pub fn mark_page_cache_dirty(inode: &INode, page_index: u64) {
+        let inode_data_rguard = inode.data.read();
+        let page_cache = inode_data_rguard.page_cache.as_ref().expect("必须有页缓存");
+
+        let page = page_cache.get(page_index).expect("必须有对应页");
+
+        unsafe { page.pagecache_mark_dirty(page_cache) };
     }
 }
 

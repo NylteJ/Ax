@@ -125,6 +125,22 @@ extern "C" fn trap_handler(context: &mut NativeTrapContext) {
                 }
             }
         }
+
+        #[cfg(target_arch = "loongarch64")]
+        Trap::Exception(Exception::FloatingPointUnavailable) => {
+            log::warn!(
+                "当前任务（TID = {}）使用了浮点指令。目前我们的内核未使用浮点，因此暂时无需额外处理，只是未来扩展时需要注意（以及，目前此提示实际上只会触发一次，因为 EUEN 并不会被保存）",
+                current_task.tid
+            );
+
+            use bit_field::BitField;
+
+            let mut euen: usize;
+            unsafe { asm!("csrrd {0}, 0x2", out(reg) euen) };
+            euen.set_bit(0, true);
+            unsafe { asm!("csrwr {0}, 0x2", inlateout(reg) euen => _) };
+        }
+
         other => {
             print_trap_context(context);
             todo!("TRAP: {other:?}");

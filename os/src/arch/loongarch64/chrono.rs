@@ -44,11 +44,13 @@ impl interfaces::Chrono for Chrono {
         tcfg.set_bit(1, true); // 周期性
         tcfg.set_bits(2.., after >> 2); // 定时器初始值
 
-        unsafe { asm!("csrwr {0}, 0x41", in(reg) tcfg) };
+        unsafe { asm!("csrwr {0}, 0x41", inlateout(reg) tcfg => _) };
     }
 
     fn reset_timer_interrupt(_interrupt_per_sec: usize) {
         // 这里要手动清除时钟中断标志，但不需要设置下一个触发时间，因为我们使用的是周期模式
-        unsafe { asm!("csrwr {0} , 0x44", in(reg) 1, options(nostack, nomem, preserves_flags)) };
+        unsafe {
+            asm!("csrwr {0} , 0x44", inlateout(reg) 1 => _, options(nostack, nomem, preserves_flags))
+        };
     }
 }

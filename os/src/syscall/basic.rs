@@ -66,6 +66,7 @@ pub extern "C" fn yield_() -> isize {
 }
 
 #[repr(C)]
+#[derive(Clone, Copy)]
 pub struct Tms {
     tms_utime: usize,
     tms_stime: usize,
@@ -94,7 +95,7 @@ pub extern "C" fn times(tms: *mut Tms) -> SyscallResult {
             }
         };
 
-        unsafe { copy_one_to_user(tms, &tms_data) }?;
+        copy_one_to_user(tms, &tms_data)?;
     }
 
     SyscallResult::success(get_cpu_tick())

@@ -41,6 +41,7 @@
 #![feature(concat_bytes)]
 #![feature(maybe_uninit_as_bytes)]
 #![feature(int_roundings)]
+#![feature(slice_ptr_get)]
 //
 #![deny(unused_must_use)]
 
@@ -114,7 +115,7 @@ pub extern "C" fn main(_: usize, dtb: PhysAddr) -> ! {
         unsafe {
             asm!(
                 "csrwr {page_shift}, {STLBPS}",
-                page_shift = in(reg) PAGE_SHIFTS[0],
+                page_shift = inlateout(reg) PAGE_SHIFTS[0] => _,
                 STLBPS = const 0x1e,
             );
         }
@@ -122,7 +123,7 @@ pub extern "C" fn main(_: usize, dtb: PhysAddr) -> ! {
         unsafe {
             asm!(
                 "csrwr {page_shift}, {TLBREHI}",
-                page_shift = in(reg) PAGE_SHIFTS[0],
+                page_shift = inlateout(reg) PAGE_SHIFTS[0] => _,
                 TLBREHI = const 0x8e,
             );
         }
@@ -146,8 +147,8 @@ pub extern "C" fn main(_: usize, dtb: PhysAddr) -> ! {
                 asm!(
                     "csrwr {pwcl}, {PWCL}",
                     "csrwr {pwch}, {PWCH}",
-                    pwcl = in(reg) pwcl,
-                    pwch = in(reg) pwch,
+                    pwcl = inlateout(reg) pwcl => _,
+                    pwch = inlateout(reg) pwch => _,
                     PWCL = const 0x1c,
                     PWCH = const 0x1d,
                 );

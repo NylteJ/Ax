@@ -27,6 +27,7 @@ use crate::{
     },
     syscall::{
         self, SyscallResult,
+        common_types::TimeSpec,
         filesystem::{PATH_LEN_HINT, PATH_LEN_MAX},
     },
 };
@@ -428,13 +429,6 @@ pub extern "C" fn getpid() -> usize {
 pub extern "C" fn gettid() -> usize {
     let task = unsafe { current_task().as_ref_unchecked() };
     task.tid
-}
-
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct TimeSpec {
-    tv_sec: i64,
-    tv_nsec: c_long,
 }
 
 /// * 功能：执行线程睡眠，sleep()库函数基于此系统调用；

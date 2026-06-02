@@ -1,23 +1,27 @@
-use core::{mem::MaybeUninit, sync::atomic::Ordering};
+use core::mem::MaybeUninit;
 
-use intrusive_collections::UnsafeRef;
-
-use crate::{
-    filesystem::vfs::{PageCache, VfsResult},
-    memory::page_meta::PageFlags,
-};
+use crate::filesystem::vfs::{PageCache, VfsResult};
 
 pub enum FileIoPgCacheMissResult {
     Retry,
     Break,
 }
 
+/// 处理文件 I/O 的通用部分逻辑。返回已处理的字节数，保证 pos 只在成功时更新，且更新量等于返回值。
+///
+/// - 对于存在于页缓存中的页，它会计算对应的切片并直接调用 `op` 进行处理；
+///   - 若 `op` 返回的实际处理字节数不等于切片长度，则停止处理并返回已处理的字节数。
+/// - 对于不位于页缓存中的页，它会调用 `when_pgcache_miss` 来试图读取页缓存
+///   - 若其返回 [`Retry`][`FileIoPgCacheMissResult::Retry`] 则重新试图查找页缓存
+///   - 若其返回 [`Break`][`FileIoPgCacheMissResult::Break`] 则停止处理并返回已处理的字节数。
+///
+/// 无论如何，失败（返回 `VfsError`）时，尽管已经发生的操作无法撤销，pos 不会改变。
 pub fn file_io_common(
     write: bool,
     pos: &mut u64,
     page_cache: &PageCache,
     len: u64,
-    mut op: impl FnMut(&mut [MaybeUninit<u8>]) -> VfsResult<()>,
+    mut op: impl FnMut(&mut [MaybeUninit<u8>]) -> VfsResult<u64>,
     mut when_pgcache_miss: impl FnMut(&PageCache, u64) -> VfsResult<FileIoPgCacheMissResult>,
 ) -> VfsResult<u64> {
     let ret = 'do_op_and_get_ret: {
@@ -28,6 +32,14 @@ pub fn file_io_common(
         let first_page_index = pos / PAGE_BYTES;
         let last_page_index = (pos + len).div_ceil(PAGE_BYTES);
 
+        let bytes_before_page = |page_index: u64| {
+            if page_index == first_page_index {
+                0
+            } else {
+                (page_index - first_page_index) * PAGE_BYTES - pos % PAGE_BYTES
+            }
+        };
+
         for page_index in first_page_index..last_page_index {
             let page = loop {
                 if let Some(page) = page_cache.get(page_index) {
@@ -37,13 +49,7 @@ pub fn file_io_common(
                 match when_pgcache_miss(page_cache, page_index)? {
                     FileIoPgCacheMissResult::Retry => (),
                     FileIoPgCacheMissResult::Break => {
-                        if page_index == first_page_index {
-                            break 'do_op_and_get_ret 0;
-                        } else {
-                            let bytes =
-                                (page_index - first_page_index) * PAGE_BYTES - pos % PAGE_BYTES;
-                            break 'do_op_and_get_ret bytes;
-                        }
+                        break 'do_op_and_get_ret bytes_before_page(page_index);
                     }
                 }
             };
@@ -61,24 +67,14 @@ pub fn file_io_common(
                 PAGE_BYTES
             };
 
-            op(unsafe { page.visit_memory_mut_off(from as usize, to as usize) })?;
+            let actual = op(unsafe { page.visit_memory_mut_off(from as usize, to as usize) })?;
 
-            if write {
-                let old_flags = page
-                    .flags
-                    .fetch_or(PageFlags::Dirty.bits(), Ordering::Acquire);
-                let old_flags = PageFlags::from_bits_retain(old_flags);
-                if !old_flags.intersects(PageFlags::Dirty | PageFlags::WritingBack) {
-                    log::trace!(
-                        "INode {:#x} Page {page_index} become Dirty",
-                        page_cache.inode.addr()
-                    );
-                    page_cache
-                        .data
-                        .write()
-                        .dirty_sent
-                        .push_front(unsafe { UnsafeRef::from_raw(page) });
-                }
+            if actual > 0 && write {
+                unsafe { page.pagecache_mark_dirty(page_cache) };
+            }
+
+            if actual != to - from {
+                break 'do_op_and_get_ret bytes_before_page(page_index) + actual;
             }
         }
 

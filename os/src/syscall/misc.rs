@@ -37,7 +37,7 @@ pub extern "C" fn gettimeofday(tv: *mut TimeVal, tz: usize) -> SyscallResult {
             usec: us % 1_000_000,
         };
 
-        unsafe { copy_one_to_user(tv, &time_val) }?;
+        copy_one_to_user(tv, &time_val)?;
     }
 
     SyscallResult::success(0)

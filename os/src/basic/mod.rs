@@ -19,7 +19,7 @@ pub unsafe fn extend_lifetime<'a, T: ?Sized>(rf: &'_ T) -> &'a T {
 }
 
 /// 强行延长所给引用的生命周期，比 transmute 更安全，比手动转换更清晰
-pub unsafe fn extend_lifetime_mut<'a, T: ?Sized>(rf: &'_ mut T) -> &'a mut T {
+pub unsafe fn extend_lifetime_mut<'a, 'b, T: ?Sized>(rf: &'_ mut T) -> &'a mut T {
     unsafe { core::ptr::NonNull::from_mut(rf).as_mut() }
 }
 

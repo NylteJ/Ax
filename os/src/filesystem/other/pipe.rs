@@ -1,4 +1,5 @@
 use core::{
+    mem::MaybeUninit,
     pin::Pin,
     ptr::NonNull,
     sync::atomic::{AtomicU32, Ordering},
@@ -21,7 +22,6 @@ use crate::{
         get_new_anon_block_device_id,
         vfs::{self, VfsError, VfsResult},
     },
-    memory::uaccess::{copy_from_user_uninit, copy_to_user},
 };
 
 const BUFFER_BYTES: usize = 4096;
@@ -41,7 +41,11 @@ unsafe impl Send for PipeFile {}
 unsafe impl Sync for PipeFile {}
 
 impl vfs::FileOps for PipeFile {
-    fn read(&mut self, user_buf: *mut u8, len: u64) -> VfsResult<u64> {
+    fn kread(
+        &mut self,
+        visitor: &mut dyn FnMut(&[u8]) -> VfsResult<u64>,
+        len: u64,
+    ) -> VfsResult<u64> {
         let Self::Reader(reader) = self else {
             return Err(VfsError::BadPipeEnd);
         };
@@ -56,39 +60,54 @@ impl vfs::FileOps for PipeFile {
         let (first_slice, second_slice) = reader.occupied_slices();
 
         let first_count = (len as usize).min(first_slice.len());
-        let second_count = (len as usize - first_count).min(second_slice.len());
-        let full_count = first_count + second_count;
-
         let first_src = unsafe { first_slice[..first_count].assume_init_by_ref() };
-        let second_src = unsafe { second_slice[..second_count].assume_init_by_ref() };
+        let first_actual = visitor(first_src)?;
 
-        copy_to_user(user_buf, first_src)?;
-        copy_to_user(unsafe { user_buf.add(first_count) }, second_src)?;
+        let second_actual = if first_actual == first_count as u64 {
+            let second_count = (len as usize - first_count).min(second_slice.len());
+            let second_src = unsafe { second_slice[..second_count].assume_init_by_ref() };
+            visitor(second_src)?
+        } else {
+            0
+        };
+
+        let full_count = first_actual + second_actual;
 
         // 由于存储的类型是字节，这里直接削减长度即可
         static_assertions::assert_not_impl_any!(u8: Drop);
-        unsafe { reader.advance_read_index(full_count) };
+        unsafe { reader.advance_read_index(full_count as usize) };
 
         debug_assert_ne!(full_count, 0);
-        Ok(full_count as u64)
+        Ok(full_count)
     }
 
-    fn write(&mut self, mut user_data: *const u8, len: u64) -> VfsResult<u64> {
+    fn kwrite(
+        &mut self,
+        visitor: &mut dyn FnMut(&mut [MaybeUninit<u8>]) -> VfsResult<u64>,
+        len: u64,
+    ) -> VfsResult<u64> {
         let Self::Writer(writer) = self else {
             return Err(VfsError::BadPipeEnd);
         };
 
-        if !writer.read_is_held() {
-            log::error!("TODO: SIGPIPE");
-            return Err(VfsError::BrokenPipe);
+        fn check_pipe_alive(writer: &Producer) -> VfsResult<()> {
+            if !writer.read_is_held() {
+                log::error!("TODO: SIGPIPE");
+                Err(VfsError::BrokenPipe)
+            } else {
+                Ok(())
+            }
         }
 
-        let bytes = len;
+        check_pipe_alive(writer)?;
+
+        let len_required = len;
         let mut len = len as usize;
 
         let atomic = len <= BUFFER_BYTES;
         if atomic {
             while writer.vacant_len() < len {
+                check_pipe_alive(writer)?;
                 crate::syscall::basic::yield_(); // 假装睡眠
             }
         }
@@ -97,28 +116,32 @@ impl vfs::FileOps for PipeFile {
             let (first_slice, second_slice) = writer.vacant_slices_mut();
 
             let first_count = len.min(first_slice.len());
-            let second_count = (len - first_count).min(second_slice.len());
-            let full_count = first_count + second_count;
+            let first_actual = visitor(&mut first_slice[..first_count])?;
 
-            copy_from_user_uninit(&mut first_slice[..first_count], user_data)?;
-            user_data = unsafe { user_data.add(first_count) };
-            copy_from_user_uninit(&mut second_slice[..second_count], user_data)?;
-            user_data = unsafe { user_data.add(second_count) };
+            let second_count = (len - first_count).min(second_slice.len());
+            let second_actual = if first_actual == first_count as u64 {
+                visitor(&mut second_slice[..second_count])?
+            } else {
+                0
+            };
+
+            let full_count = (first_actual + second_actual) as usize;
 
             unsafe { writer.advance_write_index(full_count) };
             len -= full_count;
 
-            if len == 0 {
+            if len == 0 || second_actual != second_count as u64 || second_count == 0 {
                 break;
             }
 
             debug_assert!(!atomic);
             while writer.vacant_len() == 0 {
+                check_pipe_alive(writer)?;
                 crate::syscall::basic::yield_(); // 假装睡眠
             }
         }
 
-        Ok(bytes)
+        Ok(len_required - len as u64)
     }
 
     fn fseek(&mut self, _seek_from: vfs::SeekFrom) -> VfsResult<u64> {
@@ -131,6 +154,45 @@ impl vfs::FileOps for PipeFile {
 
     fn get_dir(&self, _pos: u64) -> VfsResult<Option<vfs::IterateDirData>> {
         Err(VfsError::NotADirectory)
+    }
+
+    fn poll(&self) -> VfsResult<vfs::PollStatus> {
+        fn poll_impl(observer: &impl Observer) -> vfs::PollStatus {
+            // TODO: 注意，我们自己实现了 Send 和 Sync，但此处只接收不可变引用，因此我们必须自行保证不发生并发访问
+            let mut ret = vfs::PollStatus::empty();
+
+            let vacant_len = observer.vacant_len();
+
+            if vacant_len != 0 {
+                ret |= vfs::PollStatus::Writable;
+            }
+
+            debug_assert_eq!(BUFFER_BYTES, observer.capacity().get());
+            if vacant_len != BUFFER_BYTES {
+                ret |= vfs::PollStatus::Readable;
+            }
+
+            ret
+        }
+
+        Ok(match self {
+            PipeFile::Reader(reader) => {
+                let base = if reader.write_is_held() {
+                    vfs::PollStatus::empty()
+                } else {
+                    vfs::PollStatus::POLLHUP
+                };
+                base | poll_impl(reader)
+            }
+            PipeFile::Writer(writer) => {
+                let base = if writer.read_is_held() {
+                    vfs::PollStatus::empty()
+                } else {
+                    vfs::PollStatus::POLLERR
+                };
+                base | poll_impl(writer)
+            }
+        })
     }
 }
 
@@ -149,7 +211,7 @@ impl PipeFile {
             vfs::INodeData {
                 file_size: 0,
                 hard_links: 0,
-                mode: vfs::INodeMode::all_permitted(),
+                mode: vfs::INodeMode::all_permitted() | vfs::INodeMode::Pipe,
                 page_cache: None,
                 ops: PipeINode,
             },

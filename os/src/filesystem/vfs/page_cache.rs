@@ -82,7 +82,6 @@ impl PageCache {
         );
 
         let page_type = PageType::File {
-            page_cache: NonNull::from_ref(self),
             page_index,
             dirty: LinkedListLink::new(),
         };

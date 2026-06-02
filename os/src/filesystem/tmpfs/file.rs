@@ -1,20 +1,21 @@
-use core::any::Any;
+use core::{any::Any, mem::MaybeUninit};
 
 use uninit::extension_traits::MaybeUninitExt;
 
-use crate::{
-    filesystem::{
-        tmpfs::{INodeType, TmpFsINode},
-        utils::{FileIoPgCacheMissResult, file_io_common},
-        vfs::{self, FileFlags, IterateDirData, VfsError, VfsResult, default_fseek},
-    },
-    memory::uaccess::{copy_from_user_uninit, copy_to_user},
+use crate::filesystem::{
+    tmpfs::{INodeType, TmpFsINode},
+    utils::{FileIoPgCacheMissResult, file_io_common},
+    vfs::{self, FileFlags, IterateDirData, VfsError, VfsResult, default_fseek},
 };
 
 pub struct TmpFsFile {}
 
 impl vfs::FileOps for TmpFsFile {
-    fn read(&mut self, mut user_buf: *mut u8, len: u64) -> VfsResult<u64> {
+    fn kread(
+        &mut self,
+        visitor: &mut dyn FnMut(&[u8]) -> VfsResult<u64>,
+        len: u64,
+    ) -> VfsResult<u64> {
         let this = vfs::File::<Self>::from_dyn_mut(self);
         let inode_read_guard = unsafe { this.inode.as_ref() }.data.read();
         let pos = &mut this.data.get_mut().pos;
@@ -23,19 +24,21 @@ impl vfs::FileOps for TmpFsFile {
             pos,
             inode_read_guard.page_cache.as_ref().unwrap(),
             len.min(inode_read_guard.file_size - *pos),
-            |buf| {
-                let k_src = unsafe { buf.assume_init_by_ref() };
-                copy_to_user(user_buf, k_src)?;
-                user_buf = unsafe { user_buf.add(buf.len()) };
-                Ok(())
-            },
+            |buf| visitor(unsafe { buf.assume_init_by_ref() }),
             |_, _| Ok(FileIoPgCacheMissResult::Break),
         )
     }
 
-    fn write(&mut self, mut user_data: *const u8, len: u64) -> VfsResult<u64> {
+    fn kwrite(
+        &mut self,
+        visitor: &mut dyn FnMut(&mut [MaybeUninit<u8>]) -> VfsResult<u64>,
+        len: u64,
+    ) -> VfsResult<u64> {
         let this = vfs::File::<Self>::from_dyn_mut(self);
-        let mut inode_write_guard = unsafe { this.inode.as_ref() }.data.write();
+        debug_assert!((&this.get_inode().data.read().ops as &dyn Any).is::<TmpFsINode>());
+        let inode = unsafe { this.inode.cast::<vfs::INode<TmpFsINode>>().as_ref() };
+
+        let mut inode_write_guard = inode.data.write();
 
         let this_data_mut = this.data.get_mut();
         let pos = &mut this_data_mut.pos;
@@ -51,18 +54,16 @@ impl vfs::FileOps for TmpFsFile {
             pos,
             inode_write_guard.page_cache.as_ref().unwrap(),
             len,
-            |buf| {
-                copy_from_user_uninit(buf, user_data)?;
-                user_data = unsafe { user_data.add(buf.len()) };
-                Ok(())
-            },
+            visitor,
             |page_cache, page_index| {
                 page_cache.alloc(page_index);
                 Ok(FileIoPgCacheMissResult::Retry)
             },
         )?;
 
-        inode_write_guard.file_size = inode_write_guard.file_size.max(old_pos + len);
+        let new_file_size = inode_write_guard.file_size.max(old_pos + len);
+        inode_write_guard.file_size = new_file_size;
+        inode_write_guard.ops.stat.st_size = new_file_size;
         Ok(ret)
     }
 
@@ -96,5 +97,9 @@ impl vfs::FileOps for TmpFsFile {
                 INodeType::Symlink(..) => vfs::IterateDirEntryType::Symlink,
             },
         }))
+    }
+
+    fn poll(&self) -> VfsResult<vfs::PollStatus> {
+        Ok(vfs::PollStatus::regular_io_ready())
     }
 }

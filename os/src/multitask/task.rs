@@ -501,7 +501,7 @@ impl Task {
     ) -> Result<(usize, AuxiliaryVec), LoadElfError> {
         use aux_ids::*;
 
-        let head = unsafe { File::kernel_read_page(file.get_inode(), 0) }.unwrap();
+        let head = unsafe { File::get_page_cache(file.get_inode(), 0) }.unwrap();
 
         let elf =
             ElfBytes::<NativeEndian>::minimal_parse_no_section_headers(head).map_err(|err| {
@@ -627,13 +627,15 @@ impl Task {
                             fill_user_memory(ptr, rest, 0).unwrap();
                         }
 
-                        address_space.write().add_vma(VirtualMemoryArea {
-                            start: file_end,
-                            end: zeros_end,
-                            flags,
-                            vma_type: VMAType::Anonymous,
-                            growth: VMAGrowth::Fixed,
-                        });
+                        if file_end != zeros_end {
+                            address_space.write().add_vma(VirtualMemoryArea {
+                                start: file_end,
+                                end: zeros_end,
+                                flags,
+                                vma_type: VMAType::Anonymous,
+                                growth: VMAGrowth::Fixed,
+                            });
+                        }
                     }
 
                     max_load_seg_end_addr.replace(zeros_end); // ELF 标准规定 PT_LOAD 段必须按地址升序排列
@@ -746,10 +748,8 @@ pub enum LoadElfError {
 }
 
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, bytemuck::NoUninit)]
 pub struct AuxiliaryEntry(pub usize, pub usize);
-
-unsafe impl bytemuck::NoUninit for AuxiliaryEntry {}
 
 pub type AuxiliaryVec = Vec<AuxiliaryEntry>;
 

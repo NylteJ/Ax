@@ -1,20 +1,68 @@
+mod tty;
+
 use core::mem::MaybeUninit;
 
+use alloc::boxed::Box;
 use hashbrown::HashMap;
-use uninit::extension_traits::MaybeUninitExt;
 
 use crate::{
-    arch::{self, interfaces::Basic},
     basic::UnsafeInited,
-    filesystem::vfs::{VfsError, VfsResult},
-    memory::uaccess::{copy_from_user_uninit, copy_to_user},
+    filesystem::vfs::{self, FileOps, VfsError, VfsResult},
+    syscall::filesystem::IoctlCommand,
 };
 
-/// 驱动，支持多态，不支持自定义数据
-pub struct Driver {
-    pub read: fn(user_buf: *mut u8, len: u64) -> VfsResult<u64>,
-    pub write: fn(user_data: *const u8, len: u64) -> VfsResult<u64>,
-    pub fsync: fn() -> VfsResult<()>,
+pub trait Driver: Send + Sync {
+    fn kread(&self, visitor: &mut dyn FnMut(&[u8]) -> VfsResult<u64>, len: u64) -> VfsResult<u64>;
+
+    fn kwrite(
+        &self,
+        visitor: &mut dyn FnMut(&mut [MaybeUninit<u8>]) -> VfsResult<u64>,
+        len: u64,
+    ) -> VfsResult<u64>;
+
+    fn ioctl(&self, cmd: IoctlCommand, arg: *mut ()) -> VfsResult<usize>;
+
+    fn fsync(&self) -> VfsResult<()> {
+        Ok(())
+    }
+}
+
+impl<T: ?Sized + Driver> vfs::FileOps for &'static T {
+    fn kread(
+        &mut self,
+        visitor: &mut dyn FnMut(&[u8]) -> VfsResult<u64>,
+        len: u64,
+    ) -> VfsResult<u64> {
+        (*self).kread(visitor, len)
+    }
+
+    fn kwrite(
+        &mut self,
+        visitor: &mut dyn FnMut(&mut [MaybeUninit<u8>]) -> VfsResult<u64>,
+        len: u64,
+    ) -> VfsResult<u64> {
+        (*self).kwrite(visitor, len)
+    }
+
+    fn fseek(&mut self, seek_from: vfs::SeekFrom) -> VfsResult<u64> {
+        todo!()
+    }
+
+    fn fsync(&mut self) -> VfsResult<()> {
+        (*self).fsync()
+    }
+
+    fn get_dir(&self, pos: u64) -> VfsResult<Option<vfs::IterateDirData>> {
+        Err(VfsError::NotADirectory)
+    }
+
+    fn poll(&self) -> VfsResult<vfs::PollStatus> {
+        todo!()
+    }
+
+    fn ioctl(&mut self, cmd: IoctlCommand, arg: *mut ()) -> VfsResult<usize> {
+        (*self).ioctl(cmd, arg)
+    }
 }
 
 /// (主设备号, 次设备号)
@@ -37,16 +85,16 @@ pub enum DeviceType {
     Block,
 }
 
-pub static CHAR_DEVICE_TYPES: UnsafeInited<HashMap<DeviceId, Driver>> =
+pub static CHAR_DEVICE_TYPES: UnsafeInited<HashMap<DeviceId, Box<dyn Driver>>> =
     unsafe { UnsafeInited::uninit() };
-pub static BLOCK_DEVICE_TYPES: UnsafeInited<HashMap<DeviceId, Driver>> =
+pub static BLOCK_DEVICE_TYPES: UnsafeInited<HashMap<DeviceId, Box<dyn Driver>>> =
     unsafe { UnsafeInited::uninit() };
 
-pub fn find_driver(device_type: &DeviceType, device_id: &DeviceId) -> Option<&'static Driver> {
-    match device_type {
-        DeviceType::Char => CHAR_DEVICE_TYPES.get(device_id),
-        DeviceType::Block => BLOCK_DEVICE_TYPES.get(device_id),
-    }
+pub fn find_driver(device_type: &DeviceType, device_id: &DeviceId) -> Option<&'static dyn Driver> {
+    Some(match device_type {
+        DeviceType::Char => &**CHAR_DEVICE_TYPES.get(device_id)?,
+        DeviceType::Block => &**BLOCK_DEVICE_TYPES.get(device_id)?,
+    })
 }
 
 pub fn init() {
@@ -55,18 +103,11 @@ pub fn init() {
 }
 
 macro_rules! define_driver {
-    ($types:expr, $device_id:expr, read: $read:expr, write: $write:expr, fsync: $fsync:expr $(,)?) => {{
-        let k = $device_id;
-        let v = Driver {
-            read: $read,
-            write: $write,
-            fsync: $fsync,
-        };
+    ($types:ident, $k:expr, $v:expr) => {{
+        let k: DeviceId = $k;
+        let v: Box<dyn Driver> = $v;
         debug_assert!(!$types.contains_key(&k));
         unsafe { $types.insert_unique_unchecked(k, v) }
-    }};
-    ($types:expr, $device_id:expr, read: $read:expr, write: $write:expr $(,)?) => {{
-        define_driver!($types, $device_id, read: $read, write: $write, fsync: || Ok(()))
     }};
 }
 
@@ -81,59 +122,7 @@ fn init_char_drivers() {
         };
     }
 
-    define!(
-        DEV_TTY,
-        read: |mut user_buf: *mut u8, len: u64| {
-            let len = len as usize;
-
-            const BUFFER_BYTES: usize = 128;
-
-            let mut buffer = [MaybeUninit::uninit(); BUFFER_BYTES];
-
-            let mut i = 0;
-            while i < len {
-                let index = i % BUFFER_BYTES;
-                let chr = *buffer[index].write(arch::NativeBasic::input_u8().map_err(|_| VfsError::IoError)?);
-
-                if index == BUFFER_BYTES - 1 {
-                    copy_to_user(user_buf, unsafe { buffer.assume_init_by_ref() })?;
-                    user_buf = unsafe { user_buf.add(BUFFER_BYTES) };
-                }
-
-                i += 1;
-                if chr == b'\n' {
-                    break; // 行缓冲
-                }
-            }
-
-            let tail = i % BUFFER_BYTES;
-            copy_to_user(user_buf, &unsafe { buffer.assume_init_by_ref() }[..tail])?;
-
-            Ok(i as u64)
-        },
-        write: |mut user_data: *const u8, len: u64| {
-            let init_len = len;
-            let mut len = len as usize;
-
-            const BUFFER_BYTES: usize = 1024;
-
-            let mut buffer = [MaybeUninit::uninit(); BUFFER_BYTES];
-
-            while len > 0 {
-                let count = len.min(BUFFER_BYTES);
-
-                let buf = copy_from_user_uninit(&mut buffer[..count], user_data)?;
-                for byte in buf {
-                    arch::NativeBasic::print_u8(*byte).map_err(|_| VfsError::IoError)?;
-                }
-
-                len -= count;
-                user_data = unsafe { user_data.add(count) };
-            }
-
-            Ok(init_len)
-        },
-    );
+    define!(DEV_TTY, Box::new(tty::TtyDriver::new()));
 
     unsafe { UnsafeInited::init_unsafe(&CHAR_DEVICE_TYPES, types) };
 }

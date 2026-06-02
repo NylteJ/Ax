@@ -1,7 +1,7 @@
 use alloc::sync::Arc;
 
 use crate::filesystem::{
-    devfs::{drivers::find_driver, file::DevFile, inode::DevINode},
+    devfs::{drivers::find_driver, file::DevDirFile, inode::DevINode},
     vfs::{self, DEntryOps, VfsError, VfsResult},
 };
 
@@ -16,17 +16,20 @@ impl DEntryOps for DevDEntry {
             .downcast_ref::<DevINode>()
             .expect("VFS 层应当保证不传递非 DevINode");
 
-        let data = match &inode.data.read().ops {
-            DevINode::Directory(children) => DevFile::Directory,
-            DevINode::DeviceFile(device_type, device_id) => DevFile::Device(
-                find_driver(device_type, device_id).ok_or(VfsError::DeviceNotFound)?,
-            ),
-            DevINode::Symlink(x) => *x,
-        };
-
         let dentry: &vfs::DEntry = vfs::DEntry::<Self>::get_dentry(self);
         let dentry = unsafe { vfs::get_varc_from_value(dentry) };
 
-        Ok(vfs::File::new(vfs::Path(dentry, mount), inode, flags, data))
+        let path = vfs::Path(dentry, mount);
+
+        let file = match &inode.data.read().ops {
+            DevINode::Directory(children) => vfs::File::new(path, inode, flags, DevDirFile),
+            DevINode::DeviceFile(device_type, device_id) => {
+                let driver = find_driver(device_type, device_id).ok_or(VfsError::DeviceNotFound)?;
+                vfs::File::new(path, inode, flags, driver)
+            }
+            DevINode::Symlink(x) => *x,
+        };
+
+        Ok(file)
     }
 }

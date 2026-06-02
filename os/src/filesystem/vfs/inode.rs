@@ -82,6 +82,7 @@ bitflags! {
         const OthersWrite   = 0o002;
         const OthersRead    = 0o004;
 
+        const Pipe = 0x1000;
         const Directory = 0x4000;
         const RegularFile = 0x8000;
     }

@@ -1,15 +1,15 @@
 use core::{
     cell::SyncUnsafeCell,
+    hint::unreachable_unchecked,
     marker::{PhantomData, PhantomPinned},
     mem::{ManuallyDrop, MaybeUninit},
     ops::Deref,
     pin::Pin,
-    ptr::NonNull,
     sync::atomic::{AtomicU8, AtomicU32, Ordering},
 };
 
 use bitflags::bitflags;
-use intrusive_collections::LinkedListLink;
+use intrusive_collections::{LinkedListLink, UnsafeRef};
 use uninit::extension_traits::MaybeUninitExt;
 
 use crate::{
@@ -49,7 +49,6 @@ pub enum PageType {
     Anonymous,
     /// 此页是文件页
     File {
-        page_cache: NonNull<PageCache>, // FIXME: 我们真的还需要它吗？
         page_index: u64,
         dirty: LinkedListLink,
     },
@@ -139,6 +138,29 @@ impl PageMeta {
 
     pub unsafe fn ref_count(&self) -> &AtomicU32 {
         &self.ref_count
+    }
+
+    pub unsafe fn pagecache_mark_dirty(&self, page_cache: &PageCache) {
+        let PageType::File { page_index, dirty } = &self.page_type else {
+            unsafe { unreachable_unchecked() };
+        };
+
+        let old_flags = self
+            .flags
+            .fetch_or(PageFlags::Dirty.bits(), Ordering::Acquire);
+        let old_flags = PageFlags::from_bits_retain(old_flags);
+
+        if !old_flags.intersects(PageFlags::Dirty | PageFlags::WritingBack) {
+            log::trace!(
+                "INode {:#x} Page {page_index} become Dirty",
+                page_cache.inode.addr()
+            );
+            page_cache
+                .data
+                .write()
+                .dirty_sent
+                .push_front(unsafe { UnsafeRef::from_raw(self) });
+        }
     }
 }
 

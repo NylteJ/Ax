@@ -103,7 +103,7 @@ impl PageTable<2> {
             #[cfg(target_arch = "riscv64")]
             asm!("csrw satp, {reg}", reg = in(reg) native_register);
             #[cfg(target_arch = "loongarch64")]
-            asm!("csrwr {reg}, 0x19", reg = in(reg) native_register);
+            asm!("csrwr {reg}, 0x19", reg = inlateout(reg) native_register => _);
         }
 
         arch::NativeBasic::tlb_invalidate_all();

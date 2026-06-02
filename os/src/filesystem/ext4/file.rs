@@ -1,4 +1,4 @@
-use core::slice;
+use core::{mem::MaybeUninit, slice};
 
 use uninit::extension_traits::MaybeUninitExt;
 
@@ -9,16 +9,17 @@ use crate::{
         utils::{FileIoPgCacheMissResult, file_io_common},
         vfs::{self, FileFlags, FileOps, VfsError, VfsResult, default_fseek},
     },
-    memory::{
-        PAGE_BYTES,
-        uaccess::{copy_from_user_uninit, copy_to_user},
-    },
+    memory::PAGE_BYTES,
 };
 
 pub struct Ext4File;
 
 impl FileOps for Ext4File {
-    fn read(&mut self, mut user_buf: *mut u8, len: u64) -> VfsResult<u64> {
+    fn kread(
+        &mut self,
+        visitor: &mut dyn FnMut(&[u8]) -> VfsResult<u64>,
+        len: u64,
+    ) -> VfsResult<u64> {
         let this = vfs::File::from_dyn_mut(self);
 
         let inode = unsafe { this.inode.as_ref() };
@@ -33,12 +34,7 @@ impl FileOps for Ext4File {
             pos,
             inode_read_guard.page_cache.as_ref().unwrap(),
             len.min(inode_read_guard.file_size - *pos),
-            |buf| {
-                let k_src = unsafe { buf.assume_init_by_ref() };
-                copy_to_user(user_buf, k_src)?;
-                user_buf = unsafe { user_buf.add(buf.len()) };
-                Ok(())
-            },
+            |buf| visitor(unsafe { buf.assume_init_by_ref() }),
             |page_cache, page_index| {
                 let offset = page_index as usize * PAGE_BYTES;
                 let page_meta_guard = page_cache.alloc_without_insert(page_index);
@@ -55,7 +51,11 @@ impl FileOps for Ext4File {
         )
     }
 
-    fn write(&mut self, mut user_data: *const u8, len: u64) -> VfsResult<u64> {
+    fn kwrite(
+        &mut self,
+        visitor: &mut dyn FnMut(&mut [MaybeUninit<u8>]) -> VfsResult<u64>,
+        len: u64,
+    ) -> VfsResult<u64> {
         let this = vfs::File::from_dyn_mut(self);
 
         let inode = unsafe { this.inode.cast::<vfs::INode<Ext4INode>>().as_ref() };
@@ -77,11 +77,7 @@ impl FileOps for Ext4File {
             pos,
             inode_write_guard.page_cache.as_ref().unwrap(),
             len,
-            |buf| {
-                copy_from_user_uninit(buf, user_data)?;
-                user_data = unsafe { user_data.add(buf.len()) };
-                Ok(())
-            },
+            visitor,
             |page_cache, page_index| {
                 let offset = page_index as usize * PAGE_BYTES;
                 let page_meta = page_cache.alloc(page_index);
@@ -171,5 +167,9 @@ impl FileOps for Ext4File {
         }
 
         Ok(None)
+    }
+
+    fn poll(&self) -> VfsResult<vfs::PollStatus> {
+        Ok(vfs::PollStatus::regular_io_ready())
     }
 }

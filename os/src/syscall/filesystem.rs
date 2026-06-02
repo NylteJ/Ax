@@ -1,28 +1,39 @@
 use core::{
-    ffi::{c_char, c_int, c_long, c_uchar, c_uint, c_ulong, c_ushort, c_void},
-    mem::MaybeUninit,
+    ffi::{c_char, c_int, c_long, c_short, c_uchar, c_uint, c_ulong, c_ushort, c_void},
+    mem::{MaybeUninit, replace},
     ops::FromResidual,
-    ptr::{from_raw_parts, from_raw_parts_mut, null_mut},
+    pin::Pin,
+    ptr::{self, NonNull, addr_eq, from_raw_parts, from_raw_parts_mut, null_mut},
     slice,
 };
 
-use alloc::{borrow::ToOwned, collections::vec_deque::VecDeque, str, vec::Vec};
+use alloc::{borrow::ToOwned, collections::vec_deque::VecDeque, str, sync::Arc, vec::Vec};
 use bitflags::{Flags, bitflags};
+use num_enum::TryFromPrimitive;
+use uninit::AsMaybeUninit;
 
 use crate::{
-    basic::bstr::{ByteStr, ByteString},
+    basic::{
+        bstr::{ByteStr, ByteString},
+        extend_lifetime_mut,
+        timer::{get_cpu_tick, us_to_cpu_tick},
+    },
     filesystem::{
         PipeFile,
         devfs::drivers::DeviceId,
         filesystems::get_filesystem_type,
         vfs::{
-            DEntryArc, FileFlags, FileSystem, INodeArc, INodeMode, IterateDirData, MountPoint,
-            Path, PathToWalk, ROOT_PATH, VfsError, VfsResult, walk_path,
+            self, DEntryArc, File, FileArc, FileFlags, FileOps, FileSystem, INodeArc, INodeMode,
+            IterateDirData, MountPoint, Path, PathToWalk, PollStatus, ROOT_PATH, VfsError,
+            VfsResult, walk_path,
         },
     },
-    memory::uaccess::{copy_from_user_uninit, copy_one_to_user, copy_str_from_user, copy_to_user},
+    memory::uaccess::{
+        copy_from_user_uninit, copy_one_from_user, copy_one_to_user, copy_slice_to_user,
+        copy_str_from_user, copy_to_user, copy_vec_from_user,
+    },
     multitask::{FDTableEntry, FileDescriptorFlags, current_task},
-    syscall::SyscallResult,
+    syscall::{SyscallResult, common_types::TimeSpec},
 };
 
 use crate::syscall::err_codes::*;
@@ -30,6 +41,18 @@ use crate::syscall::err_codes::*;
 pub(super) const PATH_LEN_HINT: usize = 64;
 pub(super) const FILENAME_LEN_HINT: usize = 32;
 pub(super) const PATH_LEN_MAX: usize = 32768;
+
+fn get_file_from_fd(fd: isize) -> Result<FileArc, SyscallResult> {
+    if fd < 0 {
+        return Err(EBADF);
+    }
+    let fd = fd.cast_unsigned();
+
+    let cur_task = unsafe { current_task().as_ref_unchecked() };
+    let file = cur_task.files.read().get(fd).ok_or(EBADF)?.0.clone();
+
+    Ok(file)
+}
 
 /// 功能：获取当前工作目录；
 ///
@@ -160,9 +183,7 @@ pub extern "C" fn dup(fd: isize) -> SyscallResult {
 
     let mut files_guard = cur_task.files.write();
 
-    let Some(FDTableEntry(file, _)) = files_guard.get(fd).cloned() else {
-        return EBADF; // “EBADF  oldfd isn't an open file descriptor.”
-    };
+    let file = files_guard.get(fd).ok_or(EBADF)?.0.clone();
 
     SyscallResult::success(files_guard.insert(FDTableEntry::no_flags(file))) // dup 不保留标志
 }
@@ -202,9 +223,7 @@ pub extern "C" fn dup3(old: isize, new: isize, flags: usize) -> SyscallResult {
 
     let mut files_guard = cur_task.files.write();
 
-    let Some(FDTableEntry(file, _)) = files_guard.get(old).cloned() else {
-        return EBADF; // “EBADF  oldfd isn't an open file descriptor.”
-    };
+    let file = files_guard.get(old).ok_or(EBADF)?.0.clone();
 
     let new_entry =
         if FileOpenFlags::from_bits_retain(flags as i32).contains(FileOpenFlags::O_CLOEXEC) {
@@ -504,18 +523,11 @@ pub struct DirentHead {
 /// int ret = syscall(SYS_getdents64, fd, buf, len);
 /// ```
 pub extern "C" fn getdents64(fd: isize, buf: *mut c_void, len: usize) -> SyscallResult {
-    if fd < 0 {
-        return EBADF;
-    }
-    let fd = fd.cast_unsigned();
-
     if len == 0 {
         return EINVAL;
     }
 
-    let cur_task = unsafe { current_task().as_ref_unchecked() };
-    let files_guard = cur_task.files.read();
-    let file = files_guard.get(fd).ok_or(EBADF)?.0.clone();
+    let file = get_file_from_fd(fd)?;
 
     let mut k_buffer = Vec::<u8>::try_with_capacity(len + 7)?;
 
@@ -545,14 +557,7 @@ pub extern "C" fn getdents64(fd: isize, buf: *mut c_void, len: usize) -> Syscall
 /// ssize_t ret = syscall(SYS_read, fd, buf, count);
 /// ```
 pub extern "C" fn read(fd: isize, buf: *mut c_void, count: usize) -> SyscallResult {
-    if fd < 0 {
-        return EBADF;
-    }
-    let fd = fd.cast_unsigned();
-
-    let cur_task = unsafe { current_task().as_ref_unchecked() };
-
-    let file = cur_task.files.read().get(fd).ok_or(EBADF)?.0.clone();
+    let file = get_file_from_fd(fd)?;
 
     let len = file.data.lock().read(buf as *mut u8, count as u64)?;
 
@@ -574,14 +579,7 @@ pub extern "C" fn read(fd: isize, buf: *mut c_void, count: usize) -> SyscallResu
 /// ssize_t ret = syscall(SYS_write, fd, buf, count);
 /// ```
 pub extern "C" fn write(fd: isize, buf: *const c_void, count: usize) -> SyscallResult {
-    if fd < 0 {
-        return EBADF;
-    }
-    let fd = fd.cast_unsigned();
-
-    let cur_task = unsafe { current_task().as_ref_unchecked() };
-
-    let file = cur_task.files.read().get(fd).ok_or(EBADF)?.0.clone();
+    let file = get_file_from_fd(fd)?;
 
     let len = file.data.lock().write(buf as *const u8, count as u64)?;
 
@@ -595,36 +593,44 @@ pub struct IoVec {
     iov_len: usize,
 }
 
-pub extern "C" fn writev(fd: isize, iov: *mut IoVec, iovcnt: usize) -> SyscallResult {
-    if fd < 0 {
-        return EBADF;
-    }
-    let fd = fd.cast_unsigned();
+pub extern "C" fn writev(fd: isize, iov: *const IoVec, iovcnt: usize) -> SyscallResult {
+    let file = get_file_from_fd(fd)?;
 
-    let cur_task = unsafe { current_task().as_ref_unchecked() };
-
-    let file = cur_task.files.read().get(fd).ok_or(EBADF)?.0.clone();
-
-    let mut kernel_iov = Vec::<IoVec>::try_with_capacity(iovcnt)?;
-    let k_buffer = &mut kernel_iov.spare_capacity_mut()[..iovcnt];
-    let k_buffer = unsafe {
-        slice::from_raw_parts_mut(
-            k_buffer.as_mut_ptr() as *mut MaybeUninit<u8>,
-            size_of_val(k_buffer),
-        )
-    };
-    let bytes = copy_from_user_uninit(k_buffer, iov.cast())?.len();
-    debug_assert_eq!(bytes % size_of::<IoVec>(), 0);
-    unsafe { kernel_iov.set_len(bytes / size_of::<IoVec>()) };
+    let iov = copy_vec_from_user(ptr::slice_from_raw_parts(iov, iovcnt))?;
 
     let mut total_written = 0;
 
-    // 关于原子性，我们不支持内核抢占，因此直接写就可以了
-    for IoVec { iov_base, iov_len } in kernel_iov {
-        total_written += file.data.lock().write(iov_base.cast(), iov_len as u64)?;
+    // writev 保证原子性，因此需要大粒度锁
+    {
+        let mut file_lock_guard = file.data.lock();
+        for IoVec { iov_base, iov_len } in iov {
+            total_written += file_lock_guard.write(iov_base.cast(), iov_len as u64)?;
+        }
     }
 
     SyscallResult::success(total_written as usize)
+}
+
+pub extern "C" fn readv(fd: isize, iov: *const IoVec, iovcnt: usize) -> SyscallResult {
+    let file = get_file_from_fd(fd)?;
+
+    let iov = copy_vec_from_user(ptr::slice_from_raw_parts(iov, iovcnt))?;
+
+    let mut total_read = 0;
+
+    // readv 保证原子性，因此需要大粒度锁
+    {
+        let mut file_lock_guard = file.data.lock();
+        for IoVec { iov_base, iov_len } in iov {
+            let new_read = file_lock_guard.read(iov_base.cast(), iov_len as u64)?;
+            total_read += new_read;
+            if new_read != iov_len as u64 {
+                break;
+            }
+        }
+    }
+
+    SyscallResult::success(total_read as usize)
 }
 
 /// 功能：创建文件的链接；
@@ -989,7 +995,7 @@ fn fstat_common(path: Path, buf: *mut Kstat) -> SyscallResult {
         st_nlink: inode.data.read().hard_links,
         inner: inode.data.read().get_kstat()?,
     };
-    unsafe { copy_one_to_user(buf, &kstat) }?;
+    copy_one_to_user(buf, &kstat)?;
 
     debug_assert_eq!(kstat.inner.st_size, inode.data.read().file_size);
 
@@ -1036,7 +1042,7 @@ pub extern "C" fn fcntl(fd: isize, op: isize, arg: usize) -> SyscallResult {
 }
 
 #[repr(C)]
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone, Copy)]
 pub struct StatxTimestamp {
     pub tv_sec: i64,
     pub tv_nsec: u32,
@@ -1054,7 +1060,7 @@ impl From<Time> for StatxTimestamp {
 }
 
 #[repr(C)]
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone, Copy)]
 pub struct Statx {
     stx_mask: u32,
     stx_blksize: u32,
@@ -1169,7 +1175,336 @@ pub extern "C" fn statx(
     };
 
     static_assertions::assert_not_impl_any!(Statx: Drop);
-    unsafe { copy_one_to_user(statxbuf, &statx) }?;
+    copy_one_to_user(statxbuf, &statx)?;
 
     SyscallResult::success(0)
+}
+
+pub extern "C" fn splice(
+    fd_in: isize,
+    off_in: *mut u64,
+    fd_out: isize,
+    off_out: *mut u64,
+    size: usize,
+    flags: usize,
+) -> SyscallResult {
+    let end_in = get_splice_end(fd_in, off_in)?;
+    let end_out = get_splice_end(fd_out, off_out)?;
+
+    let len = size as u64;
+
+    splice_inner(end_in, end_out, len, flags)
+}
+
+fn splice_inner(end_in: SpliceEnd, end_out: SpliceEnd, len: u64, flags: usize) -> SyscallResult {
+    // 注意 splice 完全不保证原子性，因此不需要大锁
+    use SpliceEnd::*;
+
+    log::error!("TODO: 处理 flags: {flags:#x}");
+
+    let length = match (end_in, end_out) {
+        (Pipe(pipe_in), Pipe(pipe_out)) => {
+            if addr_eq(pipe_in.as_ref().get_ref(), pipe_out.as_ref().get_ref()) {
+                return EINVAL; // EINVAL fd_in and fd_out refer to the same pipe.
+            }
+
+            pipe_in.data.lock().kread(
+                |mut data| {
+                    let data_len = data.len() as u64;
+                    pipe_out.data.lock().kwrite(
+                        |buffer| {
+                            let (first, rest) = data.split_at(buffer.len());
+                            buffer.copy_from_slice(first.as_ref_uninit());
+                            data = rest;
+                            Ok(buffer.len() as u64)
+                        },
+                        data_len,
+                    )
+                },
+                len,
+            )?
+        }
+        (Pipe(pipe_in), File(file_out)) => pipe_in
+            .data
+            .lock()
+            .kread(|data| file_out.write(data), len)?,
+        (File(file_in), Pipe(pipe_out)) => {
+            pipe_out.data.lock().kwrite(|buf| file_in.read(buf), len)?
+        }
+
+        (File(_), File(_)) => return EINVAL, // EINVAL Neither of the file descriptors refers to a pipe.
+    };
+
+    SyscallResult::success(length as usize)
+}
+
+pub extern "C" fn sendfile(
+    out_fd: isize,
+    in_fd: isize,
+    offset: *mut u64,
+    count: usize,
+) -> SyscallResult {
+    let end_in = get_splice_end(in_fd, offset)?;
+    let end_out = get_splice_end(out_fd, core::ptr::null_mut())?; // sendfile 不支持带偏移的输出
+
+    let len = count as u64;
+
+    match end_out {
+        pipe @ SpliceEnd::Pipe(_) => splice_inner(end_in, pipe, len, 0),
+        SpliceEnd::File(file) => {
+            let SpliceEndFile::File(file_out) = file else {
+                unreachable!()
+            };
+
+            let SpliceEnd::File(file_in) = end_in else {
+                return EINVAL; // The in_fd argument must correspond to a file which supports mmap(2)-like operations (i.e., it cannot be a socket).
+            };
+
+            let length = file_out.data.lock().kwrite(|buf| file_in.read(buf), len)?;
+
+            SyscallResult::success(length as usize)
+        }
+    }
+}
+
+enum SpliceEnd {
+    File(SpliceEndFile),
+    Pipe(FileArc<PipeFile>),
+}
+
+enum SpliceEndFile {
+    File(FileArc),
+    FileWithOff(FileArc, NonNull<u64>),
+}
+impl SpliceEndFile {
+    pub fn write(&self, mut data: &[u8]) -> VfsResult<u64> {
+        let len = data.len() as u64;
+
+        self.common(|file| {
+            file.kwrite(
+                |buf| {
+                    let (first, rest) = data.split_at(buf.len());
+                    buf.copy_from_slice(first.as_ref_uninit());
+                    data = rest;
+                    Ok(buf.len() as u64)
+                },
+                len,
+            )
+        })
+    }
+
+    pub fn read<'a>(&self, mut buf: &'a mut [MaybeUninit<u8>]) -> VfsResult<u64> {
+        let len = buf.len() as u64;
+
+        self.common(|file| {
+            file.kread(
+                |data| {
+                    let slice = replace(&mut buf, &mut []); // 谢谢你，借用检查器
+                    let (first, rest) = slice.split_at_mut(data.len());
+                    first.copy_from_slice(data.as_ref_uninit());
+                    buf = slice;
+                    Ok(data.len() as u64)
+                },
+                len,
+            )
+        })
+    }
+
+    fn common(&self, op: impl FnOnce(&mut vfs::FileData) -> VfsResult<u64>) -> VfsResult<u64> {
+        let (file, off_ptr) = match self {
+            Self::File(file) => (file, None),
+            Self::FileWithOff(file, off) => (file, Some(*off)),
+        };
+
+        if let Some(off_ptr) = off_ptr {
+            let off_ptr = off_ptr.as_ptr();
+            let off = copy_one_from_user(off_ptr)?;
+
+            // TODO: 未来可以优化
+            let tmp_file = {
+                let file_guard = file.data.lock();
+                file_guard
+                    .path
+                    .0
+                    .data
+                    .lock()
+                    .ops
+                    .open(file_guard.path.1.clone(), file_guard.flags)?
+            };
+            let mut tmp_file_guard = tmp_file.data.lock();
+            tmp_file_guard.fseek(vfs::SeekFrom::Start(off))?;
+            let writen = op(&mut tmp_file_guard)?;
+
+            copy_one_to_user(off_ptr, &(off + writen))?;
+            Ok(writen)
+        } else {
+            op(&mut file.data.lock())
+        }
+    }
+}
+
+fn get_splice_end(fd: isize, off: *mut u64) -> Result<SpliceEnd, SyscallResult> {
+    let file = get_file_from_fd(fd)?;
+
+    let off = NonNull::new(off);
+
+    let is_pipe = file.get_inode().data.read().mode.contains(INodeMode::Pipe);
+
+    match (is_pipe, off) {
+        (true, None) => {
+            let arc = unsafe { Pin::into_inner_unchecked(file) };
+            let ptr = Arc::into_raw(arc);
+            let pipe_ptr = ptr.cast();
+            let pipe_arc = unsafe { Arc::from_raw(pipe_ptr) };
+            let file = unsafe { Pin::new_unchecked(pipe_arc) };
+            Ok(SpliceEnd::Pipe(file))
+        }
+        (true, Some(_)) => Err(ESPIPE),
+        (false, None) => Ok(SpliceEnd::File(SpliceEndFile::File(file))),
+        (false, Some(off)) => Ok(SpliceEnd::File(SpliceEndFile::FileWithOff(file, off))),
+    }
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct PollFd {
+    fd: c_int,
+    events: c_short,
+    revents: c_short,
+}
+
+pub extern "C" fn ppoll(
+    fds_ptr: *mut PollFd,
+    nfds: usize,
+    tmo_p: *const TimeSpec,
+    sigmask: usize,
+) -> SyscallResult {
+    log::error!("处理 ppoll 的 sigmask: {sigmask:#x}");
+
+    let timeout_us = if tmo_p.is_null() {
+        None
+    } else {
+        let TimeSpec { tv_sec, tv_nsec } = copy_one_from_user(tmo_p)?;
+        let us = tv_sec
+            .checked_mul(1_000_000)
+            .and_then(|s| s.checked_add(tv_nsec / 1000));
+        if us.is_some_and(|value| value < 0) {
+            return EINVAL;
+        }
+        us.map(|signed| signed.cast_unsigned())
+    };
+
+    if timeout_us == Some(0) {
+        // Specifying a timeout of zero causes poll() to return immediately, even if no file descriptors are ready.
+        // (A value of 0 indicates that the call timed out and no file descriptors were ready.)
+        return SyscallResult::success(0);
+    }
+
+    let deadline_tick = timeout_us.map(|us| get_cpu_tick() + us_to_cpu_tick(us as usize));
+
+    fn fd_shound_be_ignored(fd: &PollFd) -> bool {
+        fd.fd < 0 || fd.events == 0
+    }
+
+    let mut fds = copy_vec_from_user(ptr::slice_from_raw_parts(fds_ptr, nfds))?;
+    for fd in fds.iter_mut().filter(|fd| fd_shound_be_ignored(fd)) {
+        fd.revents = 0;
+    }
+
+    let cur_task = unsafe { current_task().as_ref_unchecked() };
+
+    let count = loop {
+        let mut count = 0;
+
+        for &mut PollFd {
+            fd,
+            events,
+            ref mut revents,
+        } in fds.iter_mut().filter(|fd| !fd_shound_be_ignored(fd))
+        {
+            debug_assert!(fd >= 0);
+            let fd = fd as usize;
+
+            // 注意这里需要每次轮询都查一次文件描述符表（Linux 也是这么做的）
+            // 未来引入睡眠后效率其实并不会很差（本身查文件描述符表也就只是一次下标索引）
+            let Some(fdt_entry) = cur_task.files.read().get(fd).cloned() else {
+                count += 1; // 没错，这也是一个事件
+                *revents = PollStatus::POLLNVAL.bits();
+                continue;
+            };
+
+            let file = fdt_entry.0;
+
+            let poll = file.data.lock().poll()?;
+            let mask =
+                PollStatus::from_bits_retain(events) | PollStatus::POLLERR | PollStatus::POLLHUP;
+            let filtered = poll & mask;
+
+            if !filtered.is_empty() {
+                count += 1;
+                *revents = filtered.bits();
+            }
+        }
+
+        if count > 0 {
+            break count;
+        }
+
+        crate::syscall::basic::yield_(); // 假装睡眠
+
+        // 假装我们还设定了超时唤醒
+        if deadline_tick.is_some_and(|ddl| ddl > get_cpu_tick()) {
+            return SyscallResult::success(0); // 超时，此时不修改用户侧的 revents
+        }
+    };
+
+    copy_slice_to_user(fds_ptr, &fds)?;
+    SyscallResult::success(count)
+}
+
+#[derive(TryFromPrimitive)]
+#[repr(usize)]
+pub enum IoctlCommand {
+    // vvv TTY vvv
+    /// 获取当前串口设置
+    TCGETS = 0x5401,
+    /// 设置当前串口设置
+    TCSETS = 0x5402,
+    /// 等待输出缓冲区排空，然后设置当前串口设置
+    TCSETSW = 0x5403,
+    /// 等待输出缓冲区排空，丢弃所有待处理输入，然后设置当前串口设置
+    TCSETSF = 0x5404,
+    /// 和 [`Self::TCGETS`] 类似，但使用 termio 而非 termios
+    TCGETA = 0x5405,
+    /// 和 [`Self::TCSETS`] 类似，但使用 termio 而非 termios
+    TCSETA = 0x5406,
+    /// 和 [`Self::TCSETSW`] 类似，但使用 termio 而非 termios
+    TCSETAW = 0x5407,
+    /// 和 [`Self::TCSETSF`] 类似，但使用 termio 而非 termios
+    TCSETAF = 0x5408,
+    /// 如果终端使用异步串行数据传输，且 arg 为零，则发送一个中断信号（一串零位），持续时间为 0.25 至 0.5 秒。
+    /// 如果终端未使用异步串行数据传输，则要么发送一个中断信号，要么函数不做任何操作直接返回。
+    /// 当 arg 非零时，没有人知道会发生什么。
+    ///
+    /// （SVr4、UnixWare、Solaris 和 Linux 将非零参数的 tcsendbreak(fd, arg) 视为 tcdrain(fd)。
+    /// SunOS 将 arg 视为一个倍数，发送的零位流长度为零参数时的 arg 倍。
+    /// DG/UX 和 AIX 将非零的 arg 视为以毫秒计的时间间隔。HP-UX 则忽略 arg。）
+    TCSBRK = 0x5409,
+    /// 获取此终端上前台进程组的进程组 ID
+    TIOCGPGRP = 0x540F,
+    /// 设置此终端的前台进程组 ID
+    TIOCSPGRP = 0x5410,
+    /// 获取窗口大小
+    TIOCGWINSZ = 0x5413,
+    /// 设置窗口大小
+    TIOCSWINSZ = 0x5414,
+    // ^^^ TTY ^^^
+}
+
+pub extern "C" fn ioctl(fd: isize, op: usize, argp: *mut c_char) -> SyscallResult {
+    let op = IoctlCommand::try_from(op).map_err(|_| EINVAL)?;
+
+    let file = get_file_from_fd(fd)?;
+
+    SyscallResult::success(file.data.lock().ioctl(op, argp.cast())?)
 }

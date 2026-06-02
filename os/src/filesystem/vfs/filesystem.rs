@@ -390,11 +390,11 @@ pub fn walk_path(path: PathToWalk) -> VfsResult<WalkedPath> {
 
         if name == ".." {
             let prev_path = cur_path.walk_step_back();
-            log::trace!(
-                "walk_step: {} --prev--> {}",
-                { cur_path.0.data.lock().name.clone() },
-                prev_path.0.data.lock().name,
-            );
+            // log::trace!(
+            //     "walk_step: {} --prev--> {}",
+            //     { cur_path.0.data.lock().name.clone() },
+            //     prev_path.0.data.lock().name,
+            // );
             return Ok((true, prev_path));
         }
 
@@ -421,11 +421,11 @@ pub fn walk_path(path: PathToWalk) -> VfsResult<WalkedPath> {
 
         let found = dentry.data.lock().inode.is_some();
 
-        log::trace!(
-            "walk_step: current_dentry={} name=`{name}` found={found} fs={:#x}",
-            cur_path.0.data.lock().name,
-            (*fs as *const FileSystem).addr()
-        );
+        // log::trace!(
+        //     "walk_step: current_dentry={} name=`{name}` found={found} fs={:#x}",
+        //     cur_path.0.data.lock().name,
+        //     (*fs as *const FileSystem).addr()
+        // );
 
         // 如果是挂载点则要转到对应文件系统
 

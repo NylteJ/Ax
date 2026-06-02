@@ -1,26 +1,24 @@
-use crate::filesystem::{
-    devfs::drivers::Driver,
-    vfs::{self, FileOps, VfsError, VfsResult, default_fseek},
-};
+use core::mem::MaybeUninit;
 
-pub enum DevFile {
-    Directory,
-    Device(&'static Driver),
-}
+use crate::filesystem::vfs::{self, FileOps, VfsError, VfsResult, default_fseek};
 
-impl FileOps for DevFile {
-    fn read(&mut self, user_buf: *mut u8, len: u64) -> VfsResult<u64> {
-        match self {
-            DevFile::Directory => Err(VfsError::IsADirectory),
-            DevFile::Device(driver) => (driver.read)(user_buf, len),
-        }
+pub struct DevDirFile;
+
+impl FileOps for DevDirFile {
+    fn kread(
+        &mut self,
+        visitor: &mut dyn FnMut(&[u8]) -> VfsResult<u64>,
+        len: u64,
+    ) -> VfsResult<u64> {
+        Err(VfsError::IsADirectory)
     }
 
-    fn write(&mut self, user_data: *const u8, len: u64) -> VfsResult<u64> {
-        match self {
-            DevFile::Directory => Err(VfsError::IsADirectory),
-            DevFile::Device(driver) => (driver.write)(user_data, len),
-        }
+    fn kwrite(
+        &mut self,
+        visitor: &mut dyn FnMut(&mut [MaybeUninit<u8>]) -> VfsResult<u64>,
+        len: u64,
+    ) -> VfsResult<u64> {
+        Err(VfsError::IsADirectory)
     }
 
     fn fseek(&mut self, seek_from: vfs::SeekFrom) -> VfsResult<u64> {
@@ -28,17 +26,14 @@ impl FileOps for DevFile {
     }
 
     fn fsync(&mut self) -> VfsResult<()> {
-        match self {
-            DevFile::Directory => Err(VfsError::IsADirectory),
-            DevFile::Device(driver) => (driver.fsync)(),
-        }
+        Err(VfsError::IsADirectory)
     }
 
     fn get_dir(&self, pos: u64) -> VfsResult<Option<vfs::IterateDirData>> {
-        let Self::Directory = self else {
-            return Err(VfsError::NotADirectory);
-        };
-
         todo!()
+    }
+
+    fn poll(&self) -> VfsResult<vfs::PollStatus> {
+        Ok(vfs::PollStatus::regular_io_ready())
     }
 }

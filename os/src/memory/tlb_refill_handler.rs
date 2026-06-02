@@ -32,5 +32,5 @@ pub fn init() {
     let vaddr = VirtAddr(tlb_refill_handler as usize);
     let paddr = vaddr.to_physical_address().0;
 
-    unsafe { asm!("csrwr {0}, 0x88", in(reg) paddr) }
+    unsafe { asm!("csrwr {0}, 0x88", inlateout(reg) paddr => _) }
 }

@@ -16,6 +16,8 @@ use crate::{
     multitask::task::LoadElfError,
 };
 
+pub mod common_types;
+
 pub mod basic;
 pub mod filesystem;
 pub mod memory;
@@ -109,9 +111,14 @@ pub static TABLE: [Option<SyscallFn>; MAX_SYSCALL_COUNT] = const {
     define!(40, filesystem::mount);
     define!(80, filesystem::fstat);
     define!(66, filesystem::writev);
+    define!(65, filesystem::readv);
     define!(79, filesystem::fstatat);
     define!(25, filesystem::fcntl);
     define!(291, filesystem::statx);
+    define!(76, filesystem::splice);
+    define!(71, filesystem::sendfile);
+    define!(73, filesystem::ppoll);
+    define!(29, filesystem::ioctl);
 
     define!(214, memory::brk);
     define!(222, memory::mmap);
@@ -173,6 +180,7 @@ impl FromResidual<Result<Infallible, CopyError>> for SyscallResult {
         match residual.unwrap_err() {
             CopyError::UserPointerNotInUserSpace | CopyError::BadAccess => err_codes::EFAULT,
             CopyError::TooLong => err_codes::ENAMETOOLONG,
+            CopyError::OutOfMemory => err_codes::ENOMEM,
         }
     }
 }
@@ -199,6 +207,7 @@ impl FromResidual<Result<Infallible, VfsError>> for SyscallResult {
             VfsError::DeviceNotFound => ENXIO,
             VfsError::IsPipeOrSocket => ESPIPE,
             VfsError::BadPipeEnd | VfsError::BrokenPipe => EPIPE,
+            VfsError::BadIoctl => EINVAL,
             VfsError::InvalidUserPointer(copy_error) => Self::from_residual(Err(copy_error)),
             VfsError::InvalidArguments(_) => EINVAL,
             VfsError::IoError => EIO,

@@ -6,8 +6,6 @@
 
 use core::ffi::c_void;
 use core::fmt::Write;
-use core::mem::MaybeUninit;
-use core::sync::atomic::AtomicU32;
 
 #[cfg(not(any(target_arch = "riscv64", target_arch = "loongarch64")))]
 compile_error!("Unsupported architecture");
@@ -154,14 +152,6 @@ fn _start() -> ! {
     unreachable!();
 }
 
-#[repr(align(16))]
-#[derive(Debug, Clone, Copy)]
-#[allow(dead_code)]
-struct Stack([MaybeUninit<u8>; 4096]);
-
-static mut STACKS: [Stack; 10] = [Stack([MaybeUninit::uninit(); 4096]); 10];
-static SUM: AtomicU32 = AtomicU32::new(0);
-
 fn main() -> isize {
     let stdin = openat(-100, b"/dev/tty\0".as_ptr(), 0b00, 0);
     let stdout = openat(-100, b"/dev/tty\0".as_ptr(), 0b01, 0);
@@ -173,16 +163,53 @@ fn main() -> isize {
 
     if fork() == 0 {
         // 子进程，运行终端
+
+        macro_rules! group {
+            ($name:literal at $dir:literal shell $($script:literal),+) => {
+                concat_bytes!(
+                    b"echo \"#### OS COMP TEST GROUP START ",
+                    $name,
+                    b" ####\" && cd /sdcd/",
+                    $dir,
+                    $(
+                        b" && /sdcd/musl/busybox sh /sdcd/",
+                        $dir,
+                        b"/",
+                        $script,
+                    )*
+                    b" && echo \"#### OS COMP TEST GROUP END ",
+                    $name,
+                    b" ####\";",
+                )
+            };
+            (nobanner at $dir:literal shell $($script:literal),+) => {
+                concat_bytes!(
+                    b"cd /sdcd/",
+                    $dir,
+                    $(
+                        b" && /sdcd/musl/busybox sh /sdcd/",
+                        $dir,
+                        b"/",
+                        $script,
+                    )*
+                    b";"
+                )
+            };
+        }
+
         let argv: [*const u8; 5] = [
             b"/sdcd/musl/busybox\0".as_ptr(),
             b"sh\0".as_ptr(),
             b"-c\0".as_ptr(),
             concat_bytes!(
-                b"echo \"#### OS COMP TEST GROUP START basic-musl ####\" && cd /sdcd/musl/basic && /sdcd/musl/busybox sh /sdcd/musl/basic/run-all.sh && echo \"#### OS COMP TEST GROUP END basic-musl ####\"",
-                b"&&",
-                b"echo \"#### OS COMP TEST GROUP START basic-glibc ####\" && cd /sdcd/glibc/basic && /sdcd/musl/busybox sh /sdcd/glibc/basic/run-all.sh && echo \"#### OS COMP TEST GROUP END basic-glibc ####\"",
+                group!(b"basic-musl" at b"musl/basic" shell b"run-all.sh"),
+                group!(b"basic-glibc" at b"glibc/basic" shell b"run-all.sh"),
+                group!(nobanner at b"musl" shell b"busybox_testcode.sh"),
+                group!(nobanner at b"glibc" shell b"busybox_testcode.sh"),
+                // group!(b"libctest-musl" at b"musl" shell b"run-static.sh", b"run-dynamic.sh"),
                 b'\0',
-            ).as_ptr(),
+            )
+            .as_ptr(),
             core::ptr::null(),
         ];
         let envp: [*const u8; 1] = [core::ptr::null()];
@@ -214,10 +241,6 @@ fn openat(fd: isize, filename: *const u8, flags: isize, mode: usize) -> isize {
 
 fn write(fd: isize, buf: *const c_void, count: usize) -> isize {
     syscall!(64, fd, buf, count).cast_signed()
-}
-
-fn read(fd: isize, buf: *mut c_void, count: usize) -> isize {
-    syscall!(63, fd, buf, count).cast_signed()
 }
 
 fn fork() -> isize {

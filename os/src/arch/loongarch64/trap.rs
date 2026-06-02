@@ -170,12 +170,12 @@ unsafe impl interfaces::Trap for Trap {
 
         crmd.set_bit(2, enable);
 
-        unsafe { asm!("csrwr {0}, 0x0", in(reg) crmd) };
+        unsafe { asm!("csrwr {0}, 0x0", inlateout(reg) crmd => _) };
     }
 
     fn enable_timer_interrupt() {
         const ECFG: usize = 1 << (crate::trap::trap::Interrupt::TimerInterrupt as usize);
-        unsafe { asm!("csrwr {0}, 0x4", in(reg) ECFG) }
+        unsafe { asm!("csrwr {0}, 0x4", inlateout(reg) ECFG => _) }
     }
 }
 
