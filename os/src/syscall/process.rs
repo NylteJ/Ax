@@ -4,6 +4,7 @@ use core::{
     num::NonZero,
     pin::Pin,
     ptr::addr_eq,
+    sync::atomic::Ordering,
 };
 
 use alloc::{sync::Arc, vec::Vec};
@@ -22,6 +23,7 @@ use crate::{
     },
     multitask::{
         current_task,
+        signal::SignalId,
         task::{AuxiliaryEntry, Task, TaskArc, USER_STACK_BYTES},
         task_manager::get_task_by_pid,
     },
@@ -59,6 +61,8 @@ pub extern "C" fn clone(
     let flags = (flags >> 8).try_into().map_err(|_| EINVAL)?;
     let flags = CloneFlags::from_bits(flags).ok_or(EINVAL)?;
 
+    flags.check_validity()?;
+
     log::trace!(
         "clone: flags = {flags:?}, signal = {signal:#x} (ignored), stack = {:#x}, ptid = {ptid:#x} (ignored), tls = {tls:#x} (ignored), ctid = {ctid:#x} (ignored)",
         stack.map_or(0, |s| s.get())
@@ -85,7 +89,9 @@ bitflags! {
         /// 如果此参数被设定，子进程将共享父进程的文件描述符表；反之，子进程将复制父进程的文件描述符表并独立维护。
         const FILES = 1 << 2;
 
+        /// 如果此参数被设定，子进程将共享父进程的信号处理程序；反之，子进程将复制父进程的信号处理程序并独立维护。
         const SIGHAND = 1 << 3;
+
         const PIDFD = 1 << 4;
 
         /// 如果由 vfork() 创建的进程修改了除用于存储 vfork() 返回值的 pid_t 类型变量之外的任何数据，
@@ -117,6 +123,19 @@ bitflags! {
         const NEWPID = 1 << 21;
         const NEWNET = 1 << 22;
         const IO = 1 << 23;
+    }
+}
+
+impl CloneFlags {
+    pub fn check_validity(&self) -> SyscallResult {
+        let bad = (self.contains(CloneFlags::THREAD) && !self.contains(CloneFlags::SIGHAND))
+            || (self.contains(CloneFlags::SIGHAND) && !self.contains(CloneFlags::VM));
+
+        if bad {
+            EINVAL
+        } else {
+            SyscallResult::success(0)
+        }
     }
 }
 
@@ -486,4 +505,18 @@ pub extern "C" fn nanosleep(req: *const TimeSpec, rem: *mut TimeSpec) -> Syscall
 // FIXME
 pub extern "C" fn set_tid_address() -> usize {
     0
+}
+
+pub extern "C" fn exit_group(code: isize) -> ! {
+    let cur_task = unsafe { current_task().as_ref_unchecked() };
+
+    let is_already_exiting = cur_task.process.is_exiting.swap(true, Ordering::Relaxed);
+    if !is_already_exiting {
+        for task in &*cur_task.process.tasks.read() {
+            // 注意这里也会遍历到自己，但没什么关系，因为我们再也不会回用户态了
+            task.send_signal(SignalId::SIGKILL);
+        }
+    }
+
+    exit(code)
 }

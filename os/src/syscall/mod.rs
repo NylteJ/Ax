@@ -23,6 +23,7 @@ pub mod filesystem;
 pub mod memory;
 pub mod misc;
 pub mod process;
+pub mod signal;
 pub mod user;
 
 #[derive(Clone, Copy)]
@@ -132,6 +133,11 @@ pub static TABLE: [Option<SyscallFn>; MAX_SYSCALL_COUNT] = const {
     define!(260, process::wait4);
     define!(101, process::nanosleep);
     define!(96, process::set_tid_address);
+    define!(94, process::exit_group);
+
+    define!(134, signal::rt_sigaction);
+    define!(129, signal::kill);
+    define!(135, signal::rt_sigprocmask);
 
     define!(174, user::getuid);
     define!(176, user::getgid);

@@ -22,6 +22,7 @@ use crate::{
         get_new_anon_block_device_id,
         vfs::{self, VfsError, VfsResult},
     },
+    multitask::{current_task, signal::SignalId},
 };
 
 const BUFFER_BYTES: usize = 4096;
@@ -92,7 +93,10 @@ impl vfs::FileOps for PipeFile {
 
         fn check_pipe_alive(writer: &Producer) -> VfsResult<()> {
             if !writer.read_is_held() {
-                log::error!("TODO: SIGPIPE");
+                // 此时还需要发送 SIGPIPE
+                let cur_task = unsafe { current_task().as_ref_unchecked() };
+                cur_task.send_signal(SignalId::SIGPIPE);
+
                 Err(VfsError::BrokenPipe)
             } else {
                 Ok(())

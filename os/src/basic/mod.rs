@@ -23,8 +23,10 @@ pub unsafe fn extend_lifetime_mut<'a, 'b, T: ?Sized>(rf: &'_ mut T) -> &'a mut T
     unsafe { core::ptr::NonNull::from_mut(rf).as_mut() }
 }
 
-#[cold]
-pub fn cold_path() {}
+#[inline(always)]
+pub const fn cold_path() {
+    core::intrinsics::cold_path();
+}
 
 /// 一个在单次初始化后只读的包装器，提供方便的访问机制
 pub struct UnsafeInited<T> {

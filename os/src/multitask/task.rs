@@ -9,7 +9,7 @@ use core::{
 
 use alloc::{sync::Arc, vec::Vec};
 use elf::{ElfBytes, endian::NativeEndian};
-use intrusive_collections::{LinkedListLink, intrusive_adapter};
+use intrusive_collections::{LinkedListLink, UnsafeRef, intrusive_adapter};
 
 use crate::{
     arch::{
@@ -36,6 +36,7 @@ use crate::{
         fdtable::FileDescriptorTable,
         fs_data::FilesystemData,
         process_data::ProcessData,
+        signal::{SignalHandler, SignalId, SignalsWaitingList},
         task_context::{TaskContext, switch_context},
         task_manager::{PID_ALLOCATOR, register_task},
         task_scheduler::TASK_SCHEDULER,
@@ -64,6 +65,11 @@ pub struct Task {
     pub fs_data: Arc<RwLock<FilesystemData>>,
 
     pub process: Arc<ProcessData>,
+    /// 进程的 Task 链表的侵入式节点，由于所有操作都须借助 ProcessData 中的锁，它本身无需额外同步
+    pub(super) task_of_process_link: LinkedListLink,
+
+    pub signal_handler: Arc<RwLock<SignalHandler>>,
+    pub signals_wl: Mutex<SignalsWaitingList>,
 
     /// 子 Task 链表头
     pub children: Mutex<intrusive_collections::LinkedList<TaskAdapter>>,
@@ -199,6 +205,10 @@ impl Task {
             })),
 
             process: Arc::new(ProcessData::new(INIT_PID, INIT_PID)),
+            task_of_process_link: LinkedListLink::new(),
+
+            signal_handler: Arc::new(RwLock::new(SignalHandler::new())),
+            signals_wl: Mutex::new(SignalsWaitingList::new()),
 
             children: Mutex::new(intrusive_collections::LinkedList::new(TaskAdapter::new())),
             children_link: LinkedListLink::new(),
@@ -215,6 +225,12 @@ impl Task {
 
         // 填充 parent
         unsafe { task.parent.as_ptr().write(NonNull::from_ref(&task)) };
+
+        // 将自身放入 process 的 task 列表中
+        task.process
+            .tasks
+            .write()
+            .push_back(unsafe { UnsafeRef::from_raw(&*task) });
 
         // 将 task 地址写入内核栈（注意我们现在不在这个内核栈上）
         unsafe { task_ptr_ptr.write(task.deref()) };
@@ -331,8 +347,16 @@ impl Task {
             Arc::new(ProcessData::new(tid, self.process.pgid))
         };
 
-        let parent = if flags.contains(CloneFlags::PARENT) {
-            // 克隆父指针，父 Task 和自身相同
+        let signal_handler = if flags.contains(CloneFlags::SIGHAND) {
+            // 共享同一个信号处理器
+            self.signal_handler.clone()
+        } else {
+            // 使用初始时相等的两个信号处理器
+            Arc::new(RwLock::new(self.signal_handler.read().clone()))
+        };
+
+        let parent = if flags.intersects(CloneFlags::PARENT | CloneFlags::THREAD) {
+            // 克隆父指针，父 Task 和自身相同（注意 THREAD 隐含这点）
             self.parent_task()
         } else {
             // 不克隆父指针，父 Task 设为自身
@@ -351,6 +375,10 @@ impl Task {
             fs_data,
 
             process,
+            task_of_process_link: LinkedListLink::new(),
+
+            signal_handler,
+            signals_wl: Mutex::new(self.signals_wl.lock().clone_for_fork()),
 
             // 这几个不应当复制
             children: Mutex::new(intrusive_collections::LinkedList::new(TaskAdapter::new())),
@@ -369,6 +397,11 @@ impl Task {
         if !flags.contains(CloneFlags::THREAD) {
             parent.children.lock().push_back(ret.clone());
         }
+
+        ret.process
+            .tasks
+            .write()
+            .push_back(unsafe { UnsafeRef::from_raw(&*ret) });
 
         unsafe { task_ptr_ptr.write(ret.deref()) };
 
@@ -407,6 +440,9 @@ impl Task {
 
         // 关闭标记为 CLOEXEC 的文件描述符
         self.files.write().close_on_exec();
+
+        // 清空待决信号
+        self.signals_wl.lock().clear_for_exec();
 
         // OK，这样就可以了！
         let _ = DropGuard::release(guard);
@@ -456,6 +492,22 @@ impl Task {
             // *self.address_space.write() = AddressSpace::new();
             // *self.files.write() = FileDescriptorTable::new();
             self.transfer_children_to_init();
+        }
+    }
+
+    /// 向此 Task 发送信号
+    ///
+    /// 注意此函数只是向对应 Task 发送信号，信号的处理可能被延迟，且无论如何只会在该 Task 准备返回用户态时处理
+    pub fn send_signal(&self, signal: SignalId) {
+        if self.tid == INIT_PID {
+            // init 进程不处理任何信号
+            return;
+        }
+
+        if signal.is_realtime() {
+            todo!("处理实时信号")
+        } else {
+            self.signals_wl.lock().add_normal(signal);
         }
     }
 
@@ -731,6 +783,11 @@ impl Drop for Task {
         PID_ALLOCATOR.lock().deallocate(self.tid);
 
         self.transfer_children_to_init();
+
+        {
+            let mut tasks = self.process.tasks.write();
+            unsafe { tasks.cursor_mut_from_ptr(self) }.remove();
+        }
 
         // 注意，Task 被 drop 意味着它已经从父 Task 的 children 中被移除了，因此此处无需重复清理
 

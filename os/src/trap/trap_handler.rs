@@ -11,7 +11,7 @@ use crate::{
         DropGuard, abort_and_shutdown, stack::TaskKernelStackPtr, timer::reset_timer_interrupt,
     },
     memory::address::VirtAddr,
-    multitask::{current_task, task::Task, task_scheduler::TASK_SCHEDULER},
+    multitask::{current_task, signal::SignalId, task::Task, task_scheduler::TASK_SCHEDULER},
     syscall::{self, ERRORCODE_NOSYS},
     trap::{
         page_fault_type::PageFaultType,
@@ -23,13 +23,40 @@ use crate::{
 extern "C" fn trap_handler(context: &mut NativeTrapContext) {
     let trap_is_from_kernel = context.is_trap_from_kernel();
 
-    let current_task = unsafe { current_task().as_ref_unchecked() };
+    let cur_task = unsafe { current_task().as_ref_unchecked() };
 
     let kernel_time_updater;
+    let signal_handling_guard;
     if !trap_is_from_kernel {
-        current_task.time_stats.lock().update_user_time();
-        kernel_time_updater =
-            DropGuard::new(|| current_task.time_stats.lock().update_kernel_time());
+        cur_task.time_stats.lock().update_user_time();
+        kernel_time_updater = DropGuard::new(|| cur_task.time_stats.lock().update_kernel_time());
+
+        signal_handling_guard = DropGuard::new(|| {
+            while let Some(signal_id) = { cur_task.signals_wl.lock().try_consume_one() } {
+                log::debug!(
+                    "正在处理 TID = {} 的 Task 的 {signal_id:?} 信号",
+                    cur_task.tid
+                );
+
+                let behavior = cur_task.signal_handler.read().handle(signal_id);
+
+                let sid_value = signal_id.value().into();
+
+                use crate::multitask::signal::SignalBehavior;
+                match behavior {
+                    // 这里直接调用 exit_group 是没问题的，其内部有防重入设施，必要时会退化为 exit
+                    SignalBehavior::Terminate => syscall::process::exit_group(sid_value),
+                    SignalBehavior::Ignored => (),
+                    SignalBehavior::TerminateAndDumpCore => {
+                        log::error!("TODO: core dump");
+                        syscall::process::exit_group(sid_value);
+                    }
+
+                    SignalBehavior::Stop => todo!(),
+                    SignalBehavior::ContinueIfStopped => todo!(),
+                }
+            }
+        });
     }
 
     match Trap::new() {
@@ -59,7 +86,7 @@ extern "C" fn trap_handler(context: &mut NativeTrapContext) {
             reset_timer_interrupt();
 
             let mut brw = TASK_SCHEDULER.lock();
-            if let Some(next_task) = brw.on_time_interrupt(current_task) {
+            if let Some(next_task) = brw.on_time_interrupt(cur_task) {
                 drop(brw);
                 next_task.switch_to();
             }
@@ -110,7 +137,7 @@ extern "C" fn trap_handler(context: &mut NativeTrapContext) {
                     );
                     log::error!(
                         "用户态程序（PID = {}）发生 PageFault（{fault:?}）",
-                        current_task.tid,
+                        cur_task.tid,
                     );
                     log::info!("其试图访问：{:#x}", arch::NativeTrap::get_bad_address());
                     log::info!("对应代码所在地址：{:#x}", context.ret_pc);
@@ -119,9 +146,7 @@ extern "C" fn trap_handler(context: &mut NativeTrapContext) {
                         "=================================================================================="
                     );
 
-                    // TODO: SIGSEGV
-
-                    syscall::basic::exit(0xc0000005); // 其实我们是 Windows！
+                    cur_task.send_signal(SignalId::SIGSEGV);
                 }
             }
         }
@@ -130,7 +155,7 @@ extern "C" fn trap_handler(context: &mut NativeTrapContext) {
         Trap::Exception(Exception::FloatingPointUnavailable) => {
             log::warn!(
                 "当前任务（TID = {}）使用了浮点指令。目前我们的内核未使用浮点，因此暂时无需额外处理，只是未来扩展时需要注意（以及，目前此提示实际上只会触发一次，因为 EUEN 并不会被保存）",
-                current_task.tid
+                cur_task.tid
             );
 
             use bit_field::BitField;

@@ -1,6 +1,6 @@
 use core::{
     ffi::{c_char, c_int, c_long, c_short, c_uchar, c_uint, c_ulong, c_ushort, c_void},
-    mem::{MaybeUninit, replace},
+    mem::{MaybeUninit, replace, swap},
     ops::FromResidual,
     pin::Pin,
     ptr::{self, NonNull, addr_eq, from_raw_parts, from_raw_parts_mut, null_mut},
@@ -14,6 +14,7 @@ use uninit::AsMaybeUninit;
 
 use crate::{
     basic::{
+        DropGuard,
         bstr::{ByteStr, ByteString},
         extend_lifetime_mut,
         timer::{get_cpu_tick, us_to_cpu_tick},
@@ -32,7 +33,7 @@ use crate::{
         copy_from_user_uninit, copy_one_from_user, copy_one_to_user, copy_slice_to_user,
         copy_str_from_user, copy_to_user, copy_vec_from_user,
     },
-    multitask::{FDTableEntry, FileDescriptorFlags, current_task},
+    multitask::{FDTableEntry, FileDescriptorFlags, current_task, signal::SignalMask},
     syscall::{SyscallResult, common_types::TimeSpec},
 };
 
@@ -1377,9 +1378,13 @@ pub extern "C" fn ppoll(
     fds_ptr: *mut PollFd,
     nfds: usize,
     tmo_p: *const TimeSpec,
-    sigmask: usize,
+    sigmask: *const SignalMask,
 ) -> SyscallResult {
-    log::error!("处理 ppoll 的 sigmask: {sigmask:#x}");
+    let sigmask = if sigmask.is_null() {
+        None
+    } else {
+        Some(copy_one_from_user(sigmask)?)
+    };
 
     let timeout_us = if tmo_p.is_null() {
         None
@@ -1412,6 +1417,14 @@ pub extern "C" fn ppoll(
     }
 
     let cur_task = unsafe { current_task().as_ref_unchecked() };
+
+    // 修改和随后恢复信号掩码
+    // 内核态不会被信号打断，因此直接写即可
+    let restore_sigmask_guard;
+    if let Some(mask) = sigmask {
+        let old_mask = replace(&mut cur_task.signals_wl.lock().mask, mask);
+        restore_sigmask_guard = DropGuard::new(move || cur_task.signals_wl.lock().mask = old_mask);
+    }
 
     let count = loop {
         let mut count = 0;
@@ -1455,6 +1468,11 @@ pub extern "C" fn ppoll(
         // 假装我们还设定了超时唤醒
         if deadline_tick.is_some_and(|ddl| ddl > get_cpu_tick()) {
             return SyscallResult::success(0); // 超时，此时不修改用户侧的 revents
+        }
+
+        // 假装我们还设定了信号唤醒
+        if cur_task.signals_wl.lock().find_can_consume().is_some() {
+            return EINTR;
         }
     };
 
