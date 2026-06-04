@@ -20,9 +20,9 @@ use crate::{
         timer::{get_cpu_tick, us_to_cpu_tick},
     },
     filesystem::{
-        PipeFile,
         devfs::drivers::DeviceId,
         filesystems::get_filesystem_type,
+        new_anonymous_pipes,
         vfs::{
             self, DEntryArc, File, FileArc, FileFlags, FileOps, FileSystem, INodeArc, INodeMode,
             IterateDirData, MountPoint, Path, PathToWalk, PollStatus, ROOT_PATH, VfsError,
@@ -138,7 +138,7 @@ pub extern "C" fn getcwd(buf: *mut c_char, size: usize) -> SyscallResult {
 pub extern "C" fn pipe2(fd: *mut c_int, flags: usize) -> SyscallResult {
     let cloexec = FileOpenFlags::from_bits_retain(flags as _).contains(FileOpenFlags::O_CLOEXEC);
 
-    let (reader, writer) = PipeFile::new_anonymous();
+    let (reader, writer) = new_anonymous_pipes();
 
     let func = if cloexec {
         FDTableEntry::cloexec
@@ -1270,7 +1270,7 @@ pub extern "C" fn sendfile(
 
 enum SpliceEnd {
     File(SpliceEndFile),
-    Pipe(FileArc<PipeFile>),
+    Pipe(FileArc),
 }
 
 enum SpliceEndFile {
@@ -1352,14 +1352,7 @@ fn get_splice_end(fd: isize, off: *mut u64) -> Result<SpliceEnd, SyscallResult> 
     let is_pipe = file.get_inode().data.read().mode.contains(INodeMode::Pipe);
 
     match (is_pipe, off) {
-        (true, None) => {
-            let arc = unsafe { Pin::into_inner_unchecked(file) };
-            let ptr = Arc::into_raw(arc);
-            let pipe_ptr = ptr.cast();
-            let pipe_arc = unsafe { Arc::from_raw(pipe_ptr) };
-            let file = unsafe { Pin::new_unchecked(pipe_arc) };
-            Ok(SpliceEnd::Pipe(file))
-        }
+        (true, None) => Ok(SpliceEnd::Pipe(file)),
         (true, Some(_)) => Err(ESPIPE),
         (false, None) => Ok(SpliceEnd::File(SpliceEndFile::File(file))),
         (false, Some(off)) => Ok(SpliceEnd::File(SpliceEndFile::FileWithOff(file, off))),

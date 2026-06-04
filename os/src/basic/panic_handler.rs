@@ -3,7 +3,7 @@ use core::panic::PanicInfo;
 
 use crate::arch::interfaces::Basic;
 use crate::basic::console::{CONSOLE_WRITER, ConsoleWriter};
-use crate::basic::debugger::backtrace;
+use crate::basic::debugger::{backtrace, debugbreak};
 use crate::{arch, println};
 
 #[panic_handler]
@@ -14,5 +14,7 @@ fn panic(info: &PanicInfo) -> ! {
     } else {
         let _ = writeln!(ConsoleWriter, "Kernel {info}");
     }
+
+    debugbreak();
     arch::NativeBasic::shutdown(false);
 }

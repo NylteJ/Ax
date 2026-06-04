@@ -22,7 +22,7 @@ impl DEntryOps for DevDEntry {
         let path = vfs::Path(dentry, mount);
 
         let file = match &inode.data.read().ops {
-            DevINode::Directory(children) => vfs::File::new(path, inode, flags, DevDirFile),
+            DevINode::Directory(_) => vfs::File::new(path, inode, flags, DevDirFile),
             DevINode::DeviceFile(device_type, device_id) => {
                 let driver = find_driver(device_type, device_id).ok_or(VfsError::DeviceNotFound)?;
                 vfs::File::new(path, inode, flags, driver)

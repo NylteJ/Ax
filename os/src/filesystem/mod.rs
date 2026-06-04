@@ -8,7 +8,7 @@ pub mod filesystems;
 mod other;
 mod utils;
 
-pub use other::pipe::PipeFile;
+pub use other::pipe::new_anonymous_pipes;
 
 pub fn init() {
     tmpfs::register();

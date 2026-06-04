@@ -2,6 +2,13 @@ use core::ptr;
 
 use crate::{print, println};
 
+/// 断点函数，调试时会在调试器内触发断点，其他时候编译为无操作。
+#[cfg_attr(debug_assertions, inline(never))]
+#[cfg_attr(not(debug_assertions), inline(always))]
+pub fn debugbreak() {
+    // Makefile 魔术
+}
+
 /// 回溯打印当前调用栈，在 Debug 构建下带符号。
 ///
 /// 目前实现依赖于帧指针。

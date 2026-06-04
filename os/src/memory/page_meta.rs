@@ -141,7 +141,7 @@ impl PageMeta {
     }
 
     pub unsafe fn pagecache_mark_dirty(&self, page_cache: &PageCache) {
-        let PageType::File { page_index, dirty } = &self.page_type else {
+        let PageType::File { page_index, .. } = &self.page_type else {
             unsafe { unreachable_unchecked() };
         };
 

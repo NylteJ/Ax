@@ -7,7 +7,7 @@ use hashbrown::HashMap;
 
 use crate::{
     basic::UnsafeInited,
-    filesystem::vfs::{self, FileOps, VfsError, VfsResult},
+    filesystem::vfs::{self, VfsError, VfsResult},
     syscall::filesystem::IoctlCommand,
 };
 
@@ -52,7 +52,7 @@ impl<T: ?Sized + Driver> vfs::FileOps for &'static T {
         (*self).fsync()
     }
 
-    fn get_dir(&self, pos: u64) -> VfsResult<Option<vfs::IterateDirData>> {
+    fn get_dir(&self, _pos: u64) -> VfsResult<Option<vfs::IterateDirData>> {
         Err(VfsError::NotADirectory)
     }
 

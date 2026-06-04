@@ -7,16 +7,16 @@ pub struct DevDirFile;
 impl FileOps for DevDirFile {
     fn kread(
         &mut self,
-        visitor: &mut dyn FnMut(&[u8]) -> VfsResult<u64>,
-        len: u64,
+        _visitor: &mut dyn FnMut(&[u8]) -> VfsResult<u64>,
+        _len: u64,
     ) -> VfsResult<u64> {
         Err(VfsError::IsADirectory)
     }
 
     fn kwrite(
         &mut self,
-        visitor: &mut dyn FnMut(&mut [MaybeUninit<u8>]) -> VfsResult<u64>,
-        len: u64,
+        _visitor: &mut dyn FnMut(&mut [MaybeUninit<u8>]) -> VfsResult<u64>,
+        _len: u64,
     ) -> VfsResult<u64> {
         Err(VfsError::IsADirectory)
     }

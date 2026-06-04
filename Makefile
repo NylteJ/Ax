@@ -175,7 +175,7 @@ debug-rv:
 		$(MAKE) rv MODE=debug || exit 1; \
 		$(WINDOWS_TERMINAL_PATH) --profile "Ubuntu" -- bash -c "cd ~/OSKernel2026/repo && docker run $(DOCKER_ARGS_BASE) $(RV_QEMU_CMD_BASE) -s -S"; \
 		sleep 2; \
-		gdb-multiarch -ex "file ./kernel-rv" -ex "set arch riscv:rv64" -ex "target remote localhost:1234" -ex "tb *0x80200000" -ex "c" -ex "tui enable" -ex "layout split"; \
+		gdb-multiarch -ex "file ./kernel-rv" -ex "set arch riscv:rv64" -ex "target remote localhost:1234" -ex "tb *0x80200000" -ex "b os::basic::debugger::debugbreak" -ex "c" -ex "tui enable" -ex "layout split"; \
 		docker stop $$(docker ps -q); \
 		echo "调试完成，所有容器已终止"; \
 	}
@@ -185,7 +185,7 @@ debug-la:
 		$(MAKE) la MODE=debug || exit 1; \
 		$(WINDOWS_TERMINAL_PATH) --profile "Ubuntu" -- bash -c "cd ~/OSKernel2026/repo && docker run $(DOCKER_ARGS_BASE) $(LA_QEMU_CMD_BASE) -s -S"; \
 		sleep 2; \
-		~/OSKernel2026/cross-tools/bin/loongarch64-unknown-linux-gnu-gdb -ex "file ./kernel-la" -ex "target remote localhost:1234"; \
+		~/OSKernel2026/cross-tools/bin/loongarch64-unknown-linux-gnu-gdb -ex "file ./kernel-la" -ex "target remote localhost:1234" -ex "b os::basic::debugger::debugbreak"; \
 		docker stop $$(docker ps -q); \
 		echo "调试完成，所有容器已终止"; \
 	}
