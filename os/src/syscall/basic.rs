@@ -30,6 +30,28 @@ pub extern "C" fn exit(ec: isize) -> ! {
 
     let cur = unsafe { TaskArc::from_asm(current_task()) };
 
+    // FIXME: temp
+    #[cfg(debug_assertions)]
+    if cur.tid == INIT_PID {
+        let mut raw = crate::trap::trap_handler::UNKNOWN_SYSCALLS
+            .lock()
+            .drain()
+            .collect::<alloc::vec::Vec<_>>();
+
+        raw.sort_unstable_by_key(|(_, count)| -count.cast_signed());
+
+        let list = raw
+            .into_iter()
+            .map(|(id, count)| {
+                alloc::format!(
+                    "{} (id = {id}): {count} 次",
+                    super::SYSCALL_ID_NAME_MAP.get(id).unwrap_or(&"???")
+                )
+            })
+            .collect::<alloc::vec::Vec<_>>();
+
+        log::info!("所有未知系统调用：\n{list:#?}")
+    }
     debug_assert!(cur.tid != INIT_PID, "init 进程不应退出");
 
     log::error!("TODO: 处理退出 signal");

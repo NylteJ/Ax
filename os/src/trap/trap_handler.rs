@@ -19,6 +19,12 @@ use crate::{
     },
 };
 
+#[cfg(debug_assertions)]
+lazy_static! {
+    pub static ref UNKNOWN_SYSCALLS: crate::basic::sync::Mutex<hashbrown::HashMap<usize, usize>> =
+        crate::basic::sync::Mutex::new(hashbrown::HashMap::new());
+}
+
 #[unsafe(no_mangle)]
 extern "C" fn trap_handler(context: &mut NativeTrapContext) {
     let trap_is_from_kernel = context.is_trap_from_kernel();
@@ -78,6 +84,11 @@ extern "C" fn trap_handler(context: &mut NativeTrapContext) {
                     "未知系统调用：id = {id} ({}), args = {args:x?} (HEX)",
                     syscall::SYSCALL_ID_NAME_MAP.get(id).unwrap_or(&"???")
                 );
+
+                #[cfg(debug_assertions)]
+                {
+                    *UNKNOWN_SYSCALLS.lock().entry(id).or_insert(0) += 1;
+                }
             }
 
             *context.ret_reg_mut() = ret_value;
