@@ -24,7 +24,7 @@ use crate::{
     multitask::{
         current_task,
         signal::SignalId,
-        task::{AuxiliaryEntry, Task, TaskArc, USER_STACK_BYTES},
+        task::{AuxId, AuxiliaryEntry, Task, TaskArc, USER_STACK_BYTES},
         task_manager::get_task_by_pid,
     },
     syscall::{
@@ -178,6 +178,11 @@ pub extern "C" fn execve(
 
     let argc = argv_idxs.len();
 
+    // AT_RANDOM 所需的 16 字节随机数据我们也放在 data 里
+    let random_idx = data.len();
+    let random_data: [u8; 16] = bytemuck::cast([get_cpu_tick(), 0x1145141919810]); // TODO: 让它更随机一点
+    data.extend(random_data);
+
     // 由于执行 replace_execute 后便不能再回头，这里需要提前检查，而且后面就不能再返回失败
     // 注意这里的大小不包括 auxv，因为 auxv 完全由我们控制
     let args_bytes_unaligned = {
@@ -197,18 +202,11 @@ pub extern "C" fn execve(
         return E2BIG;
     }
 
-    log::trace!(
-        "data: {}, argv_idxs: {argv_idxs:?}, envp_idxs: {envp_idxs:?}",
-        crate::basic::bstr::ByteStr::new(&data)
-    );
-
+    // 半成品 auxv（缺少 AT_RANDOM 和 AT_NULL）
     let auxv = task.replace_execute(file)?;
-    debug_assert!(
-        auxv.last()
-            .is_some_and(|entry| entry.0 == 0 && entry.1 == 0)
-    );
+    debug_assert!(auxv.iter().all(|entry| entry.0 != AuxId::AT_NULL));
 
-    let auxv_bytes = auxv.len() * size_of::<AuxiliaryEntry>();
+    let auxv_bytes = (auxv.len() + 2) * size_of::<AuxiliaryEntry>();
     let data_bytes_unaligned = args_bytes_unaligned + auxv_bytes;
     let data_bytes_padding = STACK_ALIGN - data_bytes_unaligned % STACK_ALIGN;
     let data_bytes = data_bytes_unaligned + data_bytes_padding;
@@ -225,12 +223,18 @@ pub extern "C" fn execve(
     // 对齐填充
     *current_sp -= data_bytes_padding;
 
-    // argv、envp 的具体数据
+    // argv、envp 的具体数据，以及 AT_RANDOM 的随机数据
     *current_sp -= data.len();
     let data_begin = *current_sp;
     copy_to_user(data_begin as *mut u8, bytemuck::cast_slice(&data)).expect("此时栈不应溢出");
 
-    // auxv
+    // auxv（顺带一提，AT_RANDOM 基本上是初始化 glibc 所必需的，我也不知道为什么）
+    let mut auxv = auxv;
+    auxv.push(AuxiliaryEntry(AuxId::AT_RANDOM, random_idx + data_begin));
+    auxv.push(AuxiliaryEntry(AuxId::AT_NULL, 0));
+    log::trace!("final auxv: {auxv:?}");
+    debug_assert_eq!(auxv_bytes, size_of_val(auxv.as_slice()));
+
     *current_sp -= auxv_bytes;
     copy_to_user(*current_sp as *mut u8, bytemuck::cast_slice(&auxv)).expect("此时栈不应溢出");
 

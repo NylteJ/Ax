@@ -1,11 +1,14 @@
 use core::ffi::c_void;
 
+use bitflags::Flags;
 use bitflags::bitflags;
 
 use crate::arch;
 use crate::arch::interfaces::Basic;
 use crate::memory::PAGE_BYTES;
 use crate::memory::address::VirtAddr;
+use crate::memory::page::PTEFlags;
+use crate::memory::page::PTEFlagsNative;
 use crate::memory::virtual_memory_area::VMAFlags;
 use crate::memory::virtual_memory_area::VMAGrowth;
 use crate::memory::virtual_memory_area::VMAType;
@@ -196,6 +199,63 @@ pub extern "C" fn munmap(start: *mut c_void, len: usize) -> SyscallResult {
 
     // TODO: 避免全量刷新
     arch::NativeBasic::tlb_invalidate_all();
+
+    SyscallResult::success(0)
+}
+
+bitflags! {
+    struct MProtectFlags: u8 {
+        const PROT_READ = 1 << 0;
+        const PROT_WRITE = 1 << 1;
+        const PROT_EXEC = 1 << 2;
+    }
+}
+
+pub extern "C" fn mprotect(addr: *mut c_void, len: usize, prot: isize) -> SyscallResult {
+    let prot: u8 = prot.try_into().map_err(|_| EINVAL)?;
+    let prot = MProtectFlags::from_bits(prot).ok_or(EINVAL)?;
+    let (r, w, x) = (
+        prot.contains(MProtectFlags::PROT_READ),
+        prot.contains(MProtectFlags::PROT_WRITE),
+        prot.contains(MProtectFlags::PROT_EXEC),
+    );
+
+    let addr = addr.addr();
+
+    if addr % PAGE_BYTES != 0 {
+        return EINVAL;
+    }
+
+    let start = VirtAddr(addr);
+    let end = VirtAddr(addr + len).ceil_to_page();
+
+    let cur_task = unsafe { current_task().as_ref_unchecked() };
+    let mut address_space = cur_task.address_space.write();
+    address_space.modify_vma_flags_between(start, end, |mut flags| {
+        flags.set(VMAFlags::Read, r);
+        flags.set(VMAFlags::Write, w);
+        flags.set(VMAFlags::Execute, x);
+        flags
+    });
+    unsafe {
+        address_space
+            .get_page_table_mut()
+            .modify(start.into(), end.into(), |vaddr, entry| {
+                let flags = PTEFlagsNative::from_bits_retain(*entry);
+                let rest_bits = flags.unknown_bits();
+
+                let mut flags: PTEFlags = flags.into();
+                flags.set(PTEFlags::Read, r);
+                flags.set(PTEFlags::Write, w);
+                flags.set(PTEFlags::Execute, x);
+                flags.truncate();
+
+                let flags: PTEFlagsNative = flags.into();
+                *entry = flags.bits() | rest_bits;
+
+                arch::NativeBasic::tlb_invalidate_addr(vaddr);
+            })
+    };
 
     SyscallResult::success(0)
 }

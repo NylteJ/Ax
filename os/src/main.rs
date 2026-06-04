@@ -42,6 +42,7 @@
 #![feature(maybe_uninit_as_bytes)]
 #![feature(int_roundings)]
 #![feature(slice_ptr_get)]
+#![feature(const_copy_from_slice)]
 //
 #![deny(unused_must_use)]
 

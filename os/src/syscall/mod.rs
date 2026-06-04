@@ -120,10 +120,12 @@ pub static TABLE: [Option<SyscallFn>; MAX_SYSCALL_COUNT] = const {
     define!(71, filesystem::sendfile);
     define!(73, filesystem::ppoll);
     define!(29, filesystem::ioctl);
+    define!(62, filesystem::lseek);
 
     define!(214, memory::brk);
     define!(222, memory::mmap);
     define!(215, memory::munmap);
+    define!(226, memory::mprotect);
 
     define!(172, process::getpid);
     define!(173, process::getppid);
@@ -140,10 +142,14 @@ pub static TABLE: [Option<SyscallFn>; MAX_SYSCALL_COUNT] = const {
     define!(135, signal::rt_sigprocmask);
 
     define!(174, user::getuid);
+    define!(175, user::geteuid);
     define!(176, user::getgid);
+    define!(177, user::getegid);
 
     define!(169, misc::gettimeofday);
     define!(160, misc::uname);
+    define!(99, misc::set_robust_list);
+    define!(100, misc::get_robust_list);
 
     table
 };
@@ -214,6 +220,7 @@ impl FromResidual<Result<Infallible, VfsError>> for SyscallResult {
             VfsError::IsPipeOrSocket => ESPIPE,
             VfsError::BadPipeEnd | VfsError::BrokenPipe => EPIPE,
             VfsError::BadIoctl => EINVAL,
+            VfsError::ArithmeticOverflow => EOVERFLOW,
             VfsError::InvalidUserPointer(copy_error) => Self::from_residual(Err(copy_error)),
             VfsError::InvalidArguments(_) => EINVAL,
             VfsError::IoError => EIO,

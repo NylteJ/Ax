@@ -4,7 +4,8 @@ use core::{
     num::NonZero,
     ops::Deref,
     pin::Pin,
-    ptr::{NonNull, addr_eq},
+    ptr::{NonNull, addr_eq, null_mut},
+    sync::atomic::AtomicPtr,
 };
 
 use alloc::{sync::Arc, vec::Vec};
@@ -41,7 +42,7 @@ use crate::{
         task_manager::{PID_ALLOCATOR, register_task},
         task_scheduler::TASK_SCHEDULER,
     },
-    syscall::process::CloneFlags,
+    syscall::{misc::RobustListHead, process::CloneFlags},
 };
 
 /// 当前任务的所有元数据。拥有任务所有资源的所有权。
@@ -70,6 +71,8 @@ pub struct Task {
 
     pub signal_handler: Arc<RwLock<SignalHandler>>,
     pub signals_wl: Mutex<SignalsWaitingList>,
+
+    pub robust_list_head: AtomicPtr<RobustListHead>,
 
     /// 子 Task 链表头
     pub children: Mutex<intrusive_collections::LinkedList<TaskAdapter>>,
@@ -206,6 +209,8 @@ impl Task {
 
             process: Arc::new(ProcessData::new(INIT_PID, INIT_PID)),
             task_of_process_link: LinkedListLink::new(),
+
+            robust_list_head: AtomicPtr::new(null_mut()),
 
             signal_handler: Arc::new(RwLock::new(SignalHandler::new())),
             signals_wl: Mutex::new(SignalsWaitingList::new()),
@@ -377,6 +382,8 @@ impl Task {
             process,
             task_of_process_link: LinkedListLink::new(),
 
+            robust_list_head: AtomicPtr::new(null_mut()),
+
             signal_handler,
             signals_wl: Mutex::new(self.signals_wl.lock().clone_for_fork()),
 
@@ -414,7 +421,7 @@ impl Task {
         ret
     }
 
-    /// 将当前任务替换为 `file` 对应可执行文件的内容。不传递任何参数。返回辅助向量。
+    /// 将当前任务替换为 `file` 对应可执行文件的内容。不传递任何参数。返回半成品辅助向量。
     ///
     /// 注意此函数在内核端就是普通函数，返回用户态后替换后的任务才可能被执行。
     pub fn replace_execute(&self, file: FileArc) -> Result<AuxiliaryVec, LoadElfError> {
@@ -543,7 +550,7 @@ impl Task {
         ret
     }
 
-    /// 从 ELF 文件中加载程序，填入对应地址空间中，并返回入口地址和辅助向量
+    /// 从 ELF 文件中加载程序，填入对应地址空间中，并返回入口地址和半成品辅助向量
     ///
     /// 它也负责设置初始堆区 VMA 和 brk。
     /// （和 Linux 不同，我们初始时就有一个很短的堆区 VMA，因为反正虚拟地址多得用不完，这样只会掩盖少量用户态越界访问）
@@ -551,7 +558,7 @@ impl Task {
         file: &FileArc,
         address_space: &RwLock<AddressSpace>,
     ) -> Result<(usize, AuxiliaryVec), LoadElfError> {
-        use aux_ids::*;
+        use AuxId::*;
 
         let head = unsafe { File::get_page_cache(file.get_inode(), 0) }.unwrap();
 
@@ -578,6 +585,7 @@ impl Task {
 
         let mut auxv = Vec::new();
 
+        let mut first_load_seg_start_addr = None;
         let mut max_load_seg_end_addr = None;
 
         let segs = elf.segments().unwrap();
@@ -691,6 +699,9 @@ impl Task {
                     }
 
                     max_load_seg_end_addr.replace(zeros_end); // ELF 标准规定 PT_LOAD 段必须按地址升序排列
+                    if first_load_seg_start_addr.is_none() {
+                        first_load_seg_start_addr.replace(vaddr as usize);
+                    }
                 }
                 PT_DYNAMIC | PT_INTERP => {
                     log::error!("暂不支持动态链接的程序");
@@ -731,12 +742,19 @@ impl Task {
             });
         }
 
+        let program_start_off = first_load_seg_start_addr.expect("前面初始化 brk 时检查过了");
+
         let entry = elf.ehdr.e_entry as usize;
 
         auxv.push(AuxiliaryEntry(AT_ENTRY, entry));
         auxv.push(AuxiliaryEntry(AT_PAGESZ, PAGE_BYTES));
+        auxv.push(AuxiliaryEntry(
+            AT_PHDR,
+            program_start_off + elf.ehdr.e_phoff as usize,
+        ));
+        auxv.push(AuxiliaryEntry(AT_PHNUM, elf.ehdr.e_phnum as usize));
+        auxv.push(AuxiliaryEntry(AT_PHENT, elf.ehdr.e_phentsize as usize));
 
-        auxv.push(AuxiliaryEntry(AT_NULL, 0));
         Ok((entry, auxv))
     }
 
@@ -789,6 +807,10 @@ impl Drop for Task {
             unsafe { tasks.cursor_mut_from_ptr(self) }.remove();
         }
 
+        if !self.robust_list_head.get_mut().is_null() {
+            log::error!("TODO: 处理 robust_list_head");
+        }
+
         // 注意，Task 被 drop 意味着它已经从父 Task 的 children 中被移除了，因此此处无需重复清理
 
         log::trace!("Task {} dropped", self.tid);
@@ -805,14 +827,20 @@ pub enum LoadElfError {
 }
 
 #[repr(C)]
-#[derive(Clone, Copy, bytemuck::NoUninit)]
-pub struct AuxiliaryEntry(pub usize, pub usize);
+#[derive(Debug, Clone, Copy, bytemuck::NoUninit)]
+pub struct AuxiliaryEntry(pub AuxId, pub usize);
 
 pub type AuxiliaryVec = Vec<AuxiliaryEntry>;
 
-mod aux_ids {
-    pub const AT_NULL: usize = 0;
-    pub const AT_PHENT: usize = 4;
-    pub const AT_PAGESZ: usize = 6;
-    pub const AT_ENTRY: usize = 9;
+#[repr(usize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, bytemuck::NoUninit)]
+#[expect(non_camel_case_types)]
+pub enum AuxId {
+    AT_NULL = 0,
+    AT_PHDR = 3,
+    AT_PHENT = 4,
+    AT_PHNUM = 5,
+    AT_PAGESZ = 6,
+    AT_ENTRY = 9,
+    AT_RANDOM = 25,
 }

@@ -1526,3 +1526,28 @@ pub extern "C" fn ioctl(fd: isize, op: usize, argp: *mut c_char) -> SyscallResul
 
     SyscallResult::success(file.data.lock().ioctl(op, argp.cast())?)
 }
+
+pub extern "C" fn lseek(fd: isize, offset: i64, whence: isize) -> SyscallResult {
+    let file = get_file_from_fd(fd)?;
+
+    #[repr(u8)]
+    #[derive(TryFromPrimitive)]
+    enum Whence {
+        Set = 0,
+        Cur = 1,
+        End = 2,
+    }
+
+    let whence: u8 = whence.try_into().map_err(|_| EINVAL)?;
+    let whence: Whence = whence.try_into().map_err(|_| EINVAL)?;
+
+    let seek_from = match whence {
+        Whence::Set => vfs::SeekFrom::Start(offset.try_into().map_err(|_| EINVAL)?),
+        Whence::Cur => vfs::SeekFrom::Current(offset),
+        Whence::End => vfs::SeekFrom::End(offset),
+    };
+
+    let new_off = file.data.lock().fseek(seek_from)?;
+
+    SyscallResult::success(new_off as usize)
+}

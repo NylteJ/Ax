@@ -330,6 +330,31 @@ impl PageTable<2> {
         let table = unsafe { self.as_mut().get_unchecked_mut().as_mut_usize_array() };
         unsafe { unmap_page_table_range(table, start_addr.0, end_addr.0, 2) };
     }
+
+    /// 修改 `[start, end)` 范围内的页表项，支持大页，自动忽略无效项
+    ///
+    /// 不刷新 TLB，请手动刷新
+    ///
+    /// # Safety
+    /// `op` 不能让页变得无效，且必须保持类不变量
+    pub unsafe fn modify(
+        self: &mut Pin<Box<Self>>,
+        start: VirtPageNum<0>,
+        end: VirtPageNum<0>,
+        mut op: impl FnMut(VirtAddr, &mut usize),
+    ) {
+        if start == end {
+            return;
+        }
+
+        let start_addr: VirtAddr = start.into();
+        let end_addr: VirtAddr = VirtPageNum::<0>(end.0 - 1).into();
+
+        // 现在修改 `[start_addr, end_addr]` 内的页表项即可
+
+        let table = unsafe { self.as_mut().get_unchecked_mut().as_mut_usize_array() };
+        unsafe { modify_page_table_range(table, start_addr.0, end_addr.0, 2, &mut op) };
+    }
 }
 
 pub type PageTableBox<const LEVEL: usize> = Pin<Box<PageTable<LEVEL>>>;
@@ -483,5 +508,58 @@ unsafe fn unmap_page_table_range(
                 *entry = 0;
             }
         }
+    }
+}
+
+unsafe fn modify_page_table_range(
+    table: &mut [usize; PAGE_TABLE_SIZE],
+    start: usize,
+    end: usize,
+    level: usize,
+    op: &mut impl FnMut(VirtAddr, &mut usize),
+) {
+    debug_assert!(start <= end);
+    debug_assert!(level == 2 || start >> PAGE_SHIFTS[level + 1] == end >> PAGE_SHIFTS[level + 1]);
+
+    let start_head = (start >> PAGE_SHIFTS[level]) % PAGE_TABLE_SIZE;
+    let end_head = (end >> PAGE_SHIFTS[level]) % PAGE_TABLE_SIZE;
+
+    let start_tail = start % (1 << PAGE_SHIFTS[level]);
+    let end_tail = end % (1 << PAGE_SHIFTS[level]);
+
+    let tail_max = 0x3ffff000_usize % (1 << PAGE_SHIFTS[level]);
+
+    for index in start_head..=end_head {
+        let entry = &mut table[index];
+        let flags: PTEFlags = PTEFlagsNative::from_bits_truncate(*entry).into();
+
+        if !flags.contains(PTEFlags::Valid) {
+            continue;
+        }
+
+        if level == 0 {
+            op(VirtAddr(index << PAGE_SHIFTS[level]), entry);
+            continue;
+        }
+        // TODO: 暂时不处理大页，因为如果不位于边界则还要拆分，很麻烦
+        debug_assert!(!flags.intersects(PTEFlags::Read | PTEFlags::Write | PTEFlags::Execute));
+
+        let phys_page = PhysPageNum::<0>::from_pte(&PageTableEntry { bits: *entry });
+        let addr: PhysAddr = phys_page.into();
+        let vaddr = addr.to_virtual_address().0;
+
+        let next_table = vaddr as *mut [usize; PAGE_TABLE_SIZE];
+        let next_table = unsafe { next_table.as_mut_unchecked() };
+
+        let start =
+            (index << PAGE_SHIFTS[level]) + if index == start_head { start_tail } else { 0 };
+        let end = (index << PAGE_SHIFTS[level])
+            + if index == end_head {
+                end_tail
+            } else {
+                tail_max
+            };
+
+        unsafe { modify_page_table_range(next_table, start, end, level - 1, op) };
     }
 }

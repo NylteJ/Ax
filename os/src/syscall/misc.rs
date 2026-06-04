@@ -1,10 +1,14 @@
 use core::ffi::c_void;
 use core::slice;
+use core::sync::atomic::Ordering;
 
 use crate::basic::timer::cpu_tick_to_us;
 use crate::basic::timer::get_cpu_tick;
 use crate::memory::uaccess::copy_one_to_user;
+use crate::memory::uaccess::copy_slice_to_user;
 use crate::memory::uaccess::copy_to_user;
+use crate::multitask::current_task;
+use crate::multitask::task_manager::get_task_by_pid;
 use crate::syscall::SyscallResult;
 
 use crate::syscall::err_codes::*;
@@ -16,7 +20,6 @@ pub struct TimeVal {
     pub usec: usize,
 }
 
-/// ### #define SYS_gettimeofday 169
 /// * 功能：获取时间；
 /// * 输入： timespec结构体指针用于获得时间值；
 /// * 返回值：成功返回0，失败返回-1;
@@ -65,16 +68,70 @@ pub extern "C" fn uname(uts: *mut c_void) -> SyscallResult {
     // #endif
     // };
 
-    const DATA: &[u8] = concat_bytes!(
-        b"Ax\0",        // sysname
-        b"Ax\0",        // nodename
-        b"0.0.1\0",     // release
-        b"0.0.1\0",     // version
-        b"Unknown\0",   // machine
-        b"localhost\0", // domainname
-    );
+    type Entry = [u8; 65];
 
-    copy_to_user(uts.cast(), DATA)?;
+    const DATA: [Entry; 6] = {
+        const fn entry(str: &[u8]) -> Entry {
+            let mut entry = [0; 65];
+            assert!(str.len() < entry.len());
+            entry.split_at_mut(str.len()).0.copy_from_slice(str);
+            entry
+        }
+
+        [
+            entry(b"Ax"),        // sysname
+            entry(b"Ax"),        // nodename
+            entry(b"5 (fake)"),  // release
+            entry(b"0.0.1"),     // version
+            entry(b"Unknown"),   // machine
+            entry(b"localhost"), // domainname
+        ]
+    };
+
+    copy_slice_to_user(uts.cast(), &DATA)?;
+
+    SyscallResult::success(0)
+}
+
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct RobustListHead {
+    list: *mut (),
+    futex_offset: usize,
+    list_op_pending: *mut (),
+}
+
+pub extern "C" fn set_robust_list(head: *mut RobustListHead, len: usize) -> SyscallResult {
+    if len != size_of::<RobustListHead>() {
+        return EINVAL;
+    }
+
+    let cur_task = unsafe { current_task().as_ref_unchecked() };
+
+    cur_task.robust_list_head.store(head, Ordering::Release);
+
+    SyscallResult::success(0)
+}
+
+pub extern "C" fn get_robust_list(
+    pid: isize,
+    head_ptr: *mut *mut RobustListHead,
+    len_ptr: *mut usize,
+) -> SyscallResult {
+    if pid < 0 {
+        return ESRCH;
+    }
+    let pid = pid.cast_unsigned();
+
+    let task = if pid == 0 {
+        unsafe { current_task().as_ref_unchecked() }
+    } else {
+        &get_task_by_pid(pid).ok_or(ESRCH)?
+    };
+
+    let head = task.robust_list_head.load(Ordering::Acquire);
+    copy_one_to_user(head_ptr, &head)?;
+    copy_one_to_user(len_ptr, &size_of::<RobustListHead>())?;
 
     SyscallResult::success(0)
 }

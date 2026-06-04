@@ -4,6 +4,14 @@ pub extern "C" fn getuid() -> usize {
     0
 }
 
+pub extern "C" fn geteuid() -> usize {
+    0
+}
+
 pub extern "C" fn getgid() -> usize {
+    0
+}
+
+pub extern "C" fn getegid() -> usize {
     0
 }

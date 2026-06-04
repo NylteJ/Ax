@@ -22,7 +22,9 @@ use crate::{
         get_new_anon_block_device_id,
         vfs::{self, VfsError, VfsResult},
     },
+    memory::PAGE_BYTES,
     multitask::{current_task, signal::SignalId},
+    syscall::filesystem::{KstatInner, Time},
 };
 
 const BUFFER_BYTES: usize = 4096;
@@ -346,8 +348,19 @@ impl vfs::INodeOps for PipeINode {
         unimplemented!()
     }
 
-    fn get_kstat(&self) -> VfsResult<crate::syscall::filesystem::KstatInner> {
-        unimplemented!()
+    fn get_kstat(&self) -> VfsResult<KstatInner> {
+        Ok(KstatInner {
+            st_uid: 0, // FIXME
+            st_gid: 0, // FIXME
+            st_rdev: 0,
+            st_size: 0,
+            st_blksize: PAGE_BYTES as u32,
+            st_blocks: 0,
+            st_atime: Time::from_sec(0), // FIXME
+            st_mtime: Time::from_sec(0), // FIXME
+            st_ctime: Time::from_sec(0), // FIXME
+            ..Default::default()
+        })
     }
 
     fn evictable_when_mem_ref_zero(&mut self) -> bool {

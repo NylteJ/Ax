@@ -32,6 +32,8 @@ pub enum VfsError {
     BrokenPipe,
     /// 错误的 ioctl 命令
     BadIoctl,
+    /// 发生算数溢出
+    ArithmeticOverflow,
     /// 用户态程序输入了错误的指针
     InvalidUserPointer(uaccess::CopyError),
     /// 目标对象支持该操作，但输入参数无效（如果其它更具体的类型能满足要求，请使用其他类型）

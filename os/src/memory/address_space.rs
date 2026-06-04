@@ -229,6 +229,110 @@ impl AddressSpace {
         self.vmas.drain(full_remove..last_index);
     }
 
+    /// 将 [start, end) 内的所有 VMA 的标志用给定函数修改。对于部分位于其中的 VMA，会自动拆分。如果 `func` 返回的标志与原来相同，则不进行修改。
+    ///
+    /// `func` 应当是纯函数。
+    ///
+    /// # Panics
+    /// 如果 start > end，则会 panic。
+    pub fn modify_vma_flags_between(
+        &mut self,
+        start: VirtAddr,
+        end: VirtAddr,
+        func: impl Fn(VMAFlags) -> VMAFlags,
+    ) {
+        assert!(start <= end, "范围无效");
+
+        if start == end {
+            return;
+        }
+
+        let lower_bound = self.find_vma_index_lower_bound(start);
+
+        let begin = lower_bound.map_or(0, |x| x + 1);
+
+        if begin == self.vmas.len() {
+            return;
+        }
+
+        let full;
+
+        if self.vmas[begin].start < start {
+            // 第一个 VMA 部分位于范围外
+
+            let old_flags = self.vmas[begin].flags;
+            let new_flags: VMAFlags = func(old_flags);
+            if new_flags != old_flags {
+                if self.vmas[begin].end > end {
+                    // |==============|
+                    //    |========|
+                    let ed = replace(&mut self.vmas[begin].end, start);
+                    self.vmas.insert(begin + 1, VirtualMemoryArea {
+                        start,
+                        end,
+                        flags: new_flags,
+                        ..self.vmas[begin].clone()
+                    });
+                    self.vmas.insert(begin + 2, VirtualMemoryArea {
+                        start: end,
+                        end: ed,
+                        flags: old_flags,
+                        ..self.vmas[begin].clone()
+                    });
+
+                    return;
+                } else {
+                    // |=======|
+                    //    |========|
+                    let ed = replace(&mut self.vmas[begin].end, start);
+                    self.vmas.insert(begin + 1, VirtualMemoryArea {
+                        start,
+                        end: ed,
+                        flags: new_flags,
+                        ..self.vmas[begin].clone()
+                    });
+                    full = begin + 2;
+                }
+            } else {
+                full = begin + 1;
+            }
+        } else {
+            //  |=====|
+            // |========|
+            // 或
+            //  |=========|
+            // |========|
+            full = begin;
+        }
+
+        let last_index = self.vmas[full..].partition_point(|vma| vma.end <= end) + full;
+
+        if let Some(last) = self.vmas.get_mut(last_index)
+            && last.start < end
+            && let new_flags = func(last.flags)
+            && new_flags != last.flags
+        {
+            //  |=========|
+            // |========|
+            let strt = replace(&mut last.start, end);
+            let changed = VirtualMemoryArea {
+                start: strt,
+                end,
+                flags: new_flags,
+                ..last.clone()
+            };
+            self.vmas.insert(last_index, changed);
+        }
+
+        for vma in &mut self.vmas[full..last_index] {
+            let old_flags = vma.flags;
+            let new_flags = func(old_flags);
+            if new_flags != old_flags {
+                vma.flags = new_flags;
+            }
+        }
+    }
+
     pub fn get_page_table(&self) -> &PageTable<2> {
         self.page_table.as_ref().get_ref()
     }

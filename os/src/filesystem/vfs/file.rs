@@ -374,13 +374,13 @@ pub fn default_fseek<T: FileOps + 'static>(this: &mut T, seek_from: SeekFrom) ->
         SeekFrom::Current(offset) => {
             *pos = pos
                 .checked_add_signed(offset)
-                .ok_or(VfsError::InvalidArguments("文件位置偏移量溢出"))?
+                .ok_or(VfsError::ArithmeticOverflow)?
         }
         SeekFrom::End(offset) => {
             let file_size = unsafe { inode.as_ref() }.data.read().file_size;
             *pos = file_size
                 .checked_add_signed(offset)
-                .ok_or(VfsError::InvalidArguments("文件位置偏移量溢出"))?
+                .ok_or(VfsError::ArithmeticOverflow)?
         }
     }
     Ok(*pos)

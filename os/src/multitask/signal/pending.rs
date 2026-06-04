@@ -1,4 +1,3 @@
-
 use bitvec::{BitArr, array::BitArray, order::Lsb0, view::BitView};
 
 use crate::multitask::signal::{SignalId, SignalIdUnderlying, SignalMask};
