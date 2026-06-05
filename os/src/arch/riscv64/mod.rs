@@ -59,7 +59,7 @@ unsafe impl Arch for RiscV64 {
                 "jr t1",
                 // OK，现在一切正常了！
                 "la sp, boot_stack_top",
-                "j {main}",
+                "call {main}", // j 在调试模式下会因为跳转距离过远而失败
                 BOOT_PAGE_TABLE = sym BOOT_PAGE_TABLE,
                 LINEAR_MAPPING_OFFSET = const LINEAR_MAPPING_OFFSET,
                 main = sym main,

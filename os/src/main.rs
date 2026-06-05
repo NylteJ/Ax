@@ -329,7 +329,7 @@ fn init_devs() {
 
     macro_rules! define {
         ($name:literal, $kind:expr) => {{
-            let neg = vfs::walk_path(vfs::PathToWalk::Relative(ByteStr::new($name), dev))
+            let neg = vfs::walk_path(vfs::PathToWalk::Relative(ByteStr::new($name), dev.clone()))
                 .unwrap()
                 .ensure_neg()
                 .expect(concat!("/dev/", $name, " 应当初始不存在"));
@@ -346,4 +346,5 @@ fn init_devs() {
     use vfs::SpecialINodeType::CharDevice;
 
     define!("tty", CharDevice(DEV_TTY));
+    define!("urandom", CharDevice(DEV_URANDOM));
 }

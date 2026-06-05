@@ -150,6 +150,7 @@ pub static TABLE: [Option<SyscallFn>; MAX_SYSCALL_COUNT] = const {
     define!(160, misc::uname);
     define!(99, misc::set_robust_list);
     define!(100, misc::get_robust_list);
+    define!(278, misc::getrandom);
 
     table
 };

@@ -11,10 +11,14 @@ use alloc::{sync::Arc, vec::Vec};
 use bit_field::BitField;
 use bitflags::bitflags;
 use intrusive_collections::PointerOps;
+use rand::Rng;
 
 use crate::{
     basic::timer::{get_cpu_tick, us_to_cpu_tick},
-    filesystem::vfs::{FileFlags, PathToWalk, walk_path},
+    filesystem::{
+        devfs::drivers::URANDOM_DRIVER,
+        vfs::{FileFlags, PathToWalk, walk_path},
+    },
     memory::{
         STACK_ALIGN,
         uaccess::{
@@ -180,7 +184,8 @@ pub extern "C" fn execve(
 
     // AT_RANDOM 所需的 16 字节随机数据我们也放在 data 里
     let random_idx = data.len();
-    let random_data: [u8; 16] = bytemuck::cast([get_cpu_tick(), 0x1145141919810]); // TODO: 让它更随机一点
+    let mut random_data = [0; 16];
+    URANDOM_DRIVER.engine.lock().fill_bytes(&mut random_data);
     data.extend(random_data);
 
     // 由于执行 replace_execute 后便不能再回头，这里需要提前检查，而且后面就不能再返回失败

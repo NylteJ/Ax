@@ -2,8 +2,12 @@ use core::ffi::c_void;
 use core::slice;
 use core::sync::atomic::Ordering;
 
+use bitflags::bitflags;
+
 use crate::basic::timer::cpu_tick_to_us;
 use crate::basic::timer::get_cpu_tick;
+use crate::filesystem::devfs::drivers::URANDOM_DRIVER;
+use crate::filesystem::vfs::FileOps;
 use crate::memory::uaccess::copy_one_to_user;
 use crate::memory::uaccess::copy_slice_to_user;
 use crate::memory::uaccess::copy_to_user;
@@ -134,4 +138,23 @@ pub extern "C" fn get_robust_list(
     copy_one_to_user(len_ptr, &size_of::<RobustListHead>())?;
 
     SyscallResult::success(0)
+}
+
+bitflags! {
+    struct GetRandomFlags: u8 {
+        const GRND_NONBLOCK = 1 << 0;
+        const GRND_RANDOM = 1 << 1;
+    }
+}
+
+pub extern "C" fn getrandom(buf: *mut u8, len: usize, flags: usize) -> SyscallResult {
+    let flags: u8 = flags.try_into().map_err(|_| EINVAL)?;
+    let flags = GetRandomFlags::from_bits(flags).ok_or(EINVAL)?;
+
+    // 由于目前我们的随机数发生器永远不会阻塞，flags 不会带来任何区别，忽略即可
+    let _ = flags;
+
+    let bytes = (&**URANDOM_DRIVER).write(buf, len as u64)?;
+
+    SyscallResult::success(bytes as usize)
 }

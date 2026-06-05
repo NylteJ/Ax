@@ -1,4 +1,5 @@
 mod tty;
+mod urandom;
 
 use core::mem::MaybeUninit;
 
@@ -6,7 +7,7 @@ use alloc::boxed::Box;
 use hashbrown::HashMap;
 
 use crate::{
-    basic::UnsafeInited,
+    basic::{UnsafeInited, extend_lifetime},
     filesystem::vfs::{self, VfsError, VfsResult},
     syscall::filesystem::IoctlCommand,
 };
@@ -112,6 +113,12 @@ macro_rules! define_driver {
 }
 
 pub const DEV_TTY: DeviceId = DeviceId(5, 0);
+pub const DEV_URANDOM: DeviceId = DeviceId(1, 9);
+
+/// 和 `/dev/urandom` 完全等价，但 `/dev/urandom` 不可访问时也有效
+/// （此外，它能安慰性质地减少些许开销）
+pub static URANDOM_DRIVER: UnsafeInited<&'static urandom::URandomDriver> =
+    unsafe { UnsafeInited::zeroed() };
 
 fn init_char_drivers() {
     let mut types = HashMap::new();
@@ -123,6 +130,11 @@ fn init_char_drivers() {
     }
 
     define!(DEV_TTY, Box::new(tty::TtyDriver::new()));
+    define!(DEV_URANDOM, {
+        let value = Box::new(urandom::URandomDriver::new());
+        unsafe { UnsafeInited::init_unsafe(&URANDOM_DRIVER, extend_lifetime(&value)) };
+        value
+    });
 
     unsafe { UnsafeInited::init_unsafe(&CHAR_DEVICE_TYPES, types) };
 }

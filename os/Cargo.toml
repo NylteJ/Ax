@@ -29,6 +29,7 @@ elf = { path = "../edited_lib/rust-elf", default-features = false }
 bit_field = "0.10.3"
 bytemuck = { version = "1.25.0", features = ["derive"] }
 ringbuf = { version = "0.4.8", default-features = false, features = ["alloc"] }
+rand = { version = "0.10.1", default-features = false, features = ["alloc", "chacha"] }
 
 [features]
 framepointer = []
