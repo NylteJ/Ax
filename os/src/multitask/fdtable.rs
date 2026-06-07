@@ -59,31 +59,50 @@ impl FileDescriptorTable {
         }
     }
 
-    pub fn insert(&mut self, entry: FDTableEntry) -> usize {
-        self.insert_at_least(0, entry)
+    pub fn insert(&mut self, entry: FDTableEntry, rlimit: usize) -> Result<usize, InsertFDError> {
+        self.insert_at_least(0, entry, rlimit)
     }
 
     /// 将一个不小于 `min_fd` 的文件描述符分配给 `entry`，返回实际分配的描述符
-    pub fn insert_at_least(&mut self, min_fd: usize, entry: FDTableEntry) -> usize {
+    ///
+    /// 若即将分配的描述符编号将大于 `max_fd` 则分配失败返回 [`Err`]
+    pub fn insert_at_least(
+        &mut self,
+        min_fd: usize,
+        entry: FDTableEntry,
+        rlimit: usize,
+    ) -> Result<usize, InsertFDError> {
         if min_fd >= self.entries.len() {
+            if min_fd >= rlimit {
+                return Err(InsertFDError::ExceedRLimit);
+            }
+
             self.set(min_fd, entry);
-            return min_fd;
+            return Ok(min_fd);
         }
 
         let free = &mut self.free.view_bits_mut::<LocalBits>()[min_fd..];
 
         if let Some(offset) = free.first_one() {
             let index = min_fd + offset;
+            if index >= rlimit {
+                return Err(InsertFDError::ExceedRLimit);
+            }
+
             self.entries[index] = Some(entry);
             free.set(offset, false);
-            index
+            Ok(index)
         } else {
             let index = self.entries.len();
+            if index >= rlimit {
+                return Err(InsertFDError::ExceedRLimit);
+            }
+
             self.entries.push(Some(entry));
             if self.entries.len() > free.len() + min_fd {
                 self.free.push(0);
             }
-            index
+            Ok(index)
         }
     }
 
@@ -130,6 +149,10 @@ impl FileDescriptorTable {
             }
         }
     }
+}
+
+pub enum InsertFDError {
+    ExceedRLimit,
 }
 
 impl Debug for FileDescriptorTable {

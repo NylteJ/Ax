@@ -169,15 +169,15 @@ fn main() -> isize {
                 concat_bytes!(
                     b"echo \"#### OS COMP TEST GROUP START ",
                     $name,
-                    b" ####\" && cd /sdcd/",
+                    b" ####\"; cd /sdcd/",
                     $dir,
                     $(
-                        b" && /sdcd/musl/busybox sh /sdcd/",
+                        b"; /sdcd/musl/busybox sh /sdcd/",
                         $dir,
                         b"/",
                         $script,
                     )*
-                    b" && echo \"#### OS COMP TEST GROUP END ",
+                    b"; echo \"#### OS COMP TEST GROUP END ",
                     $name,
                     b" ####\";",
                 )
@@ -187,7 +187,7 @@ fn main() -> isize {
                     b"cd /sdcd/",
                     $dir,
                     $(
-                        b" && /sdcd/musl/busybox sh /sdcd/",
+                        b"; /sdcd/musl/busybox sh /sdcd/",
                         $dir,
                         b"/",
                         $script,
@@ -206,7 +206,10 @@ fn main() -> isize {
                 group!(b"basic-glibc" at b"glibc/basic" shell b"run-all.sh"),
                 group!(nobanner at b"musl" shell b"busybox_testcode.sh"),
                 group!(nobanner at b"glibc" shell b"busybox_testcode.sh"),
-                // group!(b"libctest-musl" at b"musl" shell b"run-static.sh", b"run-dynamic.sh"),
+                group!(b"libctest-musl" at b"musl" shell b"run-static.sh"/* , b"run-dynamic.sh" */),
+                group!(b"libctest-glibc" at b"glibc" shell b"run-static.sh"/* , b"run-dynamic.sh" */),
+                group!(nobanner at b"musl" shell b"libcbench_testcode.sh"),
+                group!(nobanner at b"glibc" shell b"libcbench_testcode.sh"),
                 b'\0',
             )
             .as_ptr(),
@@ -222,8 +225,10 @@ fn main() -> isize {
     loop {
         let ret = syscall!(260, -1, &mut status, 0) as isize;
         if ret > 0 {
-            println!("init 进程回收了 {ret}, status: {:#04x}", status);
-            return 0; // FIXME: temp
+            // println!("init 进程回收了 {ret}, status: {:#04x}", status);
+            if ret == 1 {
+                return 0; // FIXME: temp
+            }
         }
     }
 }

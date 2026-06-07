@@ -7,7 +7,6 @@ use crate::filesystem::vfs::{
     cache::{CachedValueArc, drop_cached_varc},
 };
 
-// #[derive(Debug)]
 pub struct INodeArc {
     ptr: NonNull<INode>,
 }
@@ -45,6 +44,16 @@ impl INodeArc {
     pub unsafe fn get_mut(&mut self) -> &mut INode {
         debug_assert_eq!(self.mem_refcount.load(Ordering::Relaxed), 1);
         unsafe { self.ptr.as_mut() }
+    }
+
+    /// # Safety
+    /// 对应 [`INode`] 必须属于某个尚未销毁的 [`INodeArc`]。
+    pub unsafe fn clone_from_value(value: &INode) -> Self {
+        let old_ref = value.mem_refcount.fetch_add(1, Ordering::Relaxed);
+        debug_assert!(old_ref > 0);
+        Self {
+            ptr: NonNull::from_ref(value),
+        }
     }
 }
 

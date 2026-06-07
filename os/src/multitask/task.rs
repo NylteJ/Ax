@@ -1,14 +1,15 @@
 use core::{
+    ffi::c_int,
     marker::PhantomPinned,
     mem::{offset_of, replace},
     num::NonZero,
     ops::Deref,
     pin::Pin,
     ptr::{NonNull, addr_eq, null_mut},
-    sync::atomic::AtomicPtr,
+    sync::atomic::{AtomicPtr, AtomicU8, Ordering},
 };
 
-use alloc::{sync::Arc, vec::Vec};
+use alloc::{alloc::AllocError, sync::Arc, vec::Vec};
 use elf::{ElfBytes, endian::NativeEndian};
 use intrusive_collections::{LinkedListLink, UnsafeRef, intrusive_adapter};
 
@@ -22,27 +23,28 @@ use crate::{
         shared_with_asm::SharedWithAsm,
         stack::TaskKernelStackPtr,
         sync::{Mutex, RwLock},
-        timer::get_cpu_tick,
+        timer::{check_timers, get_cpu_tick},
     },
     filesystem::vfs::{File, FileArc, Path},
     memory::{
         PAGE_BYTES, STACK_ALIGN,
-        address::{VIRTUAL_ADDRESS_LOW_HIGHEST, VirtAddr},
+        address::{USER_REGULAR_MEMORY_END, VirtAddr},
         address_space::AddressSpace,
-        uaccess::fill_user_memory,
+        uaccess::{CopyError, copy_one_to_user, fill_user_memory},
         virtual_memory_area::{VMAFlags, VMAGrowth, VMAType, VirtualMemoryArea},
     },
     multitask::{
         SchedulePolicy, TaskPriority, current_task,
         fdtable::FileDescriptorTable,
         fs_data::FilesystemData,
-        process_data::ProcessData,
-        signal::{SignalHandler, SignalId, SignalsWaitingList},
+        futex::futex_lock,
+        process_data::{ProcessData, ProcessRLimits},
+        signal::{RtSignalData, SignalHandler, SignalId, SignalsWaitingList},
         task_context::{TaskContext, switch_context},
         task_manager::{PID_ALLOCATOR, register_task},
         task_scheduler::TASK_SCHEDULER,
     },
-    syscall::{misc::RobustListHead, process::CloneFlags},
+    syscall::{misc::RobustListHead, process::CloneFlags, sync::get_futex_key},
 };
 
 /// 当前任务的所有元数据。拥有任务所有资源的所有权。
@@ -84,8 +86,17 @@ pub struct Task {
     pub parent: RwLock<NonNull<Task>>,
 
     pub wait_state: Mutex<ZombieWaitingState>,
+    /// 退出时会向父进程发送的信号，无法被改变。[`SIGINVAL`][`SignalId::SIGINVAL`] 表示不发送。
+    pub exit_signal: SignalId,
+    /// 任务状态，具体值的含义见 [`TaskState`]
+    state: AtomicU8,
 
     pub time_stats: Mutex<TaskTimeStats>,
+
+    /// CLONE_CHILD_CLEARTID 和 set_tid_address 设定的地址，在 Task 退出时会由内核清除其中的值并唤醒对应 futex。
+    ///
+    /// 空指针表示无需操作。
+    pub tid_address: AtomicPtr<c_int>,
 
     _pin: PhantomPinned, // Task 的地址需要在 tp、内核栈等区域存储，因此不能移动
 }
@@ -93,10 +104,20 @@ pub struct Task {
 #[derive(Debug)]
 pub struct ZombieWaitingState {
     /// Task 是否已经退出，如果有，则内部存放退出状态 (信号, 返回值)
-    pub status: Option<(u8, u8)>,
-    /// 是否有父 Task 正在等待当前 Task，如果有，则内部存放用于唤醒等待者的句柄
-    // （我们目前根本不支持睡眠，所以其实没什么能放的）
-    pub waiter: Option<()>,
+    pub status: Option<(SignalId, u8)>,
+}
+
+#[derive(Debug)]
+#[repr(u8)]
+pub enum TaskState {
+    /// 正常状态，正在运行或可被调度
+    Normal = 0,
+    /// 睡眠状态，不可被调度，必须被手动唤醒
+    Sleeping = 1,
+    /// 睡眠状态，和 [`Sleeping`][`Self::Sleeping`] 不同的是不能被任何信号打断
+    ///
+    /// 慎重使用，因为连 SIGKILL 这类特殊信号都无法打断它
+    SleepingUninterruptible = 2,
 }
 
 #[derive(Debug)]
@@ -161,7 +182,7 @@ const KERNEL_STACK_LAYOUT: alloc::alloc::Layout = unsafe {
     )
 };
 
-const USER_STACK_HIGHEST: usize = VIRTUAL_ADDRESS_LOW_HIGHEST + 1;
+const USER_STACK_HIGHEST: usize = USER_REGULAR_MEMORY_END;
 
 pub const USER_STACK_BYTES: usize = 2048 * PAGE_BYTES;
 
@@ -183,7 +204,7 @@ impl Task {
         let success = PID_ALLOCATOR.lock().allocate_specific(INIT_PID);
         assert!(success, "必须能够为 init 进程分配 PID {INIT_PID}");
 
-        let (kstack, task_ptr_ptr) = Self::alloc_kstack();
+        let (kstack, task_ptr_ptr) = Self::alloc_kstack().expect("必须能够为 init 进程分配内核栈");
         let kstack_sp = (task_ptr_ptr as usize) / STACK_ALIGN * STACK_ALIGN;
 
         let address_space = Self::new_addr_space();
@@ -207,7 +228,11 @@ impl Task {
                 current_work_dir: work_dir,
             })),
 
-            process: Arc::new(ProcessData::new(INIT_PID, INIT_PID)),
+            process: Arc::new(ProcessData::new(
+                INIT_PID,
+                INIT_PID,
+                ProcessRLimits::default(),
+            )),
             task_of_process_link: LinkedListLink::new(),
 
             robust_list_head: AtomicPtr::new(null_mut()),
@@ -219,11 +244,13 @@ impl Task {
             children_link: LinkedListLink::new(),
             parent: RwLock::new(NonNull::dangling()), // init 进程没有父进程，先放一个悬空指针，后面改为指向自己
 
-            wait_state: Mutex::new(ZombieWaitingState {
-                status: None,
-                waiter: None,
-            }),
+            wait_state: Mutex::new(ZombieWaitingState { status: None }),
+            exit_signal: SignalId::SIGINVAL,
+            state: AtomicU8::new(TaskState::Normal as u8),
+
             time_stats: Mutex::new(TaskTimeStats::new()),
+
+            tid_address: AtomicPtr::new(null_mut()),
 
             _pin: PhantomPinned,
         });
@@ -258,10 +285,23 @@ impl Task {
 
     /// 复制一份当前任务，并将其添加到调度器中，返回新任务。子任务的返回值（a0）会被篡改为 0。
     ///
-    /// 注意此函数在内核端就是普通函数，返回用户态后新任务才可能被执行。
-    pub fn fork(&self, flags: CloneFlags, ustack: Option<NonZero<usize>>) -> TaskArc {
+    /// `ptid`、`tls` 和 `ctid` 参数只在指定了对应 `flags` 时生效。
+    ///
+    /// `exit_signal` 指定为 [`SIGINVAL`][`SignalId::SIGINVAL`] 时不发送任何信号，其余时候此信号会在退出时被发送给父进程。
+    ///
+    /// 注意此函数在内核端就是普通函数，返回用户态后新任务才可能被执行。此外，此函数在返回 [`Err`] 时提供强异常保证。
+    pub fn fork(
+        &self,
+        flags: CloneFlags,
+        ustack: Option<NonZero<usize>>,
+        ptid: *mut c_int,
+        tls: usize,
+        ctid: *mut c_int,
+        exit_signal: SignalId,
+    ) -> Result<TaskArc, ForkError> {
         // 对于内核栈，必须分配新的
-        let (_kstack, task_ptr_ptr) = Self::alloc_kstack();
+        let (_kstack, task_ptr_ptr) =
+            Self::alloc_kstack().map_err(|_| ForkError::NotEnoughMemory)?;
         let kstack_sp = (task_ptr_ptr as usize) / STACK_ALIGN * STACK_ALIGN;
         // 而且必须压入（几乎）完全一致的 TrapContext 并伪造 TaskContext
         let ret_trap_ctxt_addr = kstack_sp - size_of::<arch::NativeTrapContext>();
@@ -278,6 +318,10 @@ impl Task {
         }
         // 别忘了修改其返回值
         *ret_trap_ctxt.ret_reg_mut() = 0;
+        // 以及必要时修改 tp
+        if flags.contains(CloneFlags::SETTLS) {
+            ret_trap_ctxt.regs.tp = tls;
+        }
         // 接下来是 TaskContext
         let ret_task_ctxt_ptr =
             (ret_trap_ctxt_ptr.addr() - size_of::<TaskContext>()) as *mut TaskContext;
@@ -303,10 +347,16 @@ impl Task {
         let tid = PID_ALLOCATOR
             .lock()
             .allocate()
-            .expect("必须要能为新任务分配 PID（TODO）");
+            .ok_or(ForkError::NotEnoughTid)?;
+
+        if flags.contains(CloneFlags::PARENT_SETTID) {
+            // 此时我们需要将 TID 同时写入父子地址空间
+            // 不难发现在 fork 地址空间前写入能省去许多麻烦
+            copy_one_to_user(ptid, &(tid as c_int)).map_err(|err| ForkError::CopyError(err))?;
+        }
 
         // 这两个直接复制即可
-        let policy = self.policy;
+        let policy = self.policy.clone();
         let priority = self.priority;
 
         let address_space = if flags.contains(CloneFlags::VM) {
@@ -348,8 +398,9 @@ impl Task {
             // 线程，放在同一个进程（线程组）中，浅拷贝即可
             self.process.clone()
         } else {
-            // 进程，直接新建一个进程（线程组），注意仍在同一个进程组中
-            Arc::new(ProcessData::new(tid, self.process.pgid))
+            // 进程，直接新建一个进程（线程组），注意仍在同一个进程组中，以及新进程默认继承旧进程的限制
+            let rlimits = self.process.rlimits.read().clone();
+            Arc::new(ProcessData::new(tid, self.process.pgid, rlimits))
         };
 
         let signal_handler = if flags.contains(CloneFlags::SIGHAND) {
@@ -368,7 +419,7 @@ impl Task {
             self
         };
 
-        let ret = Arc::pin(Self {
+        let ret = Arc::try_pin(Self {
             kstack,
             tid,
 
@@ -392,14 +443,16 @@ impl Task {
             children_link: LinkedListLink::new(),
             parent: RwLock::new(NonNull::from_ref(parent)),
 
-            wait_state: Mutex::new(ZombieWaitingState {
-                status: None,
-                waiter: None,
-            }),
+            wait_state: Mutex::new(ZombieWaitingState { status: None }),
+            exit_signal,
+            state: AtomicU8::new(TaskState::Normal as u8),
+
             time_stats: Mutex::new(TaskTimeStats::new()),
 
+            tid_address: AtomicPtr::new(ctid),
+
             _pin: PhantomPinned,
-        });
+        })?;
 
         if !flags.contains(CloneFlags::THREAD) {
             parent.children.lock().push_back(ret.clone());
@@ -418,7 +471,7 @@ impl Task {
 
         log::trace!("forked: {} => {tid}", self.tid);
 
-        ret
+        Ok(ret)
     }
 
     /// 将当前任务替换为 `file` 对应可执行文件的内容。不传递任何参数。返回半成品辅助向量。
@@ -451,6 +504,10 @@ impl Task {
         // 清空待决信号
         self.signals_wl.lock().clear_for_exec();
 
+        // 重置自定义信号处理函数
+        // FIXME：万一两个进程共用一个 SignalHandler 怎么办？
+        self.signal_handler.write().reset_custom_handlers();
+
         // OK，这样就可以了！
         let _ = DropGuard::release(guard);
         Ok(auxv)
@@ -460,15 +517,12 @@ impl Task {
         arch::NativeRegs::set_tp(task_ptr.addr());
     }
 
-    /// 暂时切换到此任务。
+    /// 暂时切换到此任务。此任务必须不在运行中，因此不能切换到当前任务。
     ///
     /// 通常情况下（当前任务还在调度器中），此调用迟早会正常返回，但当前任务的确可能要在很久以后才能被调度到，因此请尽可能释放不必要的资源
     pub fn switch_to(self: TaskArc) {
-        if addr_eq(self.deref(), current_task()) {
-            // 仍然切换到当前任务，直接返回即可。
-            // 注意这不仅是优化，也是正确性所必需的：下面的 switch_context 无法处理这种情况。
-            return;
-        }
+        debug_assert_eq!(self.state.load(Ordering::Relaxed), TaskState::Normal as u8);
+        debug_assert!(!addr_eq(&*self, current_task()));
 
         let context = self.get_context();
         unsafe { self.into_asm() };
@@ -486,23 +540,30 @@ impl Task {
         unsafe { self.parent.read().as_ref() }
     }
 
-    /// 当此 Task 退出时调用，若父进程还未 wait 则回收部分资源并将自身标记为僵尸状态，否则唤醒父进程且不做额外操作
-    pub fn on_exit(&self, signal: u8, return_value: u8) {
-        let mut wait_state = self.wait_state.lock();
-
-        let old = wait_state.status.replace((signal, return_value));
+    /// 当此 Task 退出时调用，将子进程转移到 init 进程下并唤醒等待的父进程，并向父进程发送恰当的终止信号。
+    pub fn on_exit(&self, signal: SignalId, return_value: u8) {
+        let old = self
+            .wait_state
+            .lock()
+            .status
+            .replace((signal, return_value));
         debug_assert!(old.is_none());
 
-        if let Some(waiter) = wait_state.waiter {
-            let _ = waiter; // 假装我们唤醒了等待中的父 Task
-        } else {
-            // *self.address_space.write() = AddressSpace::new();
-            // *self.files.write() = FileDescriptorTable::new();
-            self.transfer_children_to_init();
+        self.transfer_children_to_init();
+        self.parent_task().process.waiting_for_child.wake_all();
+
+        if self.exit_signal != SignalId::SIGINVAL {
+            log::trace!(
+                "TID 为 {} 的线程退出，向父进程（PID = {}）发送信号 {:?}",
+                self.tid,
+                self.parent_task().process.pid,
+                self.exit_signal
+            );
+            self.parent_task().process.send_signal(self.exit_signal);
         }
     }
 
-    /// 向此 Task 发送信号
+    /// 向此 Task 发送信号，若 Task 正在睡眠则还可能会唤醒 Task。
     ///
     /// 注意此函数只是向对应 Task 发送信号，信号的处理可能被延迟，且无论如何只会在该 Task 准备返回用户态时处理
     pub fn send_signal(&self, signal: SignalId) {
@@ -511,17 +572,48 @@ impl Task {
             return;
         }
 
-        if signal.is_realtime() {
-            todo!("处理实时信号")
-        } else {
-            self.signals_wl.lock().add_normal(signal);
+        let not_blocked = {
+            let mut wl = self.signals_wl.lock();
+            wl.add(signal);
+            !wl.mask.contains(signal.as_mask())
+        };
+
+        if not_blocked {
+            self.try_interrupt_sleep();
         }
     }
 
-    fn alloc_kstack() -> (TaskKernelStackPtr, *mut *const Task) {
+    pub fn find_signal_to_consume(&self) -> Option<SignalId> {
+        let wl = self.signals_wl.lock();
+        let mask = wl.mask;
+        let private = wl.find_can_consume();
+        drop(wl);
+
+        private.or_else(|| {
+            self.process
+                .signals_wl
+                .lock()
+                .find_can_consume_with_mask(mask)
+        })
+    }
+    pub fn try_consume_signal(&self) -> Option<(SignalId, Option<RtSignalData>)> {
+        let mut wl = self.signals_wl.lock();
+        let mask = wl.mask;
+        let private = wl.try_consume_one();
+        drop(wl);
+
+        private.or_else(|| {
+            self.process
+                .signals_wl
+                .lock()
+                .try_consume_one_with_mask(mask)
+        })
+    }
+
+    fn alloc_kstack() -> Result<(TaskKernelStackPtr, *mut *const Task), ()> {
         let kstack_btm = unsafe { alloc::alloc::alloc(KERNEL_STACK_LAYOUT) };
         if kstack_btm.is_null() {
-            panic!("无法为 Task 分配内核栈");
+            return Err(());
         }
 
         let kstack_btm = kstack_btm as usize;
@@ -532,7 +624,7 @@ impl Task {
 
         let task_ptr_addr = kstack_top - size_of::<*const ()>();
 
-        (kstack, task_ptr_addr as *mut *const Task)
+        Ok((kstack, task_ptr_addr as *mut *const Task))
     }
 
     /// 分配新的 [`AddressSpace`]，并在其中填充好用户栈区的 VMA
@@ -771,6 +863,10 @@ impl Task {
                 .lock()
                 .cursor_mut()
                 .splice_before(my_children);
+
+            let woken = INIT_TASK.process.waiting_for_child.wake_all();
+            debug_assert!(woken <= 1);
+            log::trace!("转移子进程给 init 后唤醒了 {} 个等待的进程", woken);
         }
     }
 
@@ -792,6 +888,84 @@ impl Task {
     }
 }
 
+impl Task {
+    pub fn sleep_current() {
+        let cur_task = unsafe { current_task().as_ref_unchecked() };
+        cur_task.do_sleep(TaskState::Sleeping);
+    }
+    pub fn sleep_current_uninterruptible() {
+        let cur_task = unsafe { current_task().as_ref_unchecked() };
+        cur_task.do_sleep(TaskState::SleepingUninterruptible);
+    }
+
+    fn do_sleep(&self, new_state: TaskState) {
+        let old_state = self.state.swap(new_state as u8, Ordering::Relaxed);
+        debug_assert_eq!(
+            old_state,
+            TaskState::Normal as u8,
+            "试图在非正常状态 （{old_state}） 下睡眠"
+        );
+
+        loop {
+            if let Some(next) = { TASK_SCHEDULER.lock().pick_next() } {
+                // 有概率下一个被唤醒的还是我们（如果外层循环真正起效，则很大概率还是我们），
+                // 此时不应切换，或者说我们可以假装已经切换过了
+                if !addr_eq(&*next, current_task()) {
+                    next.switch_to();
+                }
+                // 注意我们没有将自身添加回调度器，也没有转移 tp 中的 TaskArc 的所有权，回到这里说明睡眠已经结束了
+
+                // 注意这个 Acquire load 是必须的，因为我们需要与唤醒者的 Release store 同步
+                let cur_state = self.state.load(Ordering::Acquire);
+
+                debug_assert_eq!(cur_state, TaskState::Normal as u8);
+                break;
+            }
+
+            // 此时只可能是设定了定时唤醒（因为这是唯一一个可以不运行任何指令就触发的唤醒条件），
+            // 检查定时器即可
+
+            arch::NativeBasic::halt();
+            check_timers(); // 如果唤醒了任务，下次循环前面的 if 条件将成真
+        }
+    }
+
+    /// 尝试唤醒对应进程，若对应进程并未睡眠则无效果并返回 [`None`]，反之返回 [`Some`]。
+    pub fn try_wake(&self) -> Option<()> {
+        let old_state = self.state.swap(TaskState::Normal as u8, Ordering::Release);
+
+        if old_state == TaskState::Normal as u8 {
+            return None;
+        }
+
+        self.wake();
+
+        Some(())
+    }
+
+    /// 尝试唤醒对应进程，若对应进程并未睡眠或正处于不可打断的睡眠状态则返回 [`None`]，反之返回 [`Some`]。
+    pub fn try_interrupt_sleep(&self) -> Option<()> {
+        self.state
+            .compare_exchange(
+                TaskState::Sleeping as u8,
+                TaskState::Normal as u8,
+                Ordering::Release,
+                Ordering::Relaxed,
+            )
+            .ok()?;
+
+        self.wake();
+
+        Some(())
+    }
+
+    fn wake(&self) {
+        TASK_SCHEDULER
+            .lock()
+            .add_task(unsafe { TaskArc::from_asm(self) });
+    }
+}
+
 impl Drop for Task {
     fn drop(&mut self) {
         unsafe {
@@ -804,11 +978,28 @@ impl Drop for Task {
 
         {
             let mut tasks = self.process.tasks.write();
+            debug_assert!(tasks.iter().any(|task| addr_eq(task, self)));
             unsafe { tasks.cursor_mut_from_ptr(self) }.remove();
         }
 
         if !self.robust_list_head.get_mut().is_null() {
             log::error!("TODO: 处理 robust_list_head");
+        }
+
+        if let tid_addr = self.tid_address.get_mut().cast()
+            && let Ok(futex_key) = get_futex_key(tid_addr, false)
+        {
+            let mut futex_word = futex_lock(&futex_key);
+
+            let store_result = futex_word.relaxed_atom_store(tid_addr, 0);
+            if let Err(err) = store_result {
+                log::warn!("向 tid_address {tid_addr:p} 写入 0 失败，发生错误 {err:?}");
+            } else {
+                log::trace!("成功向 tid_address {tid_addr:p} 写入 0");
+            }
+
+            let woken = futex_word.wake(1, u32::MAX);
+            log::trace!("唤醒了 tid_address {tid_addr:p} 上的 {woken} 个等待者");
         }
 
         // 注意，Task 被 drop 意味着它已经从父 Task 的 children 中被移除了，因此此处无需重复清理
@@ -824,6 +1015,19 @@ pub enum LoadElfError {
     NoLoadSegment,
     NotYetImplemented,
     BadElfHead,
+}
+
+#[derive(Debug)]
+pub enum ForkError {
+    NotEnoughTid,
+    NotEnoughMemory,
+    CopyError(CopyError),
+}
+
+impl From<AllocError> for ForkError {
+    fn from(_value: AllocError) -> Self {
+        Self::NotEnoughMemory
+    }
 }
 
 #[repr(C)]

@@ -13,10 +13,15 @@ use crate::{
     basic::sync::Mutex,
     filesystem::vfs::{VfsError, VfsResult},
     memory::uaccess::CopyError,
-    multitask::task::LoadElfError,
+    multitask::{
+        InsertFDError,
+        futex::FutexWaitError,
+        task::{ForkError, LoadElfError},
+        wait::SleepError,
+    },
 };
 
-pub mod common_types;
+pub mod common;
 
 pub mod basic;
 pub mod filesystem;
@@ -24,6 +29,7 @@ pub mod memory;
 pub mod misc;
 pub mod process;
 pub mod signal;
+pub mod sync;
 pub mod user;
 
 #[derive(Clone, Copy)]
@@ -72,6 +78,10 @@ impl SyscallFn {
 
         ret
     }
+
+    pub fn addr(&self) -> usize {
+        self.ptr.as_ptr().addr()
+    }
 }
 
 static_assertions::const_assert_eq!(size_of::<Option<SyscallFn>>(), size_of::<*const ()>());
@@ -94,6 +104,7 @@ pub static TABLE: [Option<SyscallFn>; MAX_SYSCALL_COUNT] = const {
     define!(93, basic::exit);
     define!(124, basic::yield_);
     define!(153, basic::times);
+    define!(261, basic::prlimit64);
 
     define!(17, filesystem::getcwd);
     define!(59, filesystem::pipe2);
@@ -121,6 +132,7 @@ pub static TABLE: [Option<SyscallFn>; MAX_SYSCALL_COUNT] = const {
     define!(73, filesystem::ppoll);
     define!(29, filesystem::ioctl);
     define!(62, filesystem::lseek);
+    define!(78, filesystem::readlinkat);
 
     define!(214, memory::brk);
     define!(222, memory::mmap);
@@ -139,7 +151,13 @@ pub static TABLE: [Option<SyscallFn>; MAX_SYSCALL_COUNT] = const {
 
     define!(134, signal::rt_sigaction);
     define!(129, signal::kill);
+    define!(131, signal::tgkill);
+    define!(130, signal::tkill);
     define!(135, signal::rt_sigprocmask);
+    define!(137, signal::rt_sigtimedwait);
+    define!(139, signal::rt_sigreturn);
+
+    define!(98, sync::futex);
 
     define!(174, user::getuid);
     define!(175, user::geteuid);
@@ -254,6 +272,45 @@ impl FromResidual<Result<Infallible, TryReserveError>> for SyscallResult {
     }
 }
 
+impl FromResidual<Result<Infallible, InsertFDError>> for SyscallResult {
+    fn from_residual(residual: Result<Infallible, InsertFDError>) -> Self {
+        use err_codes::*;
+        match residual.unwrap_err() {
+            InsertFDError::ExceedRLimit => EMFILE,
+        }
+    }
+}
+
+impl FromResidual<Result<Infallible, FutexWaitError>> for SyscallResult {
+    fn from_residual(residual: Result<Infallible, FutexWaitError>) -> Self {
+        use err_codes::*;
+        match residual.unwrap_err() {
+            FutexWaitError::Timeout => ETIMEDOUT,
+            FutexWaitError::Signal => EINTR,
+        }
+    }
+}
+
+impl FromResidual<Result<Infallible, ForkError>> for SyscallResult {
+    fn from_residual(residual: Result<Infallible, ForkError>) -> Self {
+        use err_codes::*;
+        match residual.unwrap_err() {
+            ForkError::NotEnoughTid => EAGAIN,
+            ForkError::NotEnoughMemory => ENOMEM,
+            ForkError::CopyError(copy_error) => Err(copy_error)?,
+        }
+    }
+}
+
+impl FromResidual<Result<Infallible, SleepError>> for SyscallResult {
+    fn from_residual(residual: Result<Infallible, SleepError>) -> Self {
+        use err_codes::*;
+        match residual.unwrap_err() {
+            SleepError::Interrupted(_) => EINTR,
+        }
+    }
+}
+
 impl SyscallResult {
     pub fn success(val: usize) -> Self {
         debug_assert!(val.cast_signed() >= 0);
@@ -340,6 +397,7 @@ mod err_codes {
     err_code!(ECONNRESET, 104, "Connection reset");
     err_code!(EISCONN, 106, "Transport endpoint is already connected");
     err_code!(ENOTCONN, 107, "Transport endpoint is not connected");
+    err_code!(ETIMEDOUT, 110, "Connection timed out");
     err_code!(ECONNREFUSED, 111, "Connection refused");
     err_code!(
         EINPROGRESS,
@@ -351,9 +409,16 @@ mod err_codes {
     err_code!(EUTFFAIL, 188, "UTF-8 Convert Failed");
 
     // ^^^ 以上代码衍生自 NighthawkOS 的 lib/systype/src/error.rs，有修改 ^^^
+
+    err_code!(
+        E_SPECIAL_RESTART_SYSCALL,
+        7777,
+        "用于指定了 SA_RESTART 的信号处理程序"
+    );
 }
 
 pub const ERRORCODE_NOSYS: usize = err_codes::ENOSYS.value;
+pub const ERRORCODE_SPECIAL_RESTART_SYSCALL: usize = err_codes::E_SPECIAL_RESTART_SYSCALL.value;
 
 /// 系统调用 ID 到名称的映射表，包括了尽可能多的系统调用（含未实现的那些），旨在用于调试输出。
 pub const SYSCALL_ID_NAME_MAP: [&str; MAX_SYSCALL_COUNT] = {

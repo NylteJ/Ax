@@ -17,4 +17,10 @@ pub trait Basic {
     fn tlb_invalidate_all();
 
     unsafe fn execute_init(entry: usize, ustack: usize, kstack: usize) -> !;
+
+    /// 提示 CPU 进入空闲状态，直到下一次中断到来（无论中断是否被屏蔽）。
+    ///
+    /// 这只是提示，不一定能被强制执行，且在内核层面无法感知。
+    #[inline(always)]
+    fn halt() {}
 }

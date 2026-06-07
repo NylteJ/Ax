@@ -48,16 +48,9 @@ unsafe impl<T: ?Sized> SharedWithAsm for Pin<Arc<T>> {
     }
 
     unsafe fn from_asm(asm_value: Self::AsmType) -> Self {
-        unsafe { Pin::new_unchecked(Arc::from_raw(asm_value)) }
-    }
-
-    unsafe fn drop_asm(asm_value: Self::AsmType) {
-        unsafe { Arc::decrement_strong_count(asm_value) };
-    }
-
-    unsafe fn clone_asm(asm_value: Self::AsmType) -> Self::AsmType {
-        unsafe { Arc::increment_strong_count(asm_value) };
-        asm_value
+        let arc = unsafe { Arc::from_raw(asm_value) };
+        debug_assert!(Arc::strong_count(&arc) > 0);
+        unsafe { Pin::new_unchecked(arc) }
     }
 }
 

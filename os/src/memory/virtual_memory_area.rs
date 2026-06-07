@@ -1,6 +1,9 @@
 use bitflags::bitflags;
 
-use crate::{filesystem::vfs::FileArc, memory::address::VirtAddr};
+use crate::{
+    filesystem::vfs::FileArc,
+    memory::{PAGE_BYTES, address::VirtAddr},
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VirtualMemoryArea {
@@ -87,3 +90,15 @@ impl PartialEq for VMAType {
 }
 
 impl Eq for VMAType {}
+
+impl VMAType {
+    pub(super) fn splitted(&self, offset: usize) -> Self {
+        match self {
+            VMAType::Anonymous => self.clone(),
+            VMAType::File { file, page_index } => VMAType::File {
+                file: file.clone(),
+                page_index: *page_index + (offset / PAGE_BYTES) as u64,
+            },
+        }
+    }
+}

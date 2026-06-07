@@ -9,7 +9,8 @@ use crate::{
 use hashbrown::HashMap;
 use pin_weak::sync::PinWeak;
 
-pub static PID_ALLOCATOR: Mutex<IdAllocator<32768>> = Mutex::new(IdAllocator::new());
+pub const PID_COUNT: usize = 8192;
+pub static PID_ALLOCATOR: Mutex<IdAllocator<PID_COUNT>> = Mutex::new(IdAllocator::new());
 
 lazy_static::lazy_static! {
     static ref PID_TASK_MAP: Mutex<HashMap<usize, PinWeak<Task>>> = Mutex::new(HashMap::new());
@@ -39,6 +40,6 @@ pub fn register_task(task: TaskArc) {
     }
 }
 
-pub fn get_task_by_pid(pid: usize) -> Option<TaskArc> {
+pub fn get_task_by_tid(pid: usize) -> Option<TaskArc> {
     PID_TASK_MAP.lock().get(&pid)?.upgrade()
 }

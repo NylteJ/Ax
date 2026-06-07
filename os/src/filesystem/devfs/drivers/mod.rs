@@ -21,6 +21,12 @@ pub trait Driver: Send + Sync {
         len: u64,
     ) -> VfsResult<u64>;
 
+    fn fseek(&self, seek_from: vfs::SeekFrom) -> VfsResult<u64> {
+        let _ = seek_from;
+        // 理论上这里其实往往既不是管道也不是套接字，但 Linux 就是这么写的
+        Err(VfsError::IsPipeOrSocket)
+    }
+
     fn ioctl(&self, cmd: IoctlCommand, arg: *mut ()) -> VfsResult<usize>;
 
     fn fsync(&self) -> VfsResult<()> {
@@ -46,7 +52,7 @@ impl<T: ?Sized + Driver> vfs::FileOps for &'static T {
     }
 
     fn fseek(&mut self, seek_from: vfs::SeekFrom) -> VfsResult<u64> {
-        todo!()
+        (*self).fseek(seek_from)
     }
 
     fn fsync(&mut self) -> VfsResult<()> {

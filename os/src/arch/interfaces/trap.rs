@@ -12,7 +12,9 @@ pub unsafe trait Trap {
     fn enable_timer_interrupt();
 }
 
-pub trait TrapContext {
+pub trait TrapContext: Copy {
+    type MContext: Copy;
+
     fn syscall_id(&self) -> usize;
     fn syscall_args(&self) -> &[usize; 6];
 
@@ -20,4 +22,7 @@ pub trait TrapContext {
     fn ret_reg_mut(&mut self) -> &mut usize;
 
     fn is_trap_from_kernel(&self) -> bool;
+
+    fn get_mcontext(&self) -> Self::MContext;
+    fn with_mcontext(&mut self, mcontext: &Self::MContext);
 }

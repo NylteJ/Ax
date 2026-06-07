@@ -184,26 +184,28 @@ impl AddressSpace {
 
         let full_remove;
 
-        if self.vmas[begin].start < start {
+        let begin_vma = &mut self.vmas[begin];
+        if begin_vma.start < start {
             // 第一个 VMA 部分位于范围外
 
-            if self.vmas[begin].end > end {
+            if begin_vma.end > end {
                 // |==============|
                 //    |========|
-                let ed = replace(&mut self.vmas[begin].end, start);
-                self.vmas.insert(begin + 1, VirtualMemoryArea {
+                let ed = replace(&mut begin_vma.end, start);
+                let new_vma = VirtualMemoryArea {
                     start: end,
                     end: ed,
-                    flags: self.vmas[begin].flags,
-                    vma_type: self.vmas[begin].vma_type.clone(),
-                    growth: self.vmas[begin].growth,
-                });
+                    flags: begin_vma.flags,
+                    vma_type: begin_vma.vma_type.splitted(end.0 - begin_vma.start.0),
+                    growth: begin_vma.growth,
+                };
+                self.vmas.insert(begin + 1, new_vma);
 
                 return;
             } else {
                 // |=======|
                 //    |========|
-                self.vmas[begin].end = start;
+                begin_vma.end = start;
                 full_remove = begin + 1;
             }
         } else {
@@ -223,6 +225,7 @@ impl AddressSpace {
         {
             //  |=========|
             // |========|
+            last.vma_type = last.vma_type.splitted(end.0 - last.start.0);
             last.start = end;
         }
 
@@ -257,40 +260,47 @@ impl AddressSpace {
 
         let full;
 
-        if self.vmas[begin].start < start {
+        let begin_vma = &mut self.vmas[begin];
+        if begin_vma.start < start {
             // 第一个 VMA 部分位于范围外
 
-            let old_flags = self.vmas[begin].flags;
+            let old_flags = begin_vma.flags;
             let new_flags: VMAFlags = func(old_flags);
             if new_flags != old_flags {
-                if self.vmas[begin].end > end {
+                if begin_vma.end > end {
                     // |==============|
                     //    |========|
-                    let ed = replace(&mut self.vmas[begin].end, start);
-                    self.vmas.insert(begin + 1, VirtualMemoryArea {
+                    let ed = replace(&mut begin_vma.end, start);
+                    let new_vma_1 = VirtualMemoryArea {
                         start,
                         end,
                         flags: new_flags,
-                        ..self.vmas[begin].clone()
-                    });
-                    self.vmas.insert(begin + 2, VirtualMemoryArea {
+                        vma_type: begin_vma.vma_type.splitted(start.0 - begin_vma.start.0),
+                        growth: begin_vma.growth,
+                    };
+                    let new_vma_2 = VirtualMemoryArea {
                         start: end,
                         end: ed,
                         flags: old_flags,
-                        ..self.vmas[begin].clone()
-                    });
+                        vma_type: begin_vma.vma_type.splitted(end.0 - begin_vma.start.0),
+                        growth: begin_vma.growth,
+                    };
+                    self.vmas.insert(begin + 1, new_vma_1);
+                    self.vmas.insert(begin + 2, new_vma_2);
 
                     return;
                 } else {
                     // |=======|
                     //    |========|
-                    let ed = replace(&mut self.vmas[begin].end, start);
-                    self.vmas.insert(begin + 1, VirtualMemoryArea {
+                    let ed = replace(&mut begin_vma.end, start);
+                    let new_vma = VirtualMemoryArea {
                         start,
                         end: ed,
                         flags: new_flags,
-                        ..self.vmas[begin].clone()
-                    });
+                        vma_type: begin_vma.vma_type.splitted(start.0 - begin_vma.start.0),
+                        growth: begin_vma.growth,
+                    };
+                    self.vmas.insert(begin + 1, new_vma);
                     full = begin + 2;
                 }
             } else {
@@ -314,14 +324,13 @@ impl AddressSpace {
         {
             //  |=========|
             // |========|
-            let strt = replace(&mut last.start, end);
-            let changed = VirtualMemoryArea {
-                start: strt,
+            let new_vma = VirtualMemoryArea {
                 end,
-                flags: new_flags,
                 ..last.clone()
             };
-            self.vmas.insert(last_index, changed);
+            last.vma_type = last.vma_type.splitted(end.0 - last.start.0);
+            last.start = end;
+            self.vmas.insert(last_index, new_vma);
         }
 
         for vma in &mut self.vmas[full..last_index] {

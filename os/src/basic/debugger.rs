@@ -13,6 +13,7 @@ pub fn debugbreak() {
 ///
 /// 目前实现依赖于帧指针。
 #[cfg(feature = "framepointer")]
+#[inline(always)]
 pub fn backtrace() {
     use crate::arch::{self, interfaces::Regs};
 

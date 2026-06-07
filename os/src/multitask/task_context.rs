@@ -18,6 +18,15 @@ pub struct TaskContext {
     pub callee_saved_registers: [usize; 9], // $s0 ~ $s8
 }
 
+const TASK_CONTEXT_SIZE: usize = size_of::<TaskContext>();
+const RA_OFFSET: usize = offset_of!(TaskContext, return_address);
+const TASK_ADDR_OFFSET: usize = offset_of!(TaskContext, task_pointer);
+const SP_OFFSET: usize = offset_of!(TaskContext, stack_pointer);
+const PAGE_TABLE_OFFSET: usize = offset_of!(TaskContext, page_table_register);
+const REGS_OFFSET: usize = offset_of!(TaskContext, callee_saved_registers);
+
+const KSTACK_OFFSET_IN_TASK: usize = offset_of!(crate::multitask::task::Task, kstack);
+
 /// 保存当前上下文，并切换到另一个上下文。
 ///
 /// 注意此函数可能不会马上返回，请在调用前尽可能释放不必要的资源。
@@ -28,15 +37,6 @@ pub struct TaskContext {
 /// 2. `tp` / `$tp` 寄存器指向当前上下文的 `Task` 结构体（通常内核态下均能满足）
 #[naked]
 pub unsafe extern "C" fn switch_context(to: &TaskContext) {
-    const TASK_CONTEXT_SIZE: usize = size_of::<TaskContext>();
-    const RA_OFFSET: usize = offset_of!(TaskContext, return_address);
-    const TASK_ADDR_OFFSET: usize = offset_of!(TaskContext, task_pointer);
-    const SP_OFFSET: usize = offset_of!(TaskContext, stack_pointer);
-    const PAGE_TABLE_OFFSET: usize = offset_of!(TaskContext, page_table_register);
-    const REGS_OFFSET: usize = offset_of!(TaskContext, callee_saved_registers);
-
-    const KSTACK_OFFSET_IN_TASK: usize = offset_of!(crate::multitask::task::Task, kstack);
-
     #[cfg(target_arch = "riscv64")]
     unsafe {
         seq!(N in 0..=11 {

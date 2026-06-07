@@ -12,7 +12,7 @@ use crate::memory::uaccess::copy_one_to_user;
 use crate::memory::uaccess::copy_slice_to_user;
 use crate::memory::uaccess::copy_to_user;
 use crate::multitask::current_task;
-use crate::multitask::task_manager::get_task_by_pid;
+use crate::multitask::task_manager::get_task_by_tid;
 use crate::syscall::SyscallResult;
 
 use crate::syscall::err_codes::*;
@@ -130,7 +130,7 @@ pub extern "C" fn get_robust_list(
     let task = if pid == 0 {
         unsafe { current_task().as_ref_unchecked() }
     } else {
-        &get_task_by_pid(pid).ok_or(ESRCH)?
+        &get_task_by_tid(pid).ok_or(ESRCH)?
     };
 
     let head = task.robust_list_head.load(Ordering::Acquire);

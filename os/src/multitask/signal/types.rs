@@ -101,7 +101,7 @@ make_enums! {
 pub type SignalIdUnderlying = u8;
 
 impl SignalId {
-    pub const NORMAL_MAX: Self = Self::SIGSYS;
+    pub const NORMAL_MAX: Self = Self::SIGTIMER;
     pub const MAX: Self = Self::SIGRTMAX;
 
     pub fn value(self) -> SignalIdUnderlying {
@@ -109,7 +109,12 @@ impl SignalId {
     }
 
     pub fn is_realtime(&self) -> bool {
-        self.value() >= 32
+        self.value() > 32
+    }
+
+    pub fn as_mask(&self) -> SignalMask {
+        debug_assert_ne!(*self, Self::SIGINVAL);
+        SignalMask::from_bits_retain(1 << (self.value() - 1))
     }
 
     /// 返回此信号是否是特殊信号（即无法修改或查询处理方式，也无法捕获或忽略的信号）
@@ -132,6 +137,12 @@ impl SignalId {
 
             _ => Terminate,
         }
+    }
+}
+
+impl SignalMask {
+    pub fn remove_special(&mut self) {
+        self.remove(SignalMask::SIGKILL | SignalMask::SIGSTOP);
     }
 }
 

@@ -405,7 +405,7 @@ impl<const LEVEL: usize> Debug for PageTable<LEVEL> {
                 });
             } else {
                 f.write_fmt(format_args!(
-                    "[{:#x}, {:#x})",
+                    "[{:#x}, {:#x}), FLAGS: {flags:?}",
                     paddr.0,
                     paddr.0 + (1 << PAGE_SHIFTS[LEVEL]),
                 ))?;

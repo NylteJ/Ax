@@ -1,3 +1,5 @@
+use core::sync::atomic::Ordering;
+
 use alloc::collections::vec_deque::VecDeque;
 use bitvec::{BitArr, array::BitArray};
 
@@ -20,7 +22,7 @@ pub struct RealtimeScheduler {
 
 impl Scheduler for RealtimeScheduler {
     fn add_task(&mut self, task: TaskArc) -> Result<(), ()> {
-        let (SchedulePolicy::FIFO | SchedulePolicy::RoundRobin) = task.policy else {
+        let (SchedulePolicy::FIFO | SchedulePolicy::RoundRobin { .. }) = &task.policy else {
             return Err(());
         };
 
@@ -47,10 +49,23 @@ impl Scheduler for RealtimeScheduler {
     }
 
     fn on_time_interrupt(&mut self, task: &Task) -> Result<Option<TaskArc>, ()> {
-        match task.policy {
+        match &task.policy {
             SchedulePolicy::FIFO => Ok(None), // FIFO 不需要处理时间中断，跑到跑完
-            SchedulePolicy::RoundRobin => {
-                // 暂时只给跑一个时间片
+            SchedulePolicy::RoundRobin { rest_time_slice } => {
+                let old_rest = rest_time_slice.fetch_sub(1, Ordering::Relaxed);
+                debug_assert_ne!(old_rest, 0);
+                if old_rest != 1 {
+                    return Ok(None); // 时间片还没用完，继续跑
+                }
+
+                const SLICE_PER_TASK: u8 = 128;
+
+                let old_rest = rest_time_slice.swap(SLICE_PER_TASK, Ordering::Relaxed);
+                debug_assert_eq!(
+                    old_rest, 0,
+                    "这里不该有竞争（其实连原子变量都能直接省略的）"
+                ); // TODO: 看看能不能真的省略
+
                 let queue = &mut self.tasks[task.priority as usize];
 
                 let Some(next_task) = queue.pop_front() else {

@@ -43,6 +43,10 @@
 #![feature(int_roundings)]
 #![feature(slice_ptr_get)]
 #![feature(const_copy_from_slice)]
+#![feature(extract_if)]
+#![feature(slice_as_array)]
+#![feature(btree_cursors)]
+#![feature(allocator_api)]
 //
 #![deny(unused_must_use)]
 
@@ -266,6 +270,12 @@ pub extern "C" fn main(_: usize, dtb: PhysAddr) -> ! {
         log::info!("已将 devfs 挂载到 /dev");
         init_devs();
 
+        let dev_shm = get_or_create_path(&root_fs, "/dev/shm");
+        let dev_shm_fs = tmpfs_type.ops.new_fs(None);
+        let dev_shm_2 = dev_shm_fs.root_dentry.clone();
+        vfs::MountPoint::mount(dev_shm, dev_shm_fs, dev_shm_2);
+        log::info!("已将 tmpfs 挂载到 /dev/shm");
+
         let sdcard_1 = get_or_create_path(&root_fs, "/sdcd");
         let sdcard_fs = ext4_type.ops.new_fs(Some(sdcard_device));
         let sdcard_2 = sdcard_fs.root_dentry.clone();
@@ -282,6 +292,8 @@ pub extern "C" fn main(_: usize, dtb: PhysAddr) -> ! {
             .into_asm()
     };
     log::info!("零页 {:#x} 初始化完毕", zero_page_num.0);
+
+    multitask::futex::init();
 
     // FIXME
 
@@ -303,7 +315,14 @@ pub extern "C" fn main(_: usize, dtb: PhysAddr) -> ! {
             .open(rv.1, vfs::FileFlags::Read)
             .unwrap();
 
-    Task::execute_init(multitask::SchedulePolicy::FIFO, 50, file, ROOT_PATH.clone());
+    Task::execute_init(
+        multitask::SchedulePolicy::RoundRobin {
+            rest_time_slice: core::sync::atomic::AtomicU8::new(u8::MAX),
+        },
+        50,
+        file,
+        ROOT_PATH.clone(),
+    );
 }
 
 fn clear_bss() {

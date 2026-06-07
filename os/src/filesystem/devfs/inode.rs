@@ -69,12 +69,32 @@ impl INodeOps for DevINode {
         Ok(())
     }
 
-    fn mkdir(
-        &mut self,
-        _dentry: vfs::DEntryArc,
-        _mode: vfs::INodeMode,
-    ) -> VfsResult<vfs::INodeArc> {
-        Err(VfsError::OperationNotSupported)
+    fn mkdir(&mut self, dentry: vfs::DEntryArc, mode: vfs::INodeMode) -> VfsResult<vfs::INodeArc> {
+        let fs = vfs::INode::get_filesystem::<DevFs>(self);
+        let fs = unsafe { extend_lifetime(fs) };
+
+        let Self::Directory(children) = self else {
+            return Err(VfsError::NotADirectory);
+        };
+
+        let name = dentry.data.lock().name.clone();
+        let Err(pos) = children.binary_search_by_key(&&name, |(n, _)| n) else {
+            return Err(VfsError::FileAlreadyExists);
+        };
+
+        let id = fs.ops.inode_id.fetch_add(1, Ordering::Relaxed);
+
+        let new_inode = vfs::INode::new(id, NonNull::from_ref(fs), vfs::INodeData {
+            file_size: 0,
+            hard_links: 2,
+            mode,
+            page_cache: None,
+            ops: DevINode::Directory(Vec::new()),
+        });
+
+        children.insert(pos, (name, new_inode.clone()));
+
+        Ok(new_inode)
     }
 
     fn rmdir(&mut self, _dentry: &vfs::DEntryArc) -> VfsResult<()> {

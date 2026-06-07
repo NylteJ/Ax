@@ -133,7 +133,6 @@ impl<T: ?Sized> DerefMut for RwLockWriteGuard<'_, T> {
 unsafe impl<T: ?Sized> DerefPure for RwLockReadGuard<'_, T> {}
 unsafe impl<T: ?Sized> DerefPure for RwLockWriteGuard<'_, T> {}
 
-// SAFETY: 目前我们不支持并行，故而无需担心数据竞争
 unsafe impl<T: ?Sized + Send + Sync> Sync for RwLock<T> {}
 unsafe impl<T: ?Sized + Send> Send for RwLock<T> {}
 
@@ -235,7 +234,19 @@ impl<T: ?Sized> DerefMut for MutexGuard<'_, T> {
 
 unsafe impl<T: ?Sized> DerefPure for MutexGuard<'_, T> {}
 
-// SAFETY: 目前我们不支持并行，故而无需担心数据竞争
+impl<'a, T> MutexGuard<'a, T> {
+    /// 解锁，然后获取对应 [`Mutex`] 的不可变引用。
+    ///
+    /// 如果忽略返回值，则其完全等价于 [`drop`]。
+    #[must_use]
+    pub fn unlock_and_get_mutex(self) -> &'a Mutex<T> {
+        let mtx = Mutex::from_value(self.value);
+        drop(self);
+
+        unsafe { mtx.as_ref() }
+    }
+}
+
 unsafe impl<T: ?Sized + Send> Sync for Mutex<T> {}
 unsafe impl<T: ?Sized + Send> Send for Mutex<T> {}
 

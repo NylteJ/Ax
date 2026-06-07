@@ -1,6 +1,6 @@
 use core::{
     arch::{asm, naked_asm},
-    mem::offset_of,
+    mem::{offset_of, transmute},
 };
 
 use bit_field::BitField;
@@ -180,6 +180,7 @@ unsafe impl interfaces::Trap for Trap {
 }
 
 #[repr(align(16))] // 上下文须压栈，LoongArch 64 要求栈按 16 字节对齐
+#[derive(Clone, Copy)]
 pub struct TrapContext {
     pub regs: Registers,
     pub prmd: usize,
@@ -194,7 +195,7 @@ const RET_PC_OFFSET: usize = offset_of!(TrapContext, ret_pc);
 macro_rules! regs {
     ($($name:ident),+ $(,)?) => {
         #[repr(C)]
-        #[derive(Debug)]
+        #[derive(Debug, Clone, Copy)]
         pub struct Registers {
             $(
                 #[debug("{:#018x}", $name)]
@@ -210,6 +211,8 @@ regs!(
 );
 
 impl interfaces::TrapContext for TrapContext {
+    type MContext = MContext;
+
     fn syscall_id(&self) -> usize {
         self.regs.a7
     }
@@ -230,4 +233,32 @@ impl interfaces::TrapContext for TrapContext {
     fn is_trap_from_kernel(&self) -> bool {
         self.prmd.get_bits(0..2) == 0
     }
+
+    fn get_mcontext(&self) -> Self::MContext {
+        let mut gregs = [0usize; 32];
+        *gregs[1..].as_mut_array::<31>().unwrap() = unsafe { transmute(self.regs) };
+
+        MContext {
+            // __pad: 0,
+            pc: self.ret_pc,
+            gregs,
+            flags: 0, // FIXME?
+            extcontext: [0; 66],
+        }
+    }
+    fn with_mcontext(&mut self, mcontext: &Self::MContext) {
+        self.ret_pc = mcontext.pc;
+        self.regs = unsafe { transmute(*mcontext.gregs[1..].as_array::<31>().unwrap()) };
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct MContext {
+    // https://git.musl-libc.org/cgit/musl/tree/arch/loongarch64/bits/signal.h
+    // __pad: isize,
+    pub pc: usize,
+    pub gregs: [usize; 32],
+    pub flags: u32,
+    pub extcontext: [usize; 66], // FIXME???
 }

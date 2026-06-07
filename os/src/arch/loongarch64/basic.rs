@@ -95,4 +95,9 @@ impl interfaces::Basic for Basic {
             );
         }
     }
+
+    #[inline]
+    fn halt() {
+        unsafe { asm!("idle 0", options(nomem, nostack, preserves_flags)) };
+    }
 }

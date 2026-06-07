@@ -12,9 +12,6 @@ use block_device::BlockDevice;
 
 pub static DEVICES: UnsafeInited<Devices> = unsafe { UnsafeInited::uninit() };
 
-// FIXME: 如果我们未来要支持多块设备，则这里需修改
-pub static BLOCK_DEVICES: OnceInited<[&'static dyn BlockDevice; 1]> = OnceInited::new();
-
 #[derive(Debug)]
 pub enum DeviceError {
     VirtIOError(virtio_drivers::Error),

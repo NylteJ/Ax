@@ -14,3 +14,4 @@ pub type NativeChrono = <Native as interfaces::Arch>::Chrono;
 pub type NativeUAccessRaw = <Native as interfaces::Arch>::UAccessRaw;
 pub type NativeTrap = <Native as interfaces::Arch>::Trap;
 pub type NativeTrapContext = <NativeTrap as interfaces::Trap>::TrapContext;
+pub type NativeMContext = <NativeTrapContext as interfaces::TrapContext>::MContext;

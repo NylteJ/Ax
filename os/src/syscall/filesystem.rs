@@ -34,7 +34,11 @@ use crate::{
         copy_str_from_user, copy_to_user, copy_vec_from_user,
     },
     multitask::{FDTableEntry, FileDescriptorFlags, current_task, signal::SignalMask},
-    syscall::{SyscallResult, common_types::TimeSpec},
+    syscall::{
+        SyscallResult,
+        basic::RLimitResource::RLIMIT_NOFILE,
+        common::{TimeSpec, get_timeout_us},
+    },
 };
 
 use crate::syscall::err_codes::*;
@@ -53,6 +57,11 @@ fn get_file_from_fd(fd: isize) -> Result<FileArc, SyscallResult> {
     let file = cur_task.files.read().get(fd).ok_or(EBADF)?.0.clone();
 
     Ok(file)
+}
+
+fn cur_fd_rlimit() -> usize {
+    let cur_task = unsafe { current_task().as_ref_unchecked() };
+    cur_task.process.rlimits.read()[RLIMIT_NOFILE].rlim_cur
 }
 
 /// 功能：获取当前工作目录；
@@ -152,8 +161,8 @@ pub extern "C" fn pipe2(fd: *mut c_int, flags: usize) -> SyscallResult {
     let cur_task = unsafe { current_task().as_ref_unchecked() };
 
     let out: [c_int; 2] = {
-        let reader = cur_task.files.write().insert(reader) as _;
-        let writer = cur_task.files.write().insert(writer) as _;
+        let reader = cur_task.files.write().insert(reader, cur_fd_rlimit())? as _;
+        let writer = cur_task.files.write().insert(writer, cur_fd_rlimit())? as _;
         [reader, writer]
     };
 
@@ -185,8 +194,9 @@ pub extern "C" fn dup(fd: isize) -> SyscallResult {
     let mut files_guard = cur_task.files.write();
 
     let file = files_guard.get(fd).ok_or(EBADF)?.0.clone();
+    let entry = FDTableEntry::no_flags(file); // dup 不保留标志
 
-    SyscallResult::success(files_guard.insert(FDTableEntry::no_flags(file))) // dup 不保留标志
+    SyscallResult::success(files_guard.insert(entry, cur_fd_rlimit())?)
 }
 
 /// 功能：复制文件描述符，并指定了新的文件描述符；
@@ -334,21 +344,23 @@ pub extern "C" fn openat(
         FDTableEntry::no_flags(file)
     };
 
-    let fd = cur_task.files.write().insert(fd_entry);
+    let fd = cur_task.files.write().insert(fd_entry, cur_fd_rlimit())?;
     log::trace!("openat success, fd: {fd}");
     SyscallResult::success(fd)
 }
 
 bitflags! {
+    #[derive(Debug)]
     struct FileOpenFlags: i32 {
+        // https://git.musl-libc.org/cgit/musl/tree/arch/generic/bits/fcntl.h
+
         /// O_CREAT - Create the file if it does not exist
         const O_CREAT = 1 << 6;
 
         /// O_EXCL - Ensure that this call creates a new file
         const O_EXCL = 1 << 7;
 
-        /// O_NOFOLLOW - Do not follow symbolic links
-        const O_NOFOLLOW = 1 << 8;
+        const O_NOCTTY = 1 << 8;
 
         /// O_TRUNC - Truncate the file to zero length if it already exists
         const O_TRUNC = 1 << 9;
@@ -359,28 +371,38 @@ bitflags! {
         /// O_NONBLOCK - Open in non-blocking mode
         const O_NONBLOCK = 1 << 11;
 
-        /// O_SYNC - Open with synchronous I/O
-        const O_SYNC = 1 << 12;
-
         /// O_DSYNC - Open with data synchronization
-        const O_DSYNC = 1 << 13;
+        const O_DSYNC = 1 << 12;
+
+        /// O_SYNC - Open with synchronous I/O
+        const O_SYNC = 1 << 12 | 1 << 20;
 
         /// O_RSYNC - Open with read synchronization
-        const O_RSYNC = 1 << 14;
-
-        /// O_LARGEFILE - Allow large file operations (for 32-bit systems)
-        const O_LARGEFILE = 1 << 15;
+        const O_RSYNC = Self::O_SYNC.bits();
 
         const O_DIRECTORY = 1 << 16;
+
+        /// O_NOFOLLOW - Do not follow symbolic links
+        const O_NOFOLLOW  = 1 << 17;
 
         /// Close-on-exec flag for the returned file descriptor
         const O_CLOEXEC = 1 << 19;
 
+        const O_ASYNC = 1 << 13;
+        const O_DIRECT = 1 << 14;
+
+        /// O_LARGEFILE - Allow large file operations (for 32-bit systems)
+        const O_LARGEFILE = 1 << 15;
+
         /// O_NOATIME - Do not update file's access time
-        const O_NOATIME = 1 << 20;
+        const O_NOATIME = 1 << 18;
+
+        const O_PATH = 1 << 21;
 
         /// O_TMPFILE - Create a temporary file (without a pathname)
-        const O_TMPFILE = 1 << 21;
+        const O_TMPFILE = 1 << 22 | Self::O_DIRECTORY.bits();
+
+        const O_DELAY = Self::O_NONBLOCK.bits();
     }
 }
 
@@ -395,10 +417,8 @@ fn parse_file_open_flag(flag: isize) -> VfsResult<(FileOpenFlags, FileFlags)> {
         _ => unreachable!(),
     };
 
-    let open_flags = FileOpenFlags::from_bits_retain(flag & !0b11);
-    if open_flags.contains_unknown_bits() {
-        return Err(VfsError::NotYetImplemented);
-    }
+    let open_flags =
+        FileOpenFlags::from_bits(flag & !0b11).ok_or(VfsError::InvalidArguments("未知 flag"))?;
 
     if open_flags.contains(FileOpenFlags::O_APPEND) {
         file_flags |= FileFlags::Append;
@@ -1020,11 +1040,18 @@ pub extern "C" fn fcntl(fd: isize, op: isize, arg: usize) -> SyscallResult {
     // const F_SETFL: isize = 4;
 
     let result = match op {
-        F_DUPFD => current_task.files.write().insert_at_least(arg, fd_entry),
-        F_DUPFD_CLOEXEC => current_task
-            .files
-            .write()
-            .insert_at_least(arg, FDTableEntry::cloexec(fd_entry.0)),
+        F_DUPFD | F_DUPFD_CLOEXEC => {
+            let entry = if op == F_DUPFD_CLOEXEC {
+                FDTableEntry::cloexec(fd_entry.0)
+            } else {
+                fd_entry
+            };
+
+            current_task
+                .files
+                .write()
+                .insert_at_least(arg, entry, cur_fd_rlimit())?
+        }
 
         F_GETFD => fd_entry.1.into_raw(),
         F_SETFD => {
@@ -1379,18 +1406,7 @@ pub extern "C" fn ppoll(
         Some(copy_one_from_user(sigmask)?)
     };
 
-    let timeout_us = if tmo_p.is_null() {
-        None
-    } else {
-        let TimeSpec { tv_sec, tv_nsec } = copy_one_from_user(tmo_p)?;
-        let us = tv_sec
-            .checked_mul(1_000_000)
-            .and_then(|s| s.checked_add(tv_nsec / 1000));
-        if us.is_some_and(|value| value < 0) {
-            return EINVAL;
-        }
-        us.map(|signed| signed.cast_unsigned())
-    };
+    let timeout_us = get_timeout_us(tmo_p)?;
 
     if timeout_us == Some(0) {
         // Specifying a timeout of zero causes poll() to return immediately, even if no file descriptors are ready.
@@ -1464,7 +1480,7 @@ pub extern "C" fn ppoll(
         }
 
         // 假装我们还设定了信号唤醒
-        if cur_task.signals_wl.lock().find_can_consume().is_some() {
+        if cur_task.find_signal_to_consume().is_some() {
             return EINTR;
         }
     };
@@ -1543,4 +1559,19 @@ pub extern "C" fn lseek(fd: isize, offset: i64, whence: isize) -> SyscallResult 
     let new_off = file.data.lock().fseek(seek_from)?;
 
     SyscallResult::success(new_off as usize)
+}
+
+pub extern "C" fn readlinkat(
+    dirfd: isize,
+    pathname: *const c_char,
+    buf: *mut c_char,
+    bufsiz: usize,
+) -> SyscallResult {
+    let pathname = copy_str_from_user(pathname, FILENAME_LEN_HINT, PATH_LEN_MAX)?;
+
+    let ptw = parse_walk_path_from(dirfd, &pathname)?;
+    let path = walk_path(ptw)?.ensure()?;
+
+    // 我们现在不支持符号链接，因此此处找到的文件绝不可能是符号链接
+    EINVAL
 }

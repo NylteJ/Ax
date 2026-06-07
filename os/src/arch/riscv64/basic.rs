@@ -110,4 +110,9 @@ impl interfaces::Basic for Basic {
             );
         }
     }
+
+    #[inline]
+    fn halt() {
+        unsafe { asm!("wfi", options(nomem, nostack, preserves_flags)) };
+    }
 }

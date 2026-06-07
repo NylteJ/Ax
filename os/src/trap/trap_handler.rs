@@ -8,11 +8,13 @@ use crate::{
         interfaces::{Regs, Trap as Trap2, TrapContext},
     },
     basic::{
-        DropGuard, abort_and_shutdown, stack::TaskKernelStackPtr, timer::reset_timer_interrupt,
+        DropGuard, abort_and_shutdown,
+        stack::TaskKernelStackPtr,
+        timer::{check_timers, reset_timer_interrupt},
     },
     memory::address::VirtAddr,
     multitask::{current_task, signal::SignalId, task::Task, task_scheduler::TASK_SCHEDULER},
-    syscall::{self, ERRORCODE_NOSYS},
+    syscall::{self, ERRORCODE_NOSYS, ERRORCODE_SPECIAL_RESTART_SYSCALL},
     trap::{
         page_fault_type::PageFaultType,
         trap::{Exception, Interrupt, Trap},
@@ -35,23 +37,34 @@ extern "C" fn trap_handler(context: &mut NativeTrapContext) {
     let signal_handling_guard;
     if !trap_is_from_kernel {
         cur_task.time_stats.lock().update_user_time();
-        kernel_time_updater = DropGuard::new(|| cur_task.time_stats.lock().update_kernel_time());
+        kernel_time_updater = DropGuard::new(|| {
+            #[cfg(target_arch = "loongarch64")] // 没有人知道原因，我强烈怀疑这是编译器 bug 而非 UB
+            let cur_task = unsafe { current_task().as_ref_unchecked() };
+
+            cur_task.time_stats.lock().update_kernel_time()
+        });
 
         signal_handling_guard = DropGuard::new(|| {
-            while let Some(signal_id) = { cur_task.signals_wl.lock().try_consume_one() } {
+            #[cfg(target_arch = "loongarch64")] // 没有人知道原因，我强烈怀疑这是编译器 bug 而非 UB
+            let cur_task = unsafe { current_task().as_ref_unchecked() };
+
+            while let Some((signal_id, rt_data)) = cur_task.try_consume_signal() {
                 log::debug!(
                     "正在处理 TID = {} 的 Task 的 {signal_id:?} 信号",
                     cur_task.tid
                 );
 
-                let behavior = cur_task.signal_handler.read().handle(signal_id);
+                let behavior = cur_task.signal_handler.read().handle(signal_id, rt_data);
 
                 let sid_value = signal_id.value().into();
 
                 use crate::multitask::signal::SignalBehavior;
                 match behavior {
                     // 这里直接调用 exit_group 是没问题的，其内部有防重入设施，必要时会退化为 exit
-                    SignalBehavior::Terminate => syscall::process::exit_group(sid_value),
+                    SignalBehavior::Terminate => {
+                        log::error!("TODO: 进程因信号终止时传递对应信号给 waitpid");
+                        syscall::process::exit_group(sid_value);
+                    }
                     SignalBehavior::Ignored => (),
                     SignalBehavior::TerminateAndDumpCore => {
                         log::error!("TODO: core dump");
@@ -89,12 +102,30 @@ extern "C" fn trap_handler(context: &mut NativeTrapContext) {
                 {
                     *UNKNOWN_SYSCALLS.lock().entry(id).or_insert(0) += 1;
                 }
+            } else {
+                log::trace!(
+                    "系统调用：TID = {}, id = {id} ({}), args = {args:x?} (HEX), return value = {ret_value:#x}",
+                    cur_task.tid,
+                    syscall::SYSCALL_ID_NAME_MAP.get(id).unwrap_or(&"???")
+                );
             }
 
-            *context.ret_reg_mut() = ret_value;
+            if ret_value == ERRORCODE_SPECIAL_RESTART_SYSCALL {
+                log::trace!(
+                    "系统调用 {id} ({}) 请求重启",
+                    syscall::SYSCALL_ID_NAME_MAP.get(id).unwrap_or(&"???")
+                );
+                context.ret_pc -= 4;
+                // 这样就够了，应用程序返回时会使用相同的参数再度触发一次系统调用
+            } else {
+                // 只在不重启时修改返回值，因为许多平台上返回值和参数共用寄存器
+                *context.ret_reg_mut() = ret_value;
+            }
         }
         Trap::Interrupt(Interrupt::TimerInterrupt) => {
             reset_timer_interrupt();
+
+            check_timers();
 
             let mut brw = TASK_SCHEDULER.lock();
             if let Some(next_task) = brw.on_time_interrupt(cur_task) {
@@ -138,6 +169,9 @@ extern "C" fn trap_handler(context: &mut NativeTrapContext) {
 
                     println!("栈帧指针：{:#x}", context.regs.fp);
                     crate::basic::debugger::backtrace_at(context.regs.fp as *const usize);
+                    println!();
+
+                    println!("寄存器信息：\n{:#?}", context.regs);
 
                     abort_and_shutdown();
                 }
@@ -219,6 +253,10 @@ fn print_trap_context(context: &NativeTrapContext) {
         } else {
             "U"
         },
+    );
+    println!(
+        "Task TID: {}",
+        unsafe { current_task().as_ref_unchecked() }.tid
     );
     println!("return PC: {:#x}", context.ret_pc);
     println!("bad address: {:#x}", arch::NativeTrap::get_bad_address())

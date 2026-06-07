@@ -1,5 +1,5 @@
 use core::{
-    ffi::{c_char, c_int, c_long},
+    ffi::{c_char, c_int, c_long, c_uint},
     mem::MaybeUninit,
     num::NonZero,
     pin::Pin,
@@ -22,19 +22,22 @@ use crate::{
     memory::{
         STACK_ALIGN,
         uaccess::{
-            CopyError, copy_from_user, copy_from_user_uninit, copy_str_from_user, copy_to_user,
+            CopyError, copy_from_user, copy_from_user_uninit, copy_one_to_user, copy_str_from_user,
+            copy_to_user,
         },
     },
     multitask::{
         current_task,
         signal::SignalId,
         task::{AuxId, AuxiliaryEntry, Task, TaskArc, USER_STACK_BYTES},
-        task_manager::get_task_by_pid,
+        task_manager::get_task_by_tid,
+        wait::{SleepError, SleepWithTimeoutResult, Waiting},
     },
     syscall::{
         self, SyscallResult,
-        common_types::TimeSpec,
+        common::TimeSpec,
         filesystem::{PATH_LEN_HINT, PATH_LEN_MAX},
+        signal::{SignalActionFlags, restart_syscall_if_able},
     },
 };
 
@@ -56,11 +59,12 @@ pub use super::basic::exit;
 pub extern "C" fn clone(
     flags: usize,
     stack: Option<NonZero<usize>>, // Rust 保证其布局和 usize 完全一致
-    ptid: usize,
+    ptid: *mut c_int,
     tls: usize,
     ctid: usize,
 ) -> SyscallResult {
     let signal = flags.get_bits(0..8) as u8;
+    let signal = SignalId::try_from(signal).map_err(|_| EINVAL)?;
 
     let flags = (flags >> 8).try_into().map_err(|_| EINVAL)?;
     let flags = CloneFlags::from_bits(flags).ok_or(EINVAL)?;
@@ -68,14 +72,19 @@ pub extern "C" fn clone(
     flags.check_validity()?;
 
     log::trace!(
-        "clone: flags = {flags:?}, signal = {signal:#x} (ignored), stack = {:#x}, ptid = {ptid:#x} (ignored), tls = {tls:#x} (ignored), ctid = {ctid:#x} (ignored)",
+        "clone: flags = {flags:?}, signal = {signal:?}, stack = {:#x}, ptid = {ptid:p}, tls = {tls:#x}, ctid = {ctid:#x}",
         stack.map_or(0, |s| s.get())
     );
-    log::error!("TODO: 处理 ptid、tls、ctid、signal");
 
     let task = unsafe { current_task().as_ref_unchecked() };
 
-    let child = task.fork(flags, stack);
+    // 非常神奇的，在 LoongArch 64 上，tls 和 ctid 参数是反着来的
+    #[cfg(target_arch = "loongarch64")]
+    let (tls, ctid) = (ctid, tls);
+
+    let ctid = ctid as *mut c_int;
+
+    let child = task.fork(flags, stack, ptid, tls, ctid, signal)?;
 
     SyscallResult::success(child.tid)
 }
@@ -113,10 +122,18 @@ bitflags! {
         /// 反之，子进程将被视为独立进程，并且拥有自己的线程组。
         const THREAD = 1 << 8;
 
-        const SYSVSEM = 1 << 10;
+        /// 额外设置子线程的线程局部空间（基本上就是 tp 寄存器）
         const SETTLS = 1 << 11;
+
+        /// 将子线程 ID 存储在父线程**和子线程**内存中的 ptid 位置。
         const PARENT_SETTID = 1 << 12;
+
+        /// 当子线程退出时，清除子线程内存中 ctid 位置的子线程 ID，**并唤醒该地址处的 futex 对象**。
+        ///
+        /// 可以通过 set_tid_address 更改相关地址。
         const CHILD_CLEARTID = 1 << 13;
+
+        const SYSVSEM = 1 << 10;
         const DETACHED = 1 << 14;
         const UNTRACED = 1 << 15;
         const CHILD_SETTID = 1 << 16;
@@ -323,11 +340,14 @@ pub extern "C" fn wait4(pid: isize, status: *mut c_int, options: usize) -> Sysca
         -1 => return wait4_pred(|_| true, status, options, task),
         1.. => {
             let pid = pid.cast_unsigned();
-            let target = get_task_by_pid(pid).ok_or(ECHILD)?;
+            let target = get_task_by_tid(pid).ok_or(ECHILD)?;
 
             if !addr_eq(target.parent_task(), task) {
                 return ECHILD;
             }
+
+            // 见 wait4_pred
+            let mut sleep_err = None;
 
             loop {
                 if let Some((signal, ret_value)) = target.wait_state.lock().status {
@@ -336,11 +356,17 @@ pub extern "C" fn wait4(pid: isize, status: *mut c_int, options: usize) -> Sysca
                     return SyscallResult::success(pid);
                 }
 
+                if let Some(err) = sleep_err {
+                    return restart_syscall_if_able(err);
+                }
+
                 if options.contains(WaitOptions::WNOHANG) {
                     return SyscallResult::success(0);
                 }
 
-                syscall::basic::yield_(); // 假装睡眠
+                let mut waiting = Waiting::new();
+                waiting.wait(&task.process.waiting_for_child);
+                sleep_err = waiting.sleep().err();
             }
         }
     };
@@ -369,13 +395,17 @@ fn wait4_pred(
     options: WaitOptions,
     task: &Task,
 ) -> SyscallResult {
+    // basic 测试写得有点过于简化了，以至于在 wait4 被子进程退出时发送的信号打断时会将其视作失败，
+    // 而且其 SIGCHILD 的 sigaction 也没有设定 SA_RESTART
+    // 为此我们不得不帮忙擦屁股，确保只在没有可等待的子进程时才返回 EINTR
+    let mut sleep_err = None;
+
     loop {
         {
             let mut any_possible = false;
 
             let mut children = task.children.lock();
-            let mut cur_child = children.cursor_mut();
-            cur_child.move_next();
+            let mut cur_child = children.front_mut();
             while let Some(child) = cur_child.get() {
                 debug_assert!(child.tid == child.process.pid);
 
@@ -407,15 +437,21 @@ fn wait4_pred(
             }
         }
 
+        if let Some(err) = sleep_err {
+            return restart_syscall_if_able(err);
+        }
+
         if options.contains(WaitOptions::WNOHANG) {
             return SyscallResult::success(0);
         }
 
-        syscall::basic::yield_(); // 假装睡眠
+        let mut waiting = Waiting::new();
+        waiting.wait(&task.process.waiting_for_child);
+        sleep_err = waiting.sleep().err();
     }
 }
 
-fn report_status(status: *mut c_int, signal: u8, ret_value: u8) -> Result<(), CopyError> {
+fn report_status(status: *mut c_int, signal: SignalId, ret_value: u8) -> Result<(), CopyError> {
     if status.is_null() {
         return Ok(());
     }
@@ -477,9 +513,6 @@ pub extern "C" fn nanosleep(req: *const TimeSpec, rem: *mut TimeSpec) -> Syscall
     copy_from_user_uninit(k_req.as_bytes_mut(), req.cast())?;
     let req: TimeSpec = unsafe { k_req.assume_init() };
 
-    // 因为我们还没有实现信号系统或其它可能导致睡眠被打断的机制，此处 rem 暂时无用
-    let _ = rem;
-
     let TimeSpec {
         tv_sec: seconds @ 0..,
         tv_nsec: nanos @ 0..=999999999,
@@ -494,26 +527,35 @@ pub extern "C" fn nanosleep(req: *const TimeSpec, rem: *mut TimeSpec) -> Syscall
 
     let target_tick = get_cpu_tick() + us_to_cpu_tick(us as usize);
 
-    loop {
-        let cur_tick = get_cpu_tick();
+    const BUSY_WAIT_THRESHOLD: usize = 1024;
 
-        if cur_tick >= target_tick {
-            break;
-        }
-
-        const BUSY_WAIT_THRESHOLD: usize = 1024;
-
-        if cur_tick + BUSY_WAIT_THRESHOLD < target_tick {
-            syscall::basic::yield_(); // 假装睡眠
-        }
+    if get_cpu_tick() + BUSY_WAIT_THRESHOLD >= target_tick {
+        // 对于实在过短的时间，直接忙等即可，也不用管信号了
+        // 注意 `core::hint::spin_loop` 在此处不适用（可能降低计时精度）
+        while get_cpu_tick() < target_tick {}
+        return SyscallResult::success(0);
     }
 
-    SyscallResult::success(0)
+    let sleep_result = Waiting::new().sleep_with_timeout(us as usize);
+
+    match sleep_result {
+        SleepWithTimeoutResult::Timeout => SyscallResult::success(0),
+        SleepWithTimeoutResult::Normal(rest, result) => {
+            debug_assert!(matches!(result, Err(SleepError::Interrupted(_))));
+
+            if !rem.is_null() {
+                let _ = copy_one_to_user(rem, &TimeSpec::from_us(rest.get() as u64));
+            }
+
+            return EINTR;
+        }
+    }
 }
 
-// FIXME
-pub extern "C" fn set_tid_address() -> usize {
-    0
+pub extern "C" fn set_tid_address(tidptr: *mut c_int) -> usize {
+    let cur_task = unsafe { current_task().as_ref_unchecked() };
+    cur_task.tid_address.store(tidptr, Ordering::Relaxed);
+    cur_task.tid
 }
 
 pub extern "C" fn exit_group(code: isize) -> ! {

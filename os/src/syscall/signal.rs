@@ -2,6 +2,7 @@ use core::ffi::c_int;
 use core::ffi::c_long;
 use core::ffi::c_short;
 use core::ffi::c_void;
+use core::mem::offset_of;
 use core::mem::replace;
 use core::ptr::NonNull;
 
@@ -10,6 +11,9 @@ use bitflags::bitflags;
 use derive_more::Debug;
 use num_enum::TryFromPrimitive;
 
+use crate::arch;
+use crate::basic::timer::get_cpu_tick;
+use crate::basic::timer::us_to_cpu_tick;
 use crate::memory::uaccess::copy_one_from_user;
 use crate::memory::uaccess::copy_one_to_user;
 use crate::multitask::current_task;
@@ -17,10 +21,29 @@ use crate::multitask::signal::SignalHandlerType;
 use crate::multitask::signal::SignalId;
 use crate::multitask::signal::SignalIdUnderlying;
 use crate::multitask::signal::SignalMask;
-use crate::multitask::task_manager::get_task_by_pid;
+use crate::multitask::signal::sigreturn;
+use crate::multitask::task_manager::get_task_by_tid;
+use crate::multitask::wait::SleepError;
 use crate::syscall::SyscallResult;
 
+use crate::syscall::common::TimeSpec;
+use crate::syscall::common::get_timeout_us;
 use crate::syscall::err_codes::*;
+
+pub fn restart_syscall_if_able(sleep_err: SleepError) -> SyscallResult {
+    let SleepError::Interrupted(signal) = sleep_err;
+
+    let cur_task = unsafe { current_task().as_ref_unchecked() };
+
+    if cur_task.signal_handler.read().handlers[signal as usize]
+        .sa_flags
+        .contains(SignalActionFlags::SA_RESTART)
+    {
+        return E_SPECIAL_RESTART_SYSCALL;
+    } else {
+        return EINTR;
+    }
+}
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
@@ -68,6 +91,10 @@ impl SignalAction {
             }
         }
     }
+
+    pub fn is_custom(&self) -> bool {
+        self.handler.addr() > 1
+    }
 }
 
 impl Default for SignalAction {
@@ -82,13 +109,32 @@ impl Default for SignalAction {
 }
 
 #[repr(C)]
+#[derive(Clone, Copy)]
 pub struct SignalInfo {
-    si_signo: c_int,
-    si_errno: c_int,
-    si_code: c_int,
+    pub si_signo: c_int,
+    pub si_errno: c_int,
+    pub si_code: c_int,
     /// 其它字段随信号不同可能变化
-    rest: [i32; 29],
+    pub rest: [i32; 29],
 }
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct UContext {
+    pub flags: usize,
+    pub link: *mut UContext,
+    pub ss_sp: *mut c_void,
+    pub ss_flags: c_int,
+    pub ss_size: usize,
+    pub mask: SignalMask,
+    /// 我不知道这个偏移是哪里来的，源代码里根本找不到
+    /// 但反汇编说 ret_pc 应该放在 0xb0，那就放在 0xb0 吧
+    /// （为此 LoongArch 64 的自带 __pad 都去掉了）
+    pub __pad: [u8; 0xb0 - 0x30],
+    pub mcontext: arch::NativeMContext,
+}
+static_assertions::const_assert_eq!(offset_of!(UContext, mask), 40);
+static_assertions::const_assert_eq!(offset_of!(UContext, mcontext), 0xb0);
 
 bitflags! {
     #[repr(transparent)]
@@ -140,11 +186,19 @@ pub extern "C" fn rt_sigaction(
     let old_act = if act.is_null() {
         cur_task.signal_handler.read().handlers[sig_id as usize]
     } else {
-        let act = copy_one_from_user(act)?;
+        let mut act = copy_one_from_user(act)?;
 
         if act.sa_flags.contains_unknown_bits() || act.sa_mask.contains_unknown_bits() {
             return EINVAL;
         }
+
+        // 无法屏蔽这类信号，它们会被静默忽略
+        act.sa_mask.remove_special();
+
+        log::trace!(
+            "TID = {} 的 Task 设置信号 {sig_id:?} 的处理方式为 {act:?}",
+            cur_task.tid
+        );
 
         replace(
             &mut cur_task.signal_handler.write().handlers[sig_id as usize],
@@ -181,12 +235,42 @@ pub extern "C" fn kill(pid: isize, sig: isize) -> SyscallResult {
     };
 
     match target {
-        Target::Pid(pid) => get_task_by_pid(pid).ok_or(ESRCH)?.send_signal(signal),
+        Target::Pid(pid) => {
+            let task = get_task_by_tid(pid).ok_or(ESRCH)?;
+
+            if task.process.pid != task.tid {
+                return ESRCH;
+            }
+
+            task.process.send_signal(signal);
+        }
         Target::Pgid(pgid) => todo!(),
         Target::All => todo!(),
     }
 
     SyscallResult::success(0)
+}
+
+pub extern "C" fn tgkill(tgid: isize, tid: isize, sig: isize) -> SyscallResult {
+    let sig: SignalIdUnderlying = sig.try_into().map_err(|_| EINVAL)?;
+    let signal: SignalId = sig.try_into().map_err(|_| EINVAL)?;
+
+    get_task_by_tid(tid.cast_unsigned())
+        .and_then(|task| {
+            if tgid == -1 || task.process.pid == tgid.cast_unsigned() {
+                Some(task)
+            } else {
+                None
+            }
+        })
+        .ok_or(ESRCH)?
+        .send_signal(signal);
+
+    SyscallResult::success(0)
+}
+
+pub extern "C" fn tkill(tid: isize, sig: isize) -> SyscallResult {
+    tgkill(-1, tid, sig)
 }
 
 pub extern "C" fn rt_sigprocmask(
@@ -223,10 +307,7 @@ pub extern "C" fn rt_sigprocmask(
                 How::SetMask => *mask = set,
             }
 
-            log::trace!(
-                "Task {} 修改了信号掩码：{old_mask:?} => {mask:?}",
-                cur_task.tid
-            );
+            mask.remove_special();
         }
 
         old_mask
@@ -237,4 +318,55 @@ pub extern "C" fn rt_sigprocmask(
     }
 
     SyscallResult::success(0)
+}
+
+pub extern "C" fn rt_sigtimedwait(
+    set: *const SignalMask,
+    info: *mut SignalInfo,
+    timeout: *const TimeSpec,
+) -> SyscallResult {
+    // 等待 SIGKILL 和 SIGSTOP 的请求会被静默忽略
+    let unwaitable_signals = SignalMask::SIGKILL | SignalMask::SIGSTOP;
+
+    let wait = copy_one_from_user(set)?.difference(unwaitable_signals);
+    let mask = !wait;
+
+    let timeout_us = get_timeout_us(timeout)?;
+    let deadline_tick = timeout_us.map(|us| get_cpu_tick() + us_to_cpu_tick(us as usize));
+
+    let cur_task = unsafe { current_task().as_ref_unchecked() };
+
+    loop {
+        let consumed = cur_task
+            .signals_wl
+            .lock()
+            .try_consume_one_with_mask(mask)
+            .or_else(|| {
+                cur_task
+                    .process
+                    .signals_wl
+                    .lock()
+                    .try_consume_one_with_mask(mask)
+            });
+
+        if let Some((signal_id, _)) = consumed {
+            log::trace!("Task {} 等待到了信号 {signal_id:?}", cur_task.tid);
+            return SyscallResult::success(signal_id as usize);
+        } else if cur_task.find_signal_to_consume().is_some() {
+            // 被未阻塞的信号打断
+            return EINTR;
+        }
+
+        if let Some(deadline_tick) = deadline_tick
+            && get_cpu_tick() >= deadline_tick
+        {
+            return EAGAIN;
+        }
+
+        crate::syscall::basic::yield_(); // 假装睡眠
+    }
+}
+
+pub extern "C" fn rt_sigreturn() -> usize {
+    sigreturn()
 }

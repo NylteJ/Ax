@@ -1,16 +1,16 @@
 use crate::memory::{PAGE_BYTES, PAGE_SHIFTS, page::PageTableEntry};
 
 #[repr(transparent)]
-#[derive(Copy, Clone, Ord, PartialOrd, Eq, PartialEq, Debug)]
+#[derive(Copy, Clone, Ord, PartialOrd, Eq, PartialEq, Debug, Hash)]
 pub struct PhysAddr(pub usize);
 
-#[derive(Copy, Clone, Ord, PartialOrd, Eq, PartialEq, Debug)]
+#[derive(Copy, Clone, Ord, PartialOrd, Eq, PartialEq, Debug, Hash)]
 pub struct VirtAddr(pub usize);
 
-#[derive(Copy, Clone, Ord, PartialOrd, Eq, PartialEq, Debug)]
+#[derive(Copy, Clone, Ord, PartialOrd, Eq, PartialEq, Debug, Hash)]
 pub struct PhysPageNum<const LEVEL: usize>(pub usize);
 
-#[derive(Copy, Clone, Ord, PartialOrd, Eq, PartialEq, Debug)]
+#[derive(Copy, Clone, Ord, PartialOrd, Eq, PartialEq, Debug, Hash)]
 pub struct VirtPageNum<const LEVEL: usize>(pub usize);
 
 impl<const LEVEL: usize> From<PhysAddr> for PhysPageNum<LEVEL> {
@@ -63,6 +63,12 @@ impl<const LEVEL: usize> From<VirtPageNum<LEVEL>> for VirtAddr {
 // #[cfg(target_arch = "riscv64")] // FIXME
 pub const VIRTUAL_ADDRESS_LOW_HIGHEST: usize = 0x3f_ffff_ffff;
 
+const RESERVED_USER_VIRT_ADDR: usize = PAGE_BYTES * 2;
+
+pub const USER_REGULAR_MEMORY_END: usize =
+    (VIRTUAL_ADDRESS_LOW_HIGHEST + 1) - RESERVED_USER_VIRT_ADDR;
+pub const USER_RESERVED_MEMORY_START: usize = USER_REGULAR_MEMORY_END;
+
 pub const VIRTUAL_ADDRESS_HIGH_BASE: usize = if RISC_V {
     0xffff_ffc0_0000_0000
 } else {
@@ -93,10 +99,10 @@ impl VirtAddr {
         self.0 as *mut T
     }
 
-    pub fn floor_to_page(&self) -> Self {
+    pub const fn floor_to_page(&self) -> Self {
         Self(self.0 / PAGE_BYTES * PAGE_BYTES)
     }
-    pub fn ceil_to_page(&self) -> Self {
+    pub const fn ceil_to_page(&self) -> Self {
         Self((self.0 + PAGE_BYTES - 1) / PAGE_BYTES * PAGE_BYTES)
     }
 }
