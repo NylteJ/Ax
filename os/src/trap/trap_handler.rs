@@ -130,7 +130,7 @@ extern "C" fn trap_handler(context: &mut NativeTrapContext) {
             let mut brw = TASK_SCHEDULER.lock();
             if let Some(next_task) = brw.on_time_interrupt(cur_task) {
                 drop(brw);
-                next_task.switch_to();
+                Task::switch_to(next_task);
             }
         }
         Trap::Exception(fault) if fault.is_page_fault() => {
@@ -211,6 +211,12 @@ extern "C" fn trap_handler(context: &mut NativeTrapContext) {
             unsafe { asm!("csrwr {0}, 0x2", inlateout(reg) euen => _) };
         }
 
+        #[cfg(target_arch = "loongarch64")]
+        Trap::Exception(Exception::PagePrivilegeIllegal) => {
+            log::error!("TODO：调查原因");
+            cur_task.send_signal(SignalId::SIGSEGV);
+        }
+
         other => {
             print_trap_context(context);
             todo!("TRAP: {other:?}");
@@ -254,12 +260,12 @@ fn print_trap_context(context: &NativeTrapContext) {
             "U"
         },
     );
+    println!("return PC: {:#x}", context.ret_pc);
+    println!("bad address: {:#x}", arch::NativeTrap::get_bad_address());
     println!(
         "Task TID: {}",
         unsafe { current_task().as_ref_unchecked() }.tid
     );
-    println!("return PC: {:#x}", context.ret_pc);
-    println!("bad address: {:#x}", arch::NativeTrap::get_bad_address())
 }
 
 /// 从用户态进入内核态时，寄存器 tp 的值可能已经发生了改变。此函数会从当前栈中重新恢复 tp 的值，令其指向当前任务的 Task。

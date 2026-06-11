@@ -1,6 +1,6 @@
 use alloc::{boxed::Box, vec::Vec};
 
-use crate::basic::{UnsafeInited, sync::OnceInited};
+use crate::basic::UnsafeInited;
 
 pub mod block_device;
 pub mod pci;

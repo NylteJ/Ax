@@ -41,7 +41,7 @@ use crate::{
         process_data::{ProcessData, ProcessRLimits},
         signal::{RtSignalData, SignalHandler, SignalId, SignalsWaitingList},
         task_context::{TaskContext, switch_context},
-        task_manager::{PID_ALLOCATOR, register_task},
+        task_manager::{PID_ALLOCATOR, register_task, unregister_task},
         task_scheduler::TASK_SCHEDULER,
     },
     syscall::{misc::RobustListHead, process::CloneFlags, sync::get_futex_key},
@@ -275,7 +275,7 @@ impl Task {
         // 因此传入大粒度的可变引用会导致死锁或违反别名规则。
         let entry = Self::load_elf(&file, &task.address_space).unwrap().0;
 
-        register_task(task.clone());
+        register_task(&task);
         unsafe { UnsafeInited::init_unsafe(&INIT_TASK, task) };
 
         // 至此，task 终于完全初始化完毕了！
@@ -465,7 +465,7 @@ impl Task {
 
         unsafe { task_ptr_ptr.write(ret.deref()) };
 
-        register_task(ret.clone());
+        register_task(&ret);
 
         TASK_SCHEDULER.lock().add_task(ret.clone());
 
@@ -520,12 +520,15 @@ impl Task {
     /// 暂时切换到此任务。此任务必须不在运行中，因此不能切换到当前任务。
     ///
     /// 通常情况下（当前任务还在调度器中），此调用迟早会正常返回，但当前任务的确可能要在很久以后才能被调度到，因此请尽可能释放不必要的资源
-    pub fn switch_to(self: TaskArc) {
-        debug_assert_eq!(self.state.load(Ordering::Relaxed), TaskState::Normal as u8);
-        debug_assert!(!addr_eq(&*self, current_task()));
+    pub fn switch_to(target: TaskArc) {
+        debug_assert_eq!(
+            target.state.load(Ordering::Relaxed),
+            TaskState::Normal as u8
+        );
+        debug_assert!(!addr_eq(&*target, current_task()));
 
-        let context = self.get_context();
-        unsafe { self.into_asm() };
+        let context = target.get_context();
+        unsafe { target.into_asm() };
         unsafe { switch_context(context.as_ref_unchecked()) };
 
         // 现在我们被重新调度了
@@ -911,7 +914,8 @@ impl Task {
                 // 有概率下一个被唤醒的还是我们（如果外层循环真正起效，则很大概率还是我们），
                 // 此时不应切换，或者说我们可以假装已经切换过了
                 if !addr_eq(&*next, current_task()) {
-                    next.switch_to();
+                    // 注意此时我们没有将 tp 蕴含的所有权转移到 Rust 端
+                    Task::switch_to(next);
                 }
                 // 注意我们没有将自身添加回调度器，也没有转移 tp 中的 TaskArc 的所有权，回到这里说明睡眠已经结束了
 
@@ -960,9 +964,10 @@ impl Task {
     }
 
     fn wake(&self) {
+        // 注意我们先前睡眠时没有转移 tp 中的所有权，因此这里也不该转移，直接从 tp 克隆即可
         TASK_SCHEDULER
             .lock()
-            .add_task(unsafe { TaskArc::from_asm(self) });
+            .add_task(unsafe { TaskArc::clone_from_asm(self) });
     }
 }
 
@@ -1003,6 +1008,8 @@ impl Drop for Task {
         }
 
         // 注意，Task 被 drop 意味着它已经从父 Task 的 children 中被移除了，因此此处无需重复清理
+
+        unregister_task(self.tid);
 
         log::trace!("Task {} dropped", self.tid);
     }

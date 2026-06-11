@@ -8,7 +8,7 @@ use crate::{
     multitask::{
         current_task,
         signal::SignalId,
-        task::{INIT_PID, TaskArc},
+        task::{INIT_PID, Task, TaskArc},
         task_manager::get_task_by_tid,
         task_scheduler::TASK_SCHEDULER,
     },
@@ -70,7 +70,7 @@ pub extern "C" fn exit(ec: isize) -> ! {
     // 不关机时 drop 因为下一步就是 switch_to，它不进行内存分配，所以没问题
     drop(cur);
 
-    next_task.switch_to();
+    Task::switch_to(next_task);
     unreachable!();
 }
 
@@ -87,7 +87,7 @@ pub extern "C" fn yield_() -> isize {
     drop(scheduler);
 
     if !addr_eq(&*next_task, cur) {
-        next_task.switch_to();
+        Task::switch_to(next_task);
     } else {
         unsafe { next_task.into_asm() };
     }

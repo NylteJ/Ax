@@ -106,11 +106,11 @@ pub extern "C" fn main(_: usize, dtb: PhysAddr) -> ! {
     #[cfg(target_arch = "loongarch64")]
     memory::tlb_refill_handler::init();
 
+    logger::init();
+
     init_heap();
 
     frame_allocator::init();
-
-    logger::init();
 
     // 设置 LoongArch 64 下的页表格式
     #[cfg(target_arch = "loongarch64")]

@@ -1,45 +1,52 @@
+use core::{intrinsics::unlikely, mem::forget, pin::Pin, ptr::null};
+
 use crate::{
-    basic::sync::Mutex,
+    basic::sync::{Mutex, RwLock},
     multitask::{
         id_allocator::IdAllocator,
         task::{Task, TaskArc},
     },
 };
 
-use hashbrown::HashMap;
-use pin_weak::sync::PinWeak;
+use alloc::sync::Arc;
 
 pub const PID_COUNT: usize = 8192;
 pub static PID_ALLOCATOR: Mutex<IdAllocator<PID_COUNT>> = Mutex::new(IdAllocator::new());
 
-lazy_static::lazy_static! {
-    static ref PID_TASK_MAP: Mutex<HashMap<usize, PinWeak<Task>>> = Mutex::new(HashMap::new());
+#[derive(Clone, Copy)]
+struct TaskPtr(*const Task);
+
+unsafe impl Send for TaskPtr {}
+unsafe impl Sync for TaskPtr {}
+
+static PID_TASK_MAP: RwLock<[TaskPtr; PID_COUNT]> = RwLock::new([TaskPtr(null()); PID_COUNT]);
+
+pub(super) fn register_task(task: &Task) {
+    PID_TASK_MAP.write()[task.tid].0 = task;
 }
 
-/// 将 Task 注册到全局 Task 表中
-pub fn register_task(task: TaskArc) {
-    let mut map = PID_TASK_MAP.lock();
-    let entry = map.entry(task.tid);
-
-    use hashbrown::hash_map::Entry;
-    match entry {
-        Entry::Occupied(mut occupied) => {
-            if occupied.get().strong_count() == 0 {
-                occupied.insert(PinWeak::downgrade(task));
-            } else {
-                let pid = task.tid;
-                assert!(
-                    occupied.get().ptr_eq(&PinWeak::downgrade(task)),
-                    "试图插入拥有重复 PID 的不同任务（PID = {pid}）",
-                );
-            }
-        }
-        Entry::Vacant(vacant) => {
-            vacant.insert(PinWeak::downgrade(task));
-        }
-    }
+pub(super) fn unregister_task(pid: usize) {
+    PID_TASK_MAP.write()[pid].0 = null();
 }
 
 pub fn get_task_by_tid(pid: usize) -> Option<TaskArc> {
-    PID_TASK_MAP.lock().get(&pid)?.upgrade()
+    let map_guard = PID_TASK_MAP.read();
+
+    let ptr = map_guard.get(pid)?.0;
+    if ptr.is_null() {
+        return None;
+    }
+
+    // 注意这里可能存在的竞态：
+    // 诚然，由于我们在 Task 的析构函数中 unregister 了对应 Task，这里能找到就说明对应 Task 尚未完成析构
+    // 然而，此时对应 Task 可能已经开始析构，只是因为暂时无法获取 PID_TASK_MAP 的写锁而阻塞
+    // 因此此处必须检查引用计数
+    let arc = unsafe { Arc::from_raw(ptr) }; // 暂时安全，尽管其安全不变式可能违反
+    if unlikely(Arc::strong_count(&arc) == 0) {
+        forget(arc);
+        None
+    } else {
+        unsafe { Arc::increment_strong_count(ptr) };
+        Some(unsafe { Pin::new_unchecked(arc) })
+    }
 }

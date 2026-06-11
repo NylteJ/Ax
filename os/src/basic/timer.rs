@@ -75,7 +75,15 @@ pub fn wake_task_when(task: &Task, cpu_tick: usize) {
 pub fn check_timers() {
     let timeouted = {
         let mut timers = TIMERS.lock();
-        let rest = timers.split_off(&get_cpu_tick());
+        let tick = get_cpu_tick();
+        if timers
+            .lower_bound(Bound::Excluded(&tick))
+            .peek_prev()
+            .is_none()
+        {
+            return;
+        }
+        let rest = timers.split_off(&tick);
         replace(&mut *timers, rest)
     };
 

@@ -32,7 +32,7 @@ impl<const BYTES: usize> KernelStackPtr<BYTES> {
     /// 获取栈指针地址
     pub fn get_addr(&self) -> usize {
         // SAFETY: Rust 端此值不可修改，因此不可能存在可变借用；汇编端乱改值就不是这里的问题了
-        unsafe { *(self.0.get() as *const _) }
+        unsafe { *self.0.get().cast_const() }
     }
 
     pub const fn size() -> usize {

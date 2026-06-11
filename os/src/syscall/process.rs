@@ -14,7 +14,10 @@ use intrusive_collections::PointerOps;
 use rand::Rng;
 
 use crate::{
-    basic::timer::{get_cpu_tick, us_to_cpu_tick},
+    basic::{
+        debugger::debugbreak,
+        timer::{get_cpu_tick, us_to_cpu_tick},
+    },
     filesystem::{
         devfs::drivers::URANDOM_DRIVER,
         vfs::{FileFlags, PathToWalk, walk_path},

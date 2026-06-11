@@ -205,6 +205,18 @@ impl<T: ?Sized> Mutex<T> {
     pub fn as_ptr(&self) -> *mut T {
         self.value.get()
     }
+
+    /// 假设锁已通过某种方式被释放，只是出于某种原因 [`MutexGuard`] 的析构函数暂时没有被执行（例如，如果 [`forget`][`core::mem::forget`] 了 guard，就会产生这种情况）
+    ///
+    /// 注意它不是解锁函数，也不执行任何内存同步。
+    ///
+    /// # Safety
+    /// 在下一个 [`Self::lock`] 调用发生之后，原有的锁守卫（如果有）必须不再能被以任何方式使用（包括 drop，不包含移动）。
+    ///
+    /// 除此之外的操作都是安全的。例如，可以在未上锁的 [`Mutex`] 上调用此函数，且调用此函数后仍然可以使用原锁守卫。
+    pub unsafe fn assume_unlocked(&self) {
+        self.flag.store(false, Ordering::Relaxed);
+    }
 }
 
 pub struct MutexGuard<'a, T: ?Sized> {

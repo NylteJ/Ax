@@ -9,17 +9,15 @@ edition = "2024"
 static_assertions = "1.1.0"
 num_enum = { version = "0.7.6", default-features = false }
 seq-macro = "0.3.6"
-buddy_system_allocator = "0.10.0"
+buddy_system_allocator = "0.13.0"
 bitvec = { version = "1.0.1", default-features = false }
 hashbrown = "0.17.0"
 lazy_static = { version = "1.5.0", features = ["spin_no_std"] }
-pin-weak = "1.1.0"
 bitflags = "2.11.1"
 xarray = "0.1.1"
 intrusive-collections = "0.10.0"
 log = "0.4.29"
 derive_more = { version = "2.1.1", default-features = false, features = ["debug"] }
-addr2line = { version = "0.25.1", default-features = false }
 object = { version = "0.36", default-features = false, features = ["read_core", "elf"] }
 flat_device_tree  = { version = "3.1.1", features = ["pretty-printing"] }
 virtio-drivers = "0.12.0"
@@ -30,6 +28,10 @@ bit_field = "0.10.3"
 bytemuck = { version = "1.25.0", features = ["derive"] }
 ringbuf = { version = "0.4.8", default-features = false, features = ["alloc"] }
 rand = { version = "0.10.1", default-features = false, features = ["alloc", "chacha"] }
+
+# 这两个依赖用于 Debug 构建
+addr2line = { version = "0.25.1", default-features = false }
+allocator-api2 = { version = "0.2.21", default-features = false }
 
 [features]
 framepointer = []

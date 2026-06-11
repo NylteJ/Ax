@@ -29,14 +29,21 @@ pub unsafe trait SharedWithAsm {
         drop(unsafe { Self::from_asm(asm_value) });
     }
 
-    /// 从汇编端克隆一个所有权。输入值不正确则会导致内存不安全。
-    unsafe fn clone_asm(asm_value: Self::AsmType) -> Self::AsmType
+    /// 从汇编端克隆一个所有权到 Rust 端。输入值不正确则会导致内存不安全。
+    unsafe fn clone_from_asm(asm_value: Self::AsmType) -> Self
     where
         Self: Clone,
     {
         let this = unsafe { Self::from_asm(asm_value) };
         forget_unsized(this.clone());
-        unsafe { Self::into_asm(this) }
+        this
+    }
+    /// 从汇编端克隆一个所有权。输入值不正确则会导致内存不安全。
+    unsafe fn clone_asm(asm_value: Self::AsmType) -> Self::AsmType
+    where
+        Self: Clone,
+    {
+        unsafe { Self::into_asm(Self::clone_from_asm(asm_value)) }
     }
 }
 
