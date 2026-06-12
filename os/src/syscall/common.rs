@@ -31,6 +31,14 @@ impl TimeSpec {
             tv_nsec: 0,
         }
     }
+
+    pub fn check_regular(&self) -> Result<(), SyscallResult> {
+        if self.tv_sec < 0 || self.tv_nsec < 0 || self.tv_nsec >= 1_000_000_000 {
+            Err(EINVAL)
+        } else {
+            Ok(())
+        }
+    }
 }
 
 pub fn get_timeout_us(timeout: *const TimeSpec) -> Result<Option<u64>, SyscallResult> {

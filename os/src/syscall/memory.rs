@@ -2,6 +2,7 @@ use core::ffi::c_void;
 
 use bitflags::Flags;
 use bitflags::bitflags;
+use num_enum::TryFromPrimitive;
 
 use crate::arch;
 use crate::arch::interfaces::Basic;
@@ -256,6 +257,59 @@ pub extern "C" fn mprotect(addr: *mut c_void, len: usize, prot: isize) -> Syscal
                 arch::NativeBasic::tlb_invalidate_addr(vaddr);
             })
     };
+
+    SyscallResult::success(0)
+}
+
+#[repr(u8)]
+#[derive(Clone, Copy, TryFromPrimitive)]
+#[allow(non_camel_case_types)]
+enum MAdvice {
+    NORMAL = 0,
+    RANDOM = 1,
+    SEQUENTIAL = 2,
+    WILLNEED = 3,
+    DONTNEED = 4,
+    REMOVE = 9,
+    DONTFORK = 10,
+    DOFORK = 11,
+    MERGEABLE = 12,
+    UNMERGEABLE = 13,
+    HUGEPAGE = 14,
+    NOHUGEPAGE = 15,
+    DONTDUMP = 16,
+    DODUMP = 17,
+    FREE = 8,
+    WIPEONFORK = 18,
+    KEEPONFORK = 19,
+    COLD = 20,
+    PAGEOUT = 21,
+    POPULATE_READ = 22,
+    POPULATE_WRITE = 23,
+    COLLAPSE = 25,
+    GUARD_INSTALL = 26,
+    GUARD_REMOVE = 27,
+    HWPOISON = 100,
+}
+
+pub extern "C" fn madvise(addr: *mut c_void, size: usize, advice: isize) -> SyscallResult {
+    let advice: u8 = advice.try_into().map_err(|_| EINVAL)?;
+    let advice: MAdvice = MAdvice::try_from(advice).map_err(|_| EINVAL)?;
+
+    if !addr.is_aligned_to(PAGE_BYTES) {
+        return EINVAL;
+    }
+
+    use MAdvice::*;
+    match advice {
+        NORMAL => (),
+
+        // 这三个选项没有可观测副作用，可以安全实现为空操作
+        RANDOM | SEQUENTIAL | WILLNEED => (),
+
+        // 剩余选项大都有可观测副作用
+        _ => return EOPNOTSUPP,
+    }
 
     SyscallResult::success(0)
 }

@@ -24,6 +24,7 @@ use crate::{
 pub mod common;
 
 pub mod basic;
+pub mod clock;
 pub mod filesystem;
 pub mod memory;
 pub mod misc;
@@ -106,6 +107,10 @@ pub static TABLE: [Option<SyscallFn>; MAX_SYSCALL_COUNT] = const {
     define!(153, basic::times);
     define!(261, basic::prlimit64);
 
+    define!(114, clock::clock_getres);
+    define!(113, clock::clock_gettime);
+    define!(112, clock::clock_settime);
+
     define!(17, filesystem::getcwd);
     define!(59, filesystem::pipe2);
     define!(23, filesystem::dup);
@@ -138,6 +143,7 @@ pub static TABLE: [Option<SyscallFn>; MAX_SYSCALL_COUNT] = const {
     define!(222, memory::mmap);
     define!(215, memory::munmap);
     define!(226, memory::mprotect);
+    define!(233, memory::madvise);
 
     define!(172, process::getpid);
     define!(173, process::getppid);

@@ -4,7 +4,7 @@ use alloc::collections::btree_map::BTreeMap;
 
 use crate::{
     arch::{self, interfaces::Chrono},
-    basic::{UnsafeInited, sync::Mutex},
+    basic::{UnsafeInited, cold_path, sync::Mutex},
     multitask::task::Task,
 };
 
@@ -76,6 +76,9 @@ pub fn check_timers() {
     let timeouted = {
         let mut timers = TIMERS.lock();
         let tick = get_cpu_tick();
+
+        // 绝大多数时候我们并不需要唤醒任何任务，因此先判断以避免在此时产生堆分配
+        // （是的，BTreeMap::split_off 在没有 split 任何东西时也会产生堆分配）
         if timers
             .lower_bound(Bound::Excluded(&tick))
             .peek_prev()
@@ -83,6 +86,9 @@ pub fn check_timers() {
         {
             return;
         }
+
+        cold_path();
+
         let rest = timers.split_off(&tick);
         replace(&mut *timers, rest)
     };

@@ -233,6 +233,13 @@ mount-disk: disk.img
 umount-disk:
 	umount ./disk_img
 
+.PHONY: autofix
+autofix:
+	@{ \
+		cd os; \
+		cargo fix --bin "os" --allow-staged --target riscv64gc-unknown-none-elf $(CARGOFLAGS); \
+	}
+
 .PHONY: test
 test: all check
 # TODO
