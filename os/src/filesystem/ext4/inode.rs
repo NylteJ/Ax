@@ -25,7 +25,7 @@ impl INodeOps for Ext4INode {
             vfs::INode::get_filesystem(self),
             vfs::INode::get_id(self),
             dentry.data.lock().name.as_ref(),
-            mode | vfs::INodeMode::RegularFile,
+            mode,
         )
     }
 
@@ -146,7 +146,7 @@ impl INodeOps for Ext4INode {
             vfs::INode::get_filesystem(self),
             vfs::INode::get_id(self),
             dentry.data.lock().name.as_ref(),
-            mode | vfs::INodeMode::Directory,
+            mode,
         )
     }
 
@@ -238,6 +238,56 @@ impl INodeOps for Ext4INode {
         flags: vfs::INodeRenameFlags,
     ) -> VfsResult<()> {
         todo!()
+    }
+
+    fn symlink(&mut self, target: ByteString, dentry: vfs::DEntryArc) -> VfsResult<vfs::INodeArc> {
+        let fs = vfs::INode::get_filesystem::<Ext4Fs>(self);
+        let ext4 = &fs.ops.ext4;
+
+        let mode = vfs::INodeMode::all_permitted() | vfs::INodeMode::SymbolLink;
+        let mut ret =
+            Self::new_normal(fs, vfs::INode::get_id(self), &dentry.data.lock().name, mode)?;
+
+        let ret_ref = unsafe {
+            (ret.get_mut() as *mut vfs::INode)
+                .cast::<vfs::INode<Self>>()
+                .as_mut_unchecked()
+        };
+        let ret_data = ret_ref.data.get_mut();
+
+        let mut inode_ref = &mut ret_data.ops.inode;
+
+        debug_assert_eq!(inode_ref.inode.blocks_count(), 0);
+        debug_assert_eq!(inode_ref.inode.size(), 0);
+
+        let target_bytes = target.len();
+        if target_bytes < size_of_val(&inode_ref.inode.block) {
+            // TODO: 此时其实连页缓存都不需要
+            let inline_storge = bytemuck::cast_slice_mut(&mut inode_ref.inode.block);
+            inline_storge[..target_bytes].copy_from_slice(&target);
+            inline_storge[target_bytes] = b'\0';
+        } else {
+            todo!()
+        }
+
+        // 注意 size 的值不包括末尾的 '\0'
+        inode_ref.inode.set_size(target_bytes as u64);
+        ret_data.file_size = target_bytes as u64;
+
+        ext4.write_back_inode(&mut inode_ref);
+
+        Ok(ret)
+    }
+
+    fn read_symlink(&self) -> VfsResult<ByteString> {
+        let size = self.inode.inode.size() as usize;
+        if size < size_of_val(&self.inode.inode.block) {
+            let inline_storge = bytemuck::cast_slice(&self.inode.inode.block);
+            let target = ByteStr::new(&inline_storge[..size]);
+            Ok(target.to_owned())
+        } else {
+            todo!()
+        }
     }
 
     fn get_kstat(&self) -> VfsResult<KstatInner> {

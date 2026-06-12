@@ -111,6 +111,14 @@ impl INodeOps for DevINode {
         Err(VfsError::OperationNotSupported)
     }
 
+    fn symlink(&mut self, target: ByteString, dentry: vfs::DEntryArc) -> VfsResult<vfs::INodeArc> {
+        todo!()
+    }
+
+    fn read_symlink(&self) -> VfsResult<ByteString> {
+        todo!()
+    }
+
     fn make_node(
         &mut self,
         kind: vfs::SpecialINodeType,

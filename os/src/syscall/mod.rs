@@ -246,6 +246,7 @@ impl FromResidual<Result<Infallible, VfsError>> for SyscallResult {
             VfsError::IsPipeOrSocket => ESPIPE,
             VfsError::BadPipeEnd | VfsError::BrokenPipe => EPIPE,
             VfsError::BadIoctl => EINVAL,
+            VfsError::TooManyLinks => ELOOP,
             VfsError::ArithmeticOverflow => EOVERFLOW,
             VfsError::InvalidUserPointer(copy_error) => Self::from_residual(Err(copy_error)),
             VfsError::InvalidArguments(_) => EINVAL,

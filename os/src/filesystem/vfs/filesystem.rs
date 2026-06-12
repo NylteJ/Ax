@@ -69,7 +69,7 @@ impl<T: FileSystemOps + 'static> FileSystem<T> {
         let mut arc = Arc::new_cyclic(|weak| {
             let addr = NonNull::new(weak.as_ptr() as *mut FileSystem<T>).unwrap();
             let (root_inode, init_root_dentry) = roots(addr, &ops);
-            root_inode.data.write().mode |= INodeMode::Directory; // 根目录一定要是目录 \o/
+            root_inode.data.write().mode.set_kind(INodeMode::Directory); // 根目录一定要是目录 \o/
             FileSystem {
                 dev,
                 dcache: RwLock::new(HashMap::new()),
@@ -360,7 +360,18 @@ pub static ROOT_PATH: UnsafeInited<Path> = unsafe { UnsafeInited::zeroed() };
 /// 查找路径对应的 DEntry。有可能找到负 DEntry，但找到的负 DEntry 一定是最后一项。
 ///
 /// 换言之，对于 `/a/b`，查找 `/a/b` 会是正 DEntry，`/a/b/c` 会是负 DEntry，`/a/b/c/d` 会直接返回错误。
+///
+/// 其会跟随每一步的符号链接（包括最后一步）。
 pub fn walk_path(path: PathToWalk) -> VfsResult<WalkedPath> {
+    walk_path_impl(path, true, 0)
+}
+
+/// 除不跟随最后一步的符号链接外，其它和 [`walk_path`] 相同。
+pub fn walk_path_no_follow(path: PathToWalk) -> VfsResult<WalkedPath> {
+    walk_path_impl(path, false, 0)
+}
+
+fn walk_path_impl(path: PathToWalk, follow_last: bool, symlink_count: u8) -> VfsResult<WalkedPath> {
     let (mut cur_path, pstr) = match path {
         PathToWalk::Absolute(path) => {
             debug_assert!(path.first().is_none_or(|&x| x == b'/'));
@@ -385,7 +396,12 @@ pub fn walk_path(path: PathToWalk) -> VfsResult<WalkedPath> {
 
     // `dir` 的部分可能为空且必须找到，`last` 不为空且可以不找到
 
-    fn walk_step(fs: &mut &FileSystem, cur_path: &Path, name: &ByteStr) -> VfsResult<(bool, Path)> {
+    fn walk_step(
+        fs: &mut &FileSystem,
+        cur_path: &Path,
+        name: &ByteStr,
+        symlink_count: Option<u8>,
+    ) -> VfsResult<(bool, Path)> {
         debug_assert_ne!(name, ".");
 
         if name == ".." {
@@ -436,13 +452,33 @@ pub fn walk_path(path: PathToWalk) -> VfsResult<WalkedPath> {
             let mnt_to = mnt.mount_to.clone();
             *fs = unsafe { mnt_to.filesystem.as_ref() };
 
-            log::trace!(
-                "walk_path 穿越挂载点：{} ---> {}",
-                { dentry.data.lock().name.clone() },
-                mnt_to.data.lock().name,
-            );
+            // log::trace!(
+            //     "walk_path 穿越挂载点：{} ---> {}",
+            //     { dentry.data.lock().name.clone() },
+            //     mnt_to.data.lock().name,
+            // );
 
             Path(mnt_to, mnt)
+        } else if let Some(symlink_count) = symlink_count
+        && let Some(inode) = &dentry.data.lock().inode // FIXME: 竞态
+        && let inode_data = inode.data.read()
+            && inode_data.mode.kind() == INodeMode::SymbolLink
+        {
+            const SYMLINK_MAX: u8 = 32;
+
+            if symlink_count >= SYMLINK_MAX {
+                return Err(VfsError::TooManyLinks);
+            }
+
+            let target = inode_data.read_symlink()?;
+            let ptw = PathToWalk::auto(&target, || cur_path.clone())?;
+
+            let walked = walk_path_impl(ptw, true, symlink_count + 1)?;
+
+            match walked {
+                WalkedPath::Positive(path) => return Ok((true, path)),
+                WalkedPath::Negative(npath) => return Ok((false, npath.0)),
+            }
         } else {
             Path(dentry, cur_path.1.clone())
         };
@@ -458,7 +494,7 @@ pub fn walk_path(path: PathToWalk) -> VfsResult<WalkedPath> {
             .map(ByteStr::new)
             .filter(|&name| name != ".")
         {
-            let (found, path) = walk_step(&mut fs, &cur_path, name)?;
+            let (found, path) = walk_step(&mut fs, &cur_path, name, Some(symlink_count))?;
 
             if !found {
                 return Err(VfsError::FileNotFound);
@@ -472,7 +508,16 @@ pub fn walk_path(path: PathToWalk) -> VfsResult<WalkedPath> {
         return Ok(WalkedPath::Positive(cur_path));
     }
 
-    let (found, path) = walk_step(&mut fs, &cur_path, ByteStr::new(last))?;
+    let (found, path) = walk_step(
+        &mut fs,
+        &cur_path,
+        ByteStr::new(last),
+        if follow_last {
+            Some(symlink_count)
+        } else {
+            None
+        },
+    )?;
 
     if found {
         Ok(WalkedPath::Positive(path))

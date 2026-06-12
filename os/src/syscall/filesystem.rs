@@ -26,7 +26,7 @@ use crate::{
         vfs::{
             self, DEntryArc, File, FileArc, FileFlags, FileOps, FileSystem, INodeArc, INodeMode,
             IterateDirData, MountPoint, Path, PathToWalk, PollStatus, ROOT_PATH, VfsError,
-            VfsResult, walk_path,
+            VfsResult, walk_path, walk_path_no_follow,
         },
     },
     memory::uaccess::{
@@ -309,8 +309,14 @@ pub extern "C" fn openat(
 
     log::trace!("openat fd: {fd}, path: `{path}`, flags: {flags:#x}, mode: {mode:03o}");
 
+    let walked = if file_open_flags.contains(FileOpenFlags::O_NOFOLLOW) {
+        walk_path_no_follow(walk_path_from)?
+    } else {
+        walk_path(walk_path_from)?
+    };
+
     let file = if file_open_flags.contains(FileOpenFlags::O_CREAT) {
-        match walk_path(walk_path_from)? {
+        match walked {
             crate::filesystem::vfs::WalkedPath::Positive(Path(dentry, mount)) => {
                 if file_open_flags.contains(FileOpenFlags::O_EXCL) {
                     return EEXIST;
@@ -333,7 +339,7 @@ pub extern "C" fn openat(
             }
         }
     } else {
-        let path = walk_path(walk_path_from)?.ensure()?;
+        let path = walked.ensure()?;
 
         path.0.data.lock().ops.open(path.1, file_flags)?
     };
@@ -993,7 +999,13 @@ pub extern "C" fn fstatat(
 
     let wpf = parse_walk_path_from(dirfd, pathname.as_ref())?;
 
-    fstat_common(walk_path(wpf)?.whatever(), buf)
+    let walked = if flags.contains(FstatatFlags::AT_SYMLINK_NOFOLLOW) {
+        walk_path_no_follow(wpf)?
+    } else {
+        walk_path(wpf)?
+    };
+
+    fstat_common(walked.whatever(), buf)
 }
 
 bitflags! {
@@ -1376,7 +1388,7 @@ fn get_splice_end(fd: isize, off: *mut u64) -> Result<SpliceEnd, SyscallResult> 
 
     let off = NonNull::new(off);
 
-    let is_pipe = file.get_inode().data.read().mode.contains(INodeMode::Pipe);
+    let is_pipe = file.get_inode().data.read().mode.kind() == INodeMode::Pipe;
 
     match (is_pipe, off) {
         (true, None) => Ok(SpliceEnd::Pipe(file)),
@@ -1570,8 +1582,22 @@ pub extern "C" fn readlinkat(
     let pathname = copy_str_from_user(pathname, FILENAME_LEN_HINT, PATH_LEN_MAX)?;
 
     let ptw = parse_walk_path_from(dirfd, &pathname)?;
-    let path = walk_path(ptw)?.ensure()?;
+    let path = walk_path_no_follow(ptw)?.ensure()?;
 
-    // 我们现在不支持符号链接，因此此处找到的文件绝不可能是符号链接
-    EINVAL
+    let data = {
+        let dentry_guard = path.0.data.lock();
+        let inode = dentry_guard.inode.as_ref().ok_or(ENOENT)?;
+        let inode_guard = inode.data.read();
+        if inode_guard.mode.kind() != INodeMode::SymbolLink {
+            return EINVAL;
+        }
+        let mut data = inode_guard.read_symlink()?;
+        data.0.truncate(bufsiz);
+        data
+    };
+
+    // 不写入空终止符，返回值也不包含它
+    copy_slice_to_user(buf.cast::<u8>(), &data)?;
+
+    SyscallResult::success(data.len())
 }

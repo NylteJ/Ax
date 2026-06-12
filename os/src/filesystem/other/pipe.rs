@@ -419,6 +419,18 @@ impl vfs::INodeOps for PipeINode {
         unimplemented!()
     }
 
+    fn symlink(
+        &mut self,
+        _target: ByteString,
+        _dentry: vfs::DEntryArc,
+    ) -> VfsResult<vfs::INodeArc> {
+        unimplemented!()
+    }
+
+    fn read_symlink(&self) -> VfsResult<ByteString> {
+        unreachable!("不可能是符号链接，此请求在 VFS 层就应被拦截")
+    }
+
     fn get_kstat(&self) -> VfsResult<KstatInner> {
         Ok(KstatInner {
             st_uid: 0, // FIXME

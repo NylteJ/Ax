@@ -280,6 +280,9 @@ pub extern "C" fn main(_: usize, dtb: PhysAddr) -> ! {
         let sdcard_2 = sdcard_fs.root_dentry.clone();
         vfs::MountPoint::mount(sdcard_1, sdcard_fs, sdcard_2);
         log::info!("已将 sdcard 挂载到 /sdcd");
+
+        let lib = get_or_create_path(&root_fs, "/lib");
+        init_libs(lib);
     }
 
     let zero_page_num = unsafe {
@@ -365,4 +368,44 @@ fn init_devs() {
 
     define!("tty", CharDevice(DEV_TTY));
     define!("urandom", CharDevice(DEV_URANDOM));
+}
+
+fn init_libs(lib: vfs::Path) {
+    let lib_inode = lib.0.data.lock().inode.clone().unwrap();
+
+    macro_rules! define {
+        ($from: expr => $to: literal) => {{
+            let walked = vfs::walk_path_no_follow(vfs::PathToWalk::Relative(ByteStr::new($to), lib.clone()))
+                .unwrap();
+
+            match walked {
+                vfs::WalkedPath::Positive(_) => log::trace!(concat!("/lib/", $to, " 已存在，跳过创建符号链接")),
+                vfs::WalkedPath::Negative(npath) => {
+                    use alloc::borrow::ToOwned;
+                    lib_inode
+                        .data
+                        .write()
+                        .symlink(ByteStr::new($from).to_owned(), npath.0.0)
+                        .unwrap();
+
+                    log::trace!(concat!("/lib/", $to, " 符号链接已创建，指向 ", $from));
+                }
+            };
+        }};
+
+        ($prefix: tt lib $($name: literal)+ => /lib/...) => {
+            $(define!(concat!("/sdcd/", stringify!($prefix), "/", $name) => $name);)+
+        }
+    }
+
+    define!("/sdcd/musl/lib/libc.so" => "ld-musl-riscv64-sf.so.1");
+    define!("/sdcd/musl/lib/libc.so" => "ld-musl-riscv64.so.1");
+
+    define!("/sdcd/glibc/lib/libc.so" => "ld-libc.so.6");
+    define!("/sdcd/glibc/lib/libm.so" => "ld-libm.so.6");
+
+    // 此处有意先创建 musl 系的链接，因为基本上我们对 musl 支持得更好
+    define!(musl lib "dlopen_dso.so" "libc.so" "tls_align_dso.so" "tls_get_new-dtv_dso.so" "tls_init_dso.so" => /lib/...);
+
+    define!(glibc lib "dlopen_dso.so" "libc.so" "libm.so" "tls_align_dso.so" "tls_init_dso.so" "ld-linux-riscv64-lp64d.so.1" "libc.so.6" "libm.so.6" "tls_get_new-dtv_dso.so" => /lib/...);
 }

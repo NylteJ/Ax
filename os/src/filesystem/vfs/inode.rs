@@ -70,7 +70,7 @@ pub struct INode<T: ?Sized + INodeOps = dyn INodeOps> {
 }
 
 bitflags! {
-    #[derive(Debug, Clone, Copy)]
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub struct INodeMode: u16 {
         const UserExecute   = 0o100;
         const UserWrite     = 0o200;
@@ -82,15 +82,24 @@ bitflags! {
         const OthersWrite   = 0o002;
         const OthersRead    = 0o004;
 
+        // TODO: 把这俩杂糅到一起还是不太好
         const Pipe = 0x1000;
         const Directory = 0x4000;
         const RegularFile = 0x8000;
+        const SymbolLink = 0xA000;
     }
 }
 
 impl INodeMode {
     pub fn all_permitted() -> Self {
         Self::from_bits_retain(0o777)
+    }
+
+    pub fn kind(&self) -> Self {
+        Self::from_bits_retain(self.bits() & 0xF000)
+    }
+    pub fn set_kind(&mut self, kind: Self) {
+        *self = Self::from_bits_retain((self.bits() & 0o777) | kind.bits())
     }
 }
 
@@ -169,6 +178,9 @@ pub trait INodeOps: Any {
         flags: INodeRenameFlags,
     ) -> VfsResult<()>;
 
+    fn symlink(&mut self, target: ByteString, dentry: DEntryArc) -> VfsResult<INodeArc>;
+    fn read_symlink(&self) -> VfsResult<ByteString>;
+
     /// 创建一个类型为 `kind` 的特殊文件节点（如设备、管道等），该节点原本对应的负 DEntry 是 `dentry`。返回创建的节点。
     ///
     /// 此功能是可选的，底层文件系统默认不实现它。
@@ -244,8 +256,8 @@ impl<T: ?Sized + INodeOps> INodeData<T> {
     /// 在当前 INode 下创建一个普通文件节点，该节点原本对应的负 DEntry 是 `dentry`。返回创建的节点。
     ///
     /// 和 [`INodeOps::create`] 不同，它会自动将新节点放入 `dentry` 中，且会自动为 mode 设置文件位。
-    pub fn create(&mut self, mode: INodeMode, dentry: DEntryArc) -> VfsResult<INodeArc> {
-        let mode = mode | INodeMode::RegularFile;
+    pub fn create(&mut self, mut mode: INodeMode, dentry: DEntryArc) -> VfsResult<INodeArc> {
+        mode.set_kind(INodeMode::RegularFile);
         let new_node = self.ops.create(mode, dentry.clone())?;
         dentry.data.lock().inode.replace(new_node.clone());
         Ok(new_node)
@@ -278,8 +290,8 @@ impl<T: ?Sized + INodeOps> INodeData<T> {
     /// 在当前 INode 中创建一个目录节点，该节点原本对应的负 DEntry 是 `dentry`。返回创建的节点。
     ///
     /// 和 [`INodeOps::mkdir`] 不同，它会自动将新节点放入 `dentry` 中，且会自动为 mode 设置目录位。
-    pub fn mkdir(&mut self, dentry: DEntryArc, mode: INodeMode) -> VfsResult<INodeArc> {
-        let mode = mode | INodeMode::Directory;
+    pub fn mkdir(&mut self, dentry: DEntryArc, mut mode: INodeMode) -> VfsResult<INodeArc> {
+        mode.set_kind(INodeMode::Directory);
         let new_node = self.ops.mkdir(dentry.clone(), mode)?;
         dentry.data.lock().inode.replace(new_node.clone());
         Ok(new_node)
@@ -294,6 +306,17 @@ impl<T: ?Sized + INodeOps> INodeData<T> {
         unhash(dentry.deref());
         // dentry.data.lock().children().for_each(unhash);
         Ok(())
+    }
+
+    pub fn symlink(&mut self, target: ByteString, dentry: DEntryArc) -> VfsResult<INodeArc> {
+        let ret = self.ops.symlink(target, dentry)?;
+
+        debug_assert_eq!(ret.data.read().mode.kind(), INodeMode::SymbolLink);
+
+        Ok(ret)
+    }
+    pub fn read_symlink(&self) -> VfsResult<ByteString> {
+        self.ops.read_symlink()
     }
 
     pub fn get_kstat(&self) -> VfsResult<KstatInner> {

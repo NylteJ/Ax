@@ -5,6 +5,7 @@ use alloc::borrow::ToOwned;
 use alloc::vec::Vec;
 
 use crate::basic::bstr::{ByteStr, ByteString};
+use crate::basic::extend_lifetime;
 use crate::filesystem::tmpfs::{TmpFs, TmpFsDentry};
 use crate::filesystem::vfs::{
     INodeArc, INodeMode, INodeOps, INodeRenameFlags, VfsError, VfsResult,
@@ -41,7 +42,7 @@ impl INodeOps for TmpFsINode {
             return Err(VfsError::FileAlreadyExists);
         };
 
-        let new_inode = Self::new_normal(unsafe { fs.as_ref() }, mode | INodeMode::RegularFile);
+        let new_inode = Self::new_normal(unsafe { fs.as_ref() }, mode);
 
         map.insert(pos, (name, new_inode.clone()));
 
@@ -121,7 +122,7 @@ impl INodeOps for TmpFsINode {
             return Err(VfsError::FileAlreadyExists);
         };
 
-        let new_inode = Self::new_normal(unsafe { fs.as_ref() }, mode | INodeMode::Directory);
+        let new_inode = Self::new_normal(unsafe { fs.as_ref() }, mode);
 
         map.insert(pos, (name, new_inode.clone()));
 
@@ -351,6 +352,44 @@ impl INodeOps for TmpFsINode {
         // Ok(())
     }
 
+    fn symlink(&mut self, target: ByteString, dentry: vfs::DEntryArc) -> VfsResult<INodeArc> {
+        let fs = vfs::INode::get_filesystem::<TmpFs>(self);
+        let fs = unsafe { extend_lifetime(fs) };
+        let name = dentry.data.lock().name.clone();
+
+        let map = self.as_directory_mut()?;
+
+        let Err(pos) = map.binary_search_by_key(&&name, |(n, _)| n) else {
+            debug_assert!(false);
+            return Err(VfsError::FileAlreadyExists);
+        };
+
+        let new_inode = vfs::INode::new(
+            fs.ops.inode_id.fetch_add(1, Ordering::Relaxed),
+            NonNull::from_ref(fs),
+            vfs::INodeData {
+                file_size: target.len() as u64,
+                hard_links: 1,
+                mode: INodeMode::all_permitted() | INodeMode::SymbolLink,
+                page_cache: None, // 用不着
+                ops: TmpFsINode {
+                    inode_type: INodeType::Symlink(target),
+                    stat: Self::get_stat(),
+                },
+            },
+        );
+
+        map.insert(pos, (name, new_inode.clone()));
+        Ok(new_inode)
+    }
+
+    fn read_symlink(&self) -> VfsResult<ByteString> {
+        let INodeType::Symlink(target) = &self.inode_type else {
+            return Err(VfsError::InvalidArguments("节点不是符号链接"));
+        };
+        Ok(target.clone())
+    }
+
     fn get_kstat(&self) -> VfsResult<KstatInner> {
         Ok(self.stat)
     }
@@ -390,7 +429,7 @@ impl TmpFsINode {
     }
 
     fn new_normal(fs: &vfs::FileSystem<TmpFs>, mode: INodeMode) -> vfs::INodeArc {
-        let is_dir = mode.contains(INodeMode::Directory);
+        let is_dir = mode.kind() == INodeMode::Directory;
 
         let mut ret = vfs::INode::new(
             fs.ops.inode_id.fetch_add(1, Ordering::Relaxed),

@@ -32,6 +32,8 @@ pub enum VfsError {
     BrokenPipe,
     /// 错误的 ioctl 命令
     BadIoctl,
+    /// 符号链接层数过多
+    TooManyLinks,
     /// 发生算数溢出
     ArithmeticOverflow,
     /// 用户态程序输入了错误的指针
