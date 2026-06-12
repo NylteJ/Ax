@@ -25,8 +25,8 @@ use crate::{
     memory::{
         STACK_ALIGN,
         uaccess::{
-            CopyError, copy_from_user, copy_from_user_uninit, copy_one_to_user, copy_str_from_user,
-            copy_to_user,
+            CopyError, copy_from_user, copy_from_user_uninit, copy_one_from_user, copy_one_to_user,
+            copy_str_from_user, copy_to_user,
         },
     },
     multitask::{
@@ -161,6 +161,56 @@ impl CloneFlags {
             SyscallResult::success(0)
         }
     }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct CloneArgs {
+    // https://www.man7.org/linux/man-pages/man2/clone3.2.html
+    flags: u64,
+    pidfd: u64,
+    child_tid: u64,
+    parent_tid: u64,
+    exit_signal: u64,
+    stack: u64,
+    stack_size: u64,
+    tls: u64,
+    set_tid: u64,
+    set_tid_size: u64,
+    cgroup: u64,
+}
+
+pub extern "C" fn clone3(cl_args: *mut CloneArgs, size: usize) -> SyscallResult {
+    if size != size_of::<CloneArgs>() {
+        todo!("{size} vs. {}", size_of::<CloneArgs>());
+    }
+
+    let args = copy_one_from_user(cl_args)?;
+
+    let flags = args.flags.try_into().map_err(|_| EINVAL)?;
+    let flags = CloneFlags::from_bits(flags).ok_or(EINVAL)?;
+    flags.check_validity()?;
+
+    let exit_signal: u8 = args.exit_signal.try_into().map_err(|_| EINVAL)?;
+    let exit_signal = SignalId::try_from(exit_signal).map_err(|_| EINVAL)?;
+
+    let ctid = args.child_tid as *mut c_int;
+    let ptid = args.parent_tid as *mut c_int;
+
+    let tls = args.tls as usize;
+
+    let ustack = NonZero::new(args.stack as usize);
+    let _ = args.stack_size;
+
+    assert!(!flags.contains(CloneFlags::NEWPID), "TODO");
+    assert!(!flags.contains(CloneFlags::NEWCGROUP), "TODO");
+    assert!(!flags.contains(CloneFlags::PIDFD), "TODO");
+
+    let task = unsafe { current_task().as_ref_unchecked() };
+
+    let child = task.fork(flags, ustack, ptid, tls, ctid, exit_signal)?;
+
+    SyscallResult::success(child.tid)
 }
 
 /// * 功能：执行一个指定的程序；

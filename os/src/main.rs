@@ -3,7 +3,6 @@
 //
 #![allow(internal_features)]
 #![allow(incomplete_features)]
-#![allow(stable_features)]
 #![feature(core_intrinsics)]
 #![feature(rustc_attrs)]
 #![feature(fn_align)]

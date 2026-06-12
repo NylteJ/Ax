@@ -149,6 +149,7 @@ pub static TABLE: [Option<SyscallFn>; MAX_SYSCALL_COUNT] = const {
     define!(173, process::getppid);
     define!(178, process::gettid);
     define!(220, process::clone);
+    define!(435, process::clone3);
     define!(221, process::execve);
     define!(260, process::wait4);
     define!(101, process::nanosleep);

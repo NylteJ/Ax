@@ -5,7 +5,6 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use crate::arch::interfaces::Basic;
 use crate::basic::console::CONSOLE_WRITER;
 use crate::basic::debugger::{backtrace, debugbreak};
-use crate::basic::global_allocator::force_unlock_heap;
 use crate::{arch, println};
 
 static PANICKING: AtomicBool = AtomicBool::new(false);
@@ -19,7 +18,7 @@ fn panic(info: &PanicInfo) -> ! {
         unsafe { CONSOLE_WRITER.assume_unlocked() };
         #[cfg(debug_assertions)] // 只在打印调试信息时需要堆分配
         unsafe {
-            force_unlock_heap()
+            crate::basic::global_allocator::force_unlock_heap()
         };
 
         println!("Kernel panic: {info}");
