@@ -7,7 +7,7 @@ use crate::{
     basic::shared_with_asm::SharedWithAsm,
     memory::{
         ZERO_PAGE,
-        address::{PhysPageNum, VirtAddr, VirtPageNum},
+        address::{MMAP_END, MMAP_START, PhysPageNum, VirtAddr, VirtPageNum},
         frame_allocator::FRAME_ALLOCATOR,
         page::{PTEFlags, PTEFlagsNative, PageTableEntry},
         page_meta::{self, PAGE_METADATAS, PageMetaGuard},
@@ -603,9 +603,6 @@ impl AddressSpace {
             let length = vma.end.0 - vma.start.0;
 
             let address = 'find_place: {
-                const MMAP_START: VirtAddr = VirtAddr(0x8_0000_0000);
-                const MMAP_END: VirtAddr = VirtAddr(0x10_0000_0000);
-
                 let mmap_start_idx = self.vmas.partition_point(|v| v.start < MMAP_START);
                 let mmap_end_idx = self.vmas.partition_point(|v| v.start < MMAP_END);
 

@@ -997,6 +997,16 @@ pub extern "C" fn fstatat(
 
     log::trace!("fstatat dirfd: {dirfd}, pathname: `{pathname}`, flags: {flags:?}");
 
+    if flags.contains(FstatatFlags::AT_EMPTY_PATH) && pathname.is_empty() {
+        if dirfd == AT_FDCWD {
+            let cur_task = unsafe { current_task().as_ref_unchecked() };
+            let path = cur_task.fs_data.read().current_work_dir.clone();
+            return fstat_common(path, buf);
+        } else {
+            return fstat(dirfd, buf);
+        }
+    }
+
     let wpf = parse_walk_path_from(dirfd, pathname.as_ref())?;
 
     let walked = if flags.contains(FstatatFlags::AT_SYMLINK_NOFOLLOW) {
@@ -1013,6 +1023,7 @@ bitflags! {
     struct FstatatFlags: u16 {
         const AT_SYMLINK_NOFOLLOW = 1 << 8;
         const AT_NO_AUTOMOUNT = 1 << 11;
+        const AT_EMPTY_PATH = 1 << 12;
     }
 }
 

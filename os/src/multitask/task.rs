@@ -9,7 +9,7 @@ use core::{
     sync::atomic::{AtomicPtr, AtomicU8, Ordering},
 };
 
-use alloc::{alloc::AllocError, sync::Arc, vec::Vec};
+use alloc::{alloc::AllocError, collections::TryReserveError, sync::Arc, vec::Vec};
 use elf::{ElfBytes, endian::NativeEndian};
 use intrusive_collections::{LinkedListLink, UnsafeRef, intrusive_adapter};
 
@@ -20,15 +20,16 @@ use crate::{
     },
     basic::{
         DropGuard, UnsafeInited,
+        bstr::ByteString,
         shared_with_asm::SharedWithAsm,
         stack::TaskKernelStackPtr,
         sync::{Mutex, RwLock},
         timer::{check_timers, get_cpu_tick},
     },
-    filesystem::vfs::{File, FileArc, Path},
+    filesystem::vfs::{self, File, FileArc, Path},
     memory::{
         PAGE_BYTES, STACK_ALIGN,
-        address::{USER_REGULAR_MEMORY_END, VirtAddr},
+        address::{DYNAMIC_INTERPRETER_BASE, USER_REGULAR_MEMORY_END, VirtAddr},
         address_space::AddressSpace,
         uaccess::{CopyError, copy_one_to_user, fill_user_memory},
         virtual_memory_area::{VMAFlags, VMAGrowth, VMAType, VirtualMemoryArea},
@@ -653,173 +654,259 @@ impl Task {
         file: &FileArc,
         address_space: &RwLock<AddressSpace>,
     ) -> Result<(usize, AuxiliaryVec), LoadElfError> {
-        use AuxId::*;
-
-        let head = unsafe { File::get_page_cache(file.get_inode(), 0) }.unwrap();
-
-        let elf =
-            ElfBytes::<NativeEndian>::minimal_parse_no_section_headers(head).map_err(|err| {
-                match err {
-                    err @ elf::ParseError::SliceReadError(..) => todo!("超大 ELF 头({err:?})"),
-                    _ => LoadElfError::BadElfHead,
-                }
-            })?;
-
-        #[cfg(target_arch = "riscv64")]
-        const EXPECTED_MACHINE: u16 = elf::abi::EM_RISCV;
-        #[cfg(target_arch = "loongarch64")]
-        const EXPECTED_MACHINE: u16 = elf::abi::EM_LOONGARCH;
-
-        if elf.ehdr.e_machine != EXPECTED_MACHINE {
-            log::error!(
-                "ELF 文件的 e_machine 字段不匹配（应当为 {EXPECTED_MACHINE:#x}，得到 {:#x}），无法加载",
-                elf.ehdr.e_machine
-            );
-            return Err(LoadElfError::ArchMismatch);
+        struct InnerReturn {
+            load_seg_start: VirtAddr,
+            load_seg_end: VirtAddr,
+            program_entry: usize,
+            interp_entry: Option<usize>,
+            ehdr: elf::file::FileHeader<NativeEndian>,
         }
 
-        let mut auxv = Vec::new();
+        fn inner(
+            file: &FileArc,
+            address_space: &RwLock<AddressSpace>,
+            loading_interp: bool,
+        ) -> Result<InnerReturn, LoadElfError> {
+            let head = unsafe { File::get_page_cache(file.get_inode(), 0) }.unwrap();
 
-        let mut first_load_seg_start_addr = None;
-        let mut max_load_seg_end_addr = None;
+            let elf = ElfBytes::<NativeEndian>::minimal_parse_no_section_headers(head).map_err(
+                |err| match err {
+                    err @ elf::ParseError::SliceReadError(..) => todo!("超大 ELF 头({err:?})"),
+                    _ => LoadElfError::BadElfHead,
+                },
+            )?;
 
-        let segs = elf.segments().unwrap();
-        for seg in segs {
-            use elf::abi::{PT_DYNAMIC, PT_GNU_STACK, PT_INTERP, PT_LOAD, PT_NULL};
+            #[cfg(target_arch = "riscv64")]
+            const EXPECTED_MACHINE: u16 = elf::abi::EM_RISCV;
+            #[cfg(target_arch = "loongarch64")]
+            const EXPECTED_MACHINE: u16 = elf::abi::EM_LOONGARCH;
 
-            match seg.p_type {
-                PT_NULL => (),
-                PT_LOAD => {
-                    const PAGE_BYTES: u64 = crate::memory::PAGE_BYTES as u64;
+            if elf.ehdr.e_machine != EXPECTED_MACHINE {
+                log::error!(
+                    "ELF 文件的 e_machine 字段不匹配（应当为 {EXPECTED_MACHINE:#x}，得到 {:#x}），无法加载",
+                    elf.ehdr.e_machine
+                );
+                return Err(LoadElfError::ArchMismatch);
+            }
 
-                    if seg.p_align < PAGE_BYTES
-                        || seg.p_align % PAGE_BYTES != 0
-                        || !seg.p_align.is_power_of_two()
-                    {
-                        log::error!(
-                            "ELF 的 P_LOAD 段的 p_align（{}）错误，无法加载",
-                            seg.p_align
-                        );
-                        return Err(LoadElfError::BadAlignment);
-                    }
+            let mut load_seg_start = None;
+            let mut load_seg_end = None;
 
-                    let inseg_offset = seg.p_offset % seg.p_align;
-                    let inpage_offset = seg.p_offset % PAGE_BYTES;
+            let mut interp_entry = None;
 
-                    if seg.p_vaddr % seg.p_align != inseg_offset {
-                        log::error!(
-                            "ELF 的 P_LOAD 段的 p_vaddr（{:#x}）和 p_offset（{:#x}）不满足分页对齐要求，无法加载",
-                            seg.p_vaddr,
-                            seg.p_offset
-                        );
-                        return Err(LoadElfError::BadAlignment);
-                    }
+            let segs = elf.segments().unwrap();
+            for seg in segs {
+                use elf::abi::{PT_GNU_STACK, PT_INTERP, PT_LOAD, PT_NULL};
 
-                    // 注意 inseg_offset 相等也推出了 inpage_offset 相等（读者自证不难）
-                    // 此外，后面其实不用考虑 inseg_offset，因为我们的加载等操作还是按页为单位来的
+                match seg.p_type {
+                    PT_NULL => (),
+                    PT_LOAD => {
+                        const PAGE_BYTES: u64 = crate::memory::PAGE_BYTES as u64;
 
-                    let vaddr = seg.p_vaddr - inpage_offset;
-                    let off = seg.p_offset - inpage_offset;
-                    let f_len = seg.p_filesz + inpage_offset;
-                    let m_len = seg.p_memsz + inpage_offset;
-
-                    let flags = {
-                        use elf::abi::{PF_R, PF_W, PF_X};
-
-                        let mut flags = VMAFlags::User;
-
-                        if seg.p_flags & PF_X != 0 {
-                            flags |= VMAFlags::Execute;
-                        }
-                        if seg.p_flags & PF_R != 0 {
-                            flags |= VMAFlags::Read;
-                        }
-                        if seg.p_flags & PF_W != 0 {
-                            flags |= VMAFlags::Write;
-                        }
-
-                        flags
-                    };
-
-                    // TODO: 约束对应 ELF 文件不可被修改
-
-                    let file_start = VirtAddr(vaddr as usize);
-                    let file_end = VirtAddr((vaddr + f_len) as usize).ceil_to_page();
-                    let zeros_end = VirtAddr((vaddr + m_len) as usize).ceil_to_page();
-
-                    if seg.p_filesz == 0 {
-                        // 这个时候不需要往下进行（因为对齐，往下进行有可能最后会加一块文件映射然后再写入，实际上完全没必要），
-                        // 直接映射匿名段即可
-
-                        address_space.write().add_vma(VirtualMemoryArea {
-                            start: file_start,
-                            end: zeros_end,
-                            flags,
-                            vma_type: VMAType::Anonymous,
-                            growth: VMAGrowth::Fixed,
-                        });
-
-                        continue;
-                    }
-
-                    address_space.write().add_vma(VirtualMemoryArea {
-                        start: file_start,
-                        end: file_end,
-                        flags,
-                        vma_type: VMAType::File {
-                            file: file.clone(),
-                            page_index: off / PAGE_BYTES,
-                        },
-                        growth: VMAGrowth::Fixed,
-                    });
-
-                    if m_len > f_len {
-                        if let tail = f_len % PAGE_BYTES
-                            && tail != 0
+                        if seg.p_align < PAGE_BYTES
+                            || seg.p_align % PAGE_BYTES != 0
+                            || !seg.p_align.is_power_of_two()
                         {
-                            let rest = (PAGE_BYTES - tail) as usize;
-                            let ptr = (vaddr + f_len) as *mut u8;
-                            fill_user_memory(ptr, rest, 0).unwrap();
+                            log::error!(
+                                "ELF 的 P_LOAD 段的 p_align（{}）错误，无法加载",
+                                seg.p_align
+                            );
+                            return Err(LoadElfError::BadAlignment);
                         }
 
-                        if file_end != zeros_end {
+                        let inseg_offset = seg.p_offset % seg.p_align;
+                        let inpage_offset = seg.p_offset % PAGE_BYTES;
+
+                        if seg.p_vaddr % seg.p_align != inseg_offset {
+                            log::error!(
+                                "ELF 的 P_LOAD 段的 p_vaddr（{:#x}）和 p_offset（{:#x}）不满足分页对齐要求，无法加载",
+                                seg.p_vaddr,
+                                seg.p_offset
+                            );
+                            return Err(LoadElfError::BadAlignment);
+                        }
+
+                        let interp_offset = if loading_interp {
+                            DYNAMIC_INTERPRETER_BASE.0 as u64
+                        } else {
+                            0
+                        };
+
+                        // 注意 inseg_offset 相等也推出了 inpage_offset 相等（读者自证不难）
+                        // 此外，后面其实不用考虑 inseg_offset，因为我们的加载等操作还是按页为单位来的
+
+                        let vaddr = seg.p_vaddr - inpage_offset + interp_offset;
+                        let off = seg.p_offset - inpage_offset;
+                        let f_len = seg.p_filesz + inpage_offset;
+                        let m_len = seg.p_memsz + inpage_offset;
+
+                        let flags = {
+                            use elf::abi::{PF_R, PF_W, PF_X};
+
+                            let mut flags = VMAFlags::User;
+
+                            if seg.p_flags & PF_X != 0 {
+                                flags |= VMAFlags::Execute;
+                            }
+                            if seg.p_flags & PF_R != 0 {
+                                flags |= VMAFlags::Read;
+                            }
+                            if seg.p_flags & PF_W != 0 {
+                                flags |= VMAFlags::Write;
+                            }
+
+                            flags
+                        };
+
+                        // TODO: 约束对应 ELF 文件不可被修改
+
+                        let file_start = VirtAddr(vaddr as usize);
+                        let file_end = VirtAddr((vaddr + f_len) as usize).ceil_to_page();
+                        let zeros_end = VirtAddr((vaddr + m_len) as usize).ceil_to_page();
+
+                        if seg.p_filesz == 0 {
+                            // 这个时候不需要往下进行（因为对齐，往下进行有可能最后会加一块文件映射然后再写入，实际上完全没必要），
+                            // 直接映射匿名段即可
+
                             address_space.write().add_vma(VirtualMemoryArea {
-                                start: file_end,
+                                start: file_start,
                                 end: zeros_end,
                                 flags,
                                 vma_type: VMAType::Anonymous,
                                 growth: VMAGrowth::Fixed,
                             });
+
+                            continue;
+                        }
+
+                        address_space.write().add_vma(VirtualMemoryArea {
+                            start: file_start,
+                            end: file_end,
+                            flags,
+                            vma_type: VMAType::File {
+                                file: file.clone(),
+                                page_index: off / PAGE_BYTES,
+                            },
+                            growth: VMAGrowth::Fixed,
+                        });
+
+                        if m_len > f_len {
+                            if let tail = f_len % PAGE_BYTES
+                                && tail != 0
+                            {
+                                let rest = (PAGE_BYTES - tail) as usize;
+                                let ptr = (vaddr + f_len) as *mut u8;
+                                fill_user_memory(ptr, rest, 0).unwrap();
+                            }
+
+                            if file_end != zeros_end {
+                                address_space.write().add_vma(VirtualMemoryArea {
+                                    start: file_end,
+                                    end: zeros_end,
+                                    flags,
+                                    vma_type: VMAType::Anonymous,
+                                    growth: VMAGrowth::Fixed,
+                                });
+                            }
+                        }
+
+                        load_seg_end.replace(zeros_end); // ELF 标准规定 PT_LOAD 段必须按地址升序排列
+                        if load_seg_start.is_none() {
+                            load_seg_start.replace(VirtAddr(vaddr as usize));
                         }
                     }
 
-                    max_load_seg_end_addr.replace(zeros_end); // ELF 标准规定 PT_LOAD 段必须按地址升序排列
-                    if first_load_seg_start_addr.is_none() {
-                        first_load_seg_start_addr.replace(vaddr as usize);
+                    PT_INTERP => {
+                        if interp_entry.is_some() {
+                            log::error!("ELF 文件有多个 PT_INTERP 段，无法加载");
+                            return Err(LoadElfError::BadInterpreter);
+                        }
+
+                        if loading_interp {
+                            log::error!("正在加载解释器，但又遇到了 PT_INTERP 段，无法加载");
+                            return Err(LoadElfError::BadInterpreter);
+                        }
+
+                        let off = seg.p_offset;
+                        let len = seg.p_filesz;
+
+                        if len == 0 {
+                            log::error!("ELF 的 PT_INTERP 段的 p_filesz 不能为 0，无法加载");
+                            return Err(LoadElfError::BadInterpreter);
+                        }
+
+                        let len = len - 1; // 解释器路径必须以 '\0' 结尾，因此实际长度要减一
+
+                        let interp_path = {
+                            let mut path = ByteString(Vec::try_with_capacity(len as usize)?);
+                            let mut file_data_guard = file.data.lock();
+                            file_data_guard.fseek(vfs::SeekFrom::Start(off)).unwrap();
+                            file_data_guard
+                                .kread(
+                                    |data| {
+                                        path.0.extend(data);
+                                        Ok(data.len() as u64)
+                                    },
+                                    len,
+                                )
+                                .unwrap();
+                            path
+                        };
+
+                        log::trace!("发现解释器路径：{interp_path}");
+
+                        if interp_path.get(0) != Some(&b'/') {
+                            log::error!("解释器路径必须是非空绝对路径，无法加载"); // 绝对路径的部分待定
+                            return Err(LoadElfError::BadInterpreter);
+                        }
+
+                        let ptw = vfs::PathToWalk::Absolute(&interp_path);
+                        let path = vfs::walk_path(ptw)
+                            .and_then(|walked| walked.ensure())
+                            .map_err(|_| LoadElfError::BadInterpreter)?;
+
+                        log::trace!("找到解释器 {}！", path.0.data.lock().name);
+
+                        let file = path
+                            .0
+                            .data
+                            .lock()
+                            .ops
+                            .open(path.1, vfs::FileFlags::Read)
+                            .map_err(|_| LoadElfError::BadInterpreter)?;
+
+                        let entry = inner(&file, address_space, true)?.program_entry;
+                        interp_entry.replace(entry + DYNAMIC_INTERPRETER_BASE.0);
                     }
+                    PT_GNU_STACK => {
+                        log::info!(
+                            "发现 PT_GNU_STACK 段，然而，我们的栈区本就不可执行，因此无需进一步操作"
+                        );
+                    }
+                    other => log::warn!("未知 p_type: {other:#x}，已跳过"),
                 }
-                PT_DYNAMIC | PT_INTERP => {
-                    log::error!("暂不支持动态链接的程序");
-                    log::warn!(
-                        "由于 basic 测试全部是动态链接的静态程序，暂时强行将此程序当作静态链接的处理"
-                    );
-                    // return Err(LoadElfError::NotYetImplemented); // FIXME
-                }
-                PT_GNU_STACK => {
-                    log::info!(
-                        "发现 PT_GNU_STACK 段，然而，我们的栈区本就不可执行，因此无需进一步操作"
-                    );
-                }
-                other => log::warn!("未知 p_type: {other:#x}，已跳过"),
             }
+
+            Ok(InnerReturn {
+                load_seg_start: load_seg_start.ok_or(LoadElfError::NoLoadSegment)?,
+                load_seg_end: load_seg_end.ok_or(LoadElfError::NoLoadSegment)?,
+                program_entry: elf.ehdr.e_entry as usize,
+                interp_entry,
+                ehdr: elf.ehdr,
+            })
         }
+
+        let InnerReturn {
+            load_seg_start,
+            load_seg_end,
+            program_entry,
+            interp_entry,
+            ehdr,
+        } = inner(file, address_space, false)?;
 
         // 初始化堆区 VMA 和 brk
         {
-            let Some(program_data_end) = max_load_seg_end_addr else {
-                log::error!("ELF 文件没有有效的 PT_LOAD 段，无法加载");
-                return Err(LoadElfError::NoLoadSegment);
-            };
+            let program_data_end = load_seg_end;
 
             debug_assert_eq!(program_data_end.0 % PAGE_BYTES, 0);
 
@@ -837,20 +924,30 @@ impl Task {
             });
         }
 
-        let program_start_off = first_load_seg_start_addr.expect("前面初始化 brk 时检查过了");
+        macro_rules! aux {
+            ($($key: ident: $val: expr $(,)?)+; with $reserved: literal more space) => {{
+                use AuxId::*;
+                let mut ret = Vec::with_capacity(${count($key)} + $reserved);
+                $(
+                    unsafe { ret.push_within_capacity(AuxiliaryEntry($key, $val)).unwrap_unchecked() };
+                )+
+                ret
+            }};
+        }
 
-        let entry = elf.ehdr.e_entry as usize;
+        let is_dynamic = interp_entry.is_some();
 
-        auxv.push(AuxiliaryEntry(AT_ENTRY, entry));
-        auxv.push(AuxiliaryEntry(AT_PAGESZ, PAGE_BYTES));
-        auxv.push(AuxiliaryEntry(
-            AT_PHDR,
-            program_start_off + elf.ehdr.e_phoff as usize,
-        ));
-        auxv.push(AuxiliaryEntry(AT_PHNUM, elf.ehdr.e_phnum as usize));
-        auxv.push(AuxiliaryEntry(AT_PHENT, elf.ehdr.e_phentsize as usize));
+        let auxv = aux![
+            AT_ENTRY: program_entry,
+            AT_PAGESZ: PAGE_BYTES,
+            AT_PHDR: load_seg_start.0 + ehdr.e_phoff as usize,
+            AT_PHNUM: ehdr.e_phnum as usize,
+            AT_PHENT: ehdr.e_phentsize as usize,
+            AT_BASE: if is_dynamic { DYNAMIC_INTERPRETER_BASE.0 } else { 0 };
+            with 2 more space
+        ];
 
-        Ok((entry, auxv))
+        Ok((interp_entry.unwrap_or(program_entry), auxv))
     }
 
     fn transfer_children_to_init(&self) {
@@ -1020,8 +1117,15 @@ pub enum LoadElfError {
     ArchMismatch,
     BadAlignment,
     NoLoadSegment,
-    NotYetImplemented,
     BadElfHead,
+    NotEnoughMemory,
+    BadInterpreter,
+}
+
+impl From<TryReserveError> for LoadElfError {
+    fn from(_value: TryReserveError) -> Self {
+        Self::NotEnoughMemory
+    }
 }
 
 #[derive(Debug)]
@@ -1052,6 +1156,7 @@ pub enum AuxId {
     AT_PHENT = 4,
     AT_PHNUM = 5,
     AT_PAGESZ = 6,
+    AT_BASE = 7,
     AT_ENTRY = 9,
     AT_RANDOM = 25,
 }

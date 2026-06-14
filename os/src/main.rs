@@ -46,6 +46,8 @@
 #![feature(slice_as_array)]
 #![feature(btree_cursors)]
 #![feature(allocator_api)]
+#![feature(macro_metavar_expr)]
+#![feature(vec_push_within_capacity)]
 //
 #![deny(unused_must_use)]
 
@@ -281,8 +283,16 @@ pub extern "C" fn main(_: usize, dtb: PhysAddr) -> ! {
         vfs::MountPoint::mount(sdcard_1, sdcard_fs, sdcard_2);
         log::info!("已将 sdcard 挂载到 /sdcd");
 
+        let _ = get_or_create_path(&root_fs, "/etc");
+
+        let _ = get_or_create_path(&root_fs, "/usr");
+
         let lib = get_or_create_path(&root_fs, "/lib");
-        init_libs(lib);
+        init_libs(lib.clone());
+        let lib64 = get_or_create_path(&root_fs, "/lib64");
+        vfs::MountPoint::mount(lib64, root_fs.clone(), lib.0.clone());
+        let usr_lib64 = get_or_create_path(&root_fs, "/usr/lib64");
+        vfs::MountPoint::mount(usr_lib64, root_fs, lib.0);
     }
 
     let zero_page_num = unsafe {
@@ -394,7 +404,7 @@ fn init_libs(lib: vfs::Path) {
         }};
 
         ($prefix: tt lib $($name: literal)+ => /lib/...) => {
-            $(define!(concat!("/sdcd/", stringify!($prefix), "/", $name) => $name);)+
+            $(define!(concat!("/sdcd/", stringify!($prefix), "/lib/", $name) => $name);)+
         }
     }
 
@@ -408,4 +418,10 @@ fn init_libs(lib: vfs::Path) {
     define!(musl lib "dlopen_dso.so" "libc.so" "tls_align_dso.so" "tls_get_new-dtv_dso.so" "tls_init_dso.so" => /lib/...);
 
     define!(glibc lib "dlopen_dso.so" "libc.so" "libm.so" "tls_align_dso.so" "tls_init_dso.so" "ld-linux-riscv64-lp64d.so.1" "libc.so.6" "libm.so.6" "tls_get_new-dtv_dso.so" => /lib/...);
+
+    #[cfg(target_arch = "loongarch64")]
+    {
+        define!(glibc lib "ld-linux-loongarch-lp64d.so.1" => /lib/...);
+        define!("/sdcd/musl/lib/libc.so" => "ld-musl-loongarch64-lp64d.so.1");
+    }
 }

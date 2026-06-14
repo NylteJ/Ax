@@ -248,7 +248,7 @@ pub extern "C" fn execve(
     // TODO: 这里其实也能优化，提前把新的栈内存分配好，然后直接拷贝到栈内存，以减少一次复制并完全避免 Vec 扩容
     let mut data = Vec::new();
     let envp_idxs = read_str_arr_from_user(envp, 32, 2048, &mut data)?;
-    let argv_idxs = read_str_arr_from_user(argv, 16, 512, &mut data)?;
+    let argv_idxs = read_str_arr_from_user(argv, 16, 1024, &mut data)?;
 
     let argc = argv_idxs.len();
 

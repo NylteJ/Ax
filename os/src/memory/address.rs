@@ -69,6 +69,11 @@ pub const USER_REGULAR_MEMORY_END: usize =
     (VIRTUAL_ADDRESS_LOW_HIGHEST + 1) - RESERVED_USER_VIRT_ADDR;
 pub const USER_RESERVED_MEMORY_START: usize = USER_REGULAR_MEMORY_END;
 
+pub const MMAP_START: VirtAddr = VirtAddr(0x8_0000_0000);
+pub const MMAP_END: VirtAddr = VirtAddr(0x10_0000_0000);
+
+pub const DYNAMIC_INTERPRETER_BASE: VirtAddr = VirtAddr(0x12_0000_0000);
+
 pub const VIRTUAL_ADDRESS_HIGH_BASE: usize = if RISC_V {
     0xffff_ffc0_0000_0000
 } else {

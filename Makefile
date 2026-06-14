@@ -30,8 +30,9 @@ clean:
 		rm -f ../kernel-rv ../kernel-la; \
 		rm -f ./src/linker_rv.ld ./src/linker_la.ld; \
 		rm -f ./kernel-rv.debug ./kernel-la.debug; \
-		rm -f ./disk.img ./disk-la.img; \
-		rm -f ./disk_img/rv-init ./disk_img/la-init; \
+		rm -f ../disk.img ../disk-la.img; \
+		rm -f ../disk_img/rv-init ../disk_img/la-init; \
+		rm -f ../disk_img/lib/*; \
 		rm -rf ./.cargo; \
 		cd ../programs/init; \
 		cargo clean; \
@@ -170,7 +171,7 @@ WINDOWS_TERMINAL_PATH ?= /mnt/d/Downloads/Chrome/terminal-1.22.11751.0/wt.exe
 DOCKER_ARGS_BASE := -it --rm -v .:/repo -p 1234:1234 zhouzhouyi/os-contest:20260104
 
 .PHONY: debug-rv
-debug-rv:
+debug-rv: disk.img
 	@{ \
 		$(MAKE) rv MODE=debug || exit 1; \
 		$(WINDOWS_TERMINAL_PATH) --profile "Ubuntu" -- bash -c "cd ~/OSKernel2026/repo && docker run $(DOCKER_ARGS_BASE) $(RV_QEMU_CMD_BASE) -s -S"; \
@@ -180,7 +181,7 @@ debug-rv:
 		echo "调试完成，所有容器已终止"; \
 	}
 .PHONY: debug-la
-debug-la:
+debug-la: disk-la.img
 	@{ \
 		$(MAKE) la MODE=debug || exit 1; \
 		$(WINDOWS_TERMINAL_PATH) --profile "Ubuntu" -- bash -c "cd ~/OSKernel2026/repo && docker run $(DOCKER_ARGS_BASE) $(LA_QEMU_CMD_BASE) -s -S"; \
@@ -191,12 +192,12 @@ debug-la:
 	}
 
 .PHONY: run-rv
-run-rv: rv
+run-rv: rv disk.img
 	@{ \
 		docker run $(DOCKER_ARGS_BASE) $(RV_QEMU_CMD_BASE); \
 	}
 .PHONY: run-la
-run-la: la
+run-la: la disk-la.img
 	@{ \
 		docker run $(DOCKER_ARGS_BASE) $(LA_QEMU_CMD_BASE); \
 	}
@@ -214,7 +215,7 @@ clippy-la:
 		cargo clippy --target loongarch64-unknown-none $(CARGOFLAGS); \
 	}
 
-disk.img: $(wildcard disk_img/*)
+disk.img: $(wildcard disk_img/*) disk_img/rv-init disk_img/la-init
 	mkfs.ext4 -F -d ./disk_img disk.img 1M
 
 disk-la.img: disk.img

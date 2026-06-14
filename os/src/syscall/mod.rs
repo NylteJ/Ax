@@ -264,7 +264,8 @@ impl FromResidual<Result<Infallible, LoadElfError>> for SyscallResult {
             LoadElfError::BadAlignment => ENOEXEC,
             LoadElfError::NoLoadSegment => ENOEXEC,
             LoadElfError::BadElfHead => ENOEXEC,
-            LoadElfError::NotYetImplemented => EOPNOTSUPP,
+            LoadElfError::NotEnoughMemory => ENOMEM,
+            LoadElfError::BadInterpreter => ENOEXEC,
         }
     }
 }

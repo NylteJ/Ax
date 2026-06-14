@@ -132,11 +132,11 @@ pub(super) unsafe fn drop_cached_varc<VArc: CachedValueArc>(
                     - ((*arc).deref() as *const VArc::Target).addr(),
             )
         };
-        log::trace!(
-            "{} {:#x} added to LRU list",
-            VArc::Target::DEBUG_NAME,
-            ((*arc).deref() as *const VArc::Target).addr()
-        );
+        // log::trace!(
+        //     "{} {:#x} added to LRU list",
+        //     VArc::Target::DEBUG_NAME,
+        //     ((*arc).deref() as *const VArc::Target).addr()
+        // );
     } else {
         // 不位于 Cache 中，直接销毁（别忘了先解锁）
         drop(cache_write_guard);

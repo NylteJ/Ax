@@ -309,9 +309,11 @@ impl<T: ?Sized + INodeOps> INodeData<T> {
     }
 
     pub fn symlink(&mut self, target: ByteString, dentry: DEntryArc) -> VfsResult<INodeArc> {
-        let ret = self.ops.symlink(target, dentry)?;
+        let ret = self.ops.symlink(target, dentry.clone())?;
 
         debug_assert_eq!(ret.data.read().mode.kind(), INodeMode::SymbolLink);
+
+        dentry.data.lock().inode.replace(ret.clone());
 
         Ok(ret)
     }
