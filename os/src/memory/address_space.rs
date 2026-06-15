@@ -47,7 +47,7 @@ impl AddressSpace {
     /// # Panics
     /// 如果待插入 VMA 的 start >= end，或与现有任意 VMA 发生重叠，则会 panic。
     pub fn add_vma(&mut self, vma: VirtualMemoryArea) {
-        log::trace!("add_vma: {vma:x?}");
+        // log::trace!("add_vma: {vma:x?}");
         assert!(
             vma.start < vma.end,
             "VMA 大小必须大于 0（{:#x} >= {:#x}）",
@@ -442,7 +442,7 @@ impl AddressSpace {
                             // 此时不能笃定复制是否等价于清零，只能老老实实复制
                             let guard = unsafe { PageMetaGuard::from_asm(old_pte) };
                             memory.copy_from_slice(guard.visit_memory());
-                            log::trace!("COW, {:#x} => {:#x}", old_pte.0, physical_memory.0);
+                            // log::trace!("COW, {:#x} => {:#x}", old_pte.0, physical_memory.0);
                             unsafe { guard.into_asm() }; // 此时上面那个 if 已经将所有权转移了，我们这里不能再释放一次（FIXME）
                         } else {
                             // 复制等价于清零，此时清零往往更快
@@ -575,7 +575,7 @@ impl AddressSpace {
     /// `vma` 的 `start` 字段相当于 mmap 的 `start` 参数，在 `fixed` 为 false 时是提示，在 `fixed` 为 true 时是强制要求，此时可能会解除现有映射。
     /// 特别地，当 `fixed` 为 false 且 `vma.start` 为 0 时，`start` 字段会直接被忽略。
     pub fn mmap(&mut self, vma: VirtualMemoryArea, fixed: bool) -> Result<VirtAddr, ()> {
-        log::trace!("mmap: {vma:x?}, fixed: {fixed}");
+        // log::trace!("mmap: {vma:x?}, fixed: {fixed}");
 
         let lower_bound = self.find_vma_index_lower_bound(vma.start);
         let index = lower_bound.map_or(0, |x| x + 1);
@@ -622,13 +622,13 @@ impl AddressSpace {
                 }
             };
 
-            log::trace!(
-                "mmap 自动寻址: [{:#x}, {:#x}) ==> [{:#x}, {:#x})",
-                vma.start.0,
-                vma.end.0,
-                address.0,
-                address.0 + length
-            );
+            // log::trace!(
+            //     "mmap 自动寻址: [{:#x}, {:#x}) ==> [{:#x}, {:#x})",
+            //     vma.start.0,
+            //     vma.end.0,
+            //     address.0,
+            //     address.0 + length
+            // );
 
             self.add_vma(VirtualMemoryArea {
                 start: address,

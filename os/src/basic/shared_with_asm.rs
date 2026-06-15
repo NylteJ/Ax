@@ -1,4 +1,4 @@
-use core::{mem::forget_unsized, pin::Pin};
+use core::pin::Pin;
 
 use alloc::{boxed::Box, sync::Arc};
 
@@ -35,7 +35,7 @@ pub unsafe trait SharedWithAsm {
         Self: Clone,
     {
         let this = unsafe { Self::from_asm(asm_value) };
-        forget_unsized(this.clone());
+        unsafe { Self::into_asm(this.clone()) };
         this
     }
     /// 从汇编端克隆一个所有权。输入值不正确则会导致内存不安全。
@@ -51,7 +51,9 @@ unsafe impl<T: ?Sized> SharedWithAsm for Pin<Arc<T>> {
     type AsmType = *const T;
 
     unsafe fn into_asm(self) -> Self::AsmType {
-        unsafe { Arc::into_raw(Pin::into_inner_unchecked(self)) }
+        let arc = unsafe { Pin::into_inner_unchecked(self) };
+        debug_assert!(Arc::strong_count(&arc) > 0);
+        Arc::into_raw(arc)
     }
 
     unsafe fn from_asm(asm_value: Self::AsmType) -> Self {

@@ -4,14 +4,13 @@ use core::{
     mem::{offset_of, replace},
     num::NonZero,
     ops::Deref,
-    pin::Pin,
     ptr::{NonNull, addr_eq, null_mut},
-    sync::atomic::{AtomicPtr, AtomicU8, Ordering},
+    sync::atomic::{AtomicPtr, AtomicU8, AtomicU32, Ordering},
 };
 
 use alloc::{alloc::AllocError, collections::TryReserveError, sync::Arc, vec::Vec};
 use elf::{ElfBytes, endian::NativeEndian};
-use intrusive_collections::{LinkedListLink, UnsafeRef, intrusive_adapter};
+use intrusive_collections::{LinkedListLink, UnsafeRef};
 
 use crate::{
     arch::{
@@ -41,8 +40,9 @@ use crate::{
         futex::futex_lock,
         process_data::{ProcessData, ProcessRLimits},
         signal::{RtSignalData, SignalHandler, SignalId, SignalsWaitingList},
+        task_arc::TaskAdapter,
         task_context::{TaskContext, switch_context},
-        task_manager::{PID_ALLOCATOR, register_task, unregister_task},
+        task_manager::{PID_ALLOCATOR, register_task},
         task_scheduler::TASK_SCHEDULER,
     },
     syscall::{misc::RobustListHead, process::CloneFlags, sync::get_futex_key},
@@ -80,7 +80,7 @@ pub struct Task {
     /// 子 Task 链表头
     pub children: Mutex<intrusive_collections::LinkedList<TaskAdapter>>,
     /// 子 Task 链表的侵入式节点，由于所有操作都须借助 children 的锁，它本身无需额外同步
-    children_link: LinkedListLink,
+    pub(super) children_link: LinkedListLink,
     /// 父 Task 指针，通常不会变化
     ///
     /// 通过托孤机制保证总是有效（如果父节点提前死亡，则其改为指向 init）
@@ -98,6 +98,8 @@ pub struct Task {
     ///
     /// 空指针表示无需操作。
     pub tid_address: AtomicPtr<c_int>,
+
+    pub(super) refcount: AtomicU32,
 
     _pin: PhantomPinned, // Task 的地址需要在 tp、内核栈等区域存储，因此不能移动
 }
@@ -169,9 +171,7 @@ impl TaskTimeStats {
 unsafe impl Send for Task {}
 unsafe impl Sync for Task {}
 
-intrusive_adapter!(pub TaskAdapter = TaskArc: Task { children_link => LinkedListLink });
-
-pub type TaskArc = Pin<Arc<Task>>;
+pub use super::task_arc::TaskArc;
 
 pub const INIT_PID: usize = 0;
 pub static INIT_TASK: UnsafeInited<TaskArc> = unsafe { UnsafeInited::uninit() };
@@ -214,7 +214,7 @@ impl Task {
         address_space.get_page_table().activitate();
 
         // 先创建一个半成品 task
-        let task = Arc::pin(Self {
+        let task = TaskArc::try_new(Self {
             kstack,
             tid: INIT_PID,
 
@@ -253,8 +253,11 @@ impl Task {
 
             tid_address: AtomicPtr::new(null_mut()),
 
+            refcount: AtomicU32::new(1),
+
             _pin: PhantomPinned,
-        });
+        })
+        .expect("必须要能够为 init 进程分配内存");
 
         // 填充 parent
         unsafe { task.parent.as_ptr().write(NonNull::from_ref(&task)) };
@@ -284,7 +287,7 @@ impl Task {
         unsafe { arch::NativeBasic::execute_init(entry, USER_STACK_HIGHEST, kstack_sp) };
     }
 
-    /// 复制一份当前任务，并将其添加到调度器中，返回新任务。子任务的返回值（a0）会被篡改为 0。
+    /// 复制一份当前任务，并将其添加到调度器中，返回新任务的 TID。子任务的返回值（a0）会被篡改为 0。
     ///
     /// `ptid`、`tls` 和 `ctid` 参数只在指定了对应 `flags` 时生效。
     ///
@@ -299,7 +302,7 @@ impl Task {
         tls: usize,
         ctid: *mut c_int,
         exit_signal: SignalId,
-    ) -> Result<TaskArc, ForkError> {
+    ) -> Result<usize, ForkError> {
         // 对于内核栈，必须分配新的
         let (_kstack, task_ptr_ptr) =
             Self::alloc_kstack().map_err(|_| ForkError::NotEnoughMemory)?;
@@ -420,7 +423,7 @@ impl Task {
             self
         };
 
-        let ret = Arc::try_pin(Self {
+        let child = TaskArc::try_new(Self {
             kstack,
             tid,
 
@@ -452,27 +455,31 @@ impl Task {
 
             tid_address: AtomicPtr::new(ctid),
 
+            refcount: AtomicU32::new(1),
+
             _pin: PhantomPinned,
         })?;
 
         if !flags.contains(CloneFlags::THREAD) {
-            parent.children.lock().push_back(ret.clone());
+            // children 以进程为单位
+            parent.children.lock().push_back(child.clone());
         }
 
-        ret.process
+        child
+            .process
             .tasks
             .write()
-            .push_back(unsafe { UnsafeRef::from_raw(&*ret) });
+            .push_back(unsafe { UnsafeRef::from_raw(&*child) });
 
-        unsafe { task_ptr_ptr.write(ret.deref()) };
+        unsafe { task_ptr_ptr.write(child.deref()) };
 
-        register_task(&ret);
+        register_task(&child);
 
-        TASK_SCHEDULER.lock().add_task(ret.clone());
+        TASK_SCHEDULER.lock().add_task(child);
 
         log::trace!("forked: {} => {tid}", self.tid);
 
-        Ok(ret)
+        Ok(tid)
     }
 
     /// 将当前任务替换为 `file` 对应可执行文件的内容。不传递任何参数。返回半成品辅助向量。
@@ -544,7 +551,7 @@ impl Task {
         unsafe { self.parent.read().as_ref() }
     }
 
-    /// 当此 Task 退出时调用，将子进程转移到 init 进程下并唤醒等待的父进程，并向父进程发送恰当的终止信号。
+    /// 当此 Task 退出时调用，将子进程转移到 init 进程下并唤醒等待的父进程，并向父进程发送恰当的终止信号。它还会执行 CLEARTID 操作。
     pub fn on_exit(&self, signal: SignalId, return_value: u8) {
         let old = self
             .wait_state
@@ -564,6 +571,23 @@ impl Task {
                 self.exit_signal
             );
             self.parent_task().process.send_signal(self.exit_signal);
+        }
+
+        // 很坑的一步是这个不能放在析构函数里，不然极其容易死锁（与 Linux 也不一致）
+        if let tid_addr = self.tid_address.load(Ordering::Relaxed).cast()
+            && let Ok(futex_key) = get_futex_key(tid_addr, false)
+        {
+            let mut futex_word = futex_lock(&futex_key);
+
+            let store_result = futex_word.relaxed_atom_store(tid_addr, 0);
+            if let Err(err) = store_result {
+                log::warn!("向 tid_address {tid_addr:p} 写入 0 失败，发生错误 {err:?}");
+            } else {
+                log::trace!("成功向 tid_address {tid_addr:p} 写入 0");
+            }
+
+            let woken = futex_word.wake(1, u32::MAX);
+            log::trace!("唤醒了 tid_address {tid_addr:p} 上的 {woken} 个等待者");
         }
     }
 
@@ -953,11 +977,6 @@ impl Task {
     fn transfer_children_to_init(&self) {
         let my_children = self.children.lock().take();
         if !my_children.is_empty() {
-            log::trace!(
-                "TID 为 {} 的 Task 的子进程（{:?}）将被转移到 init",
-                self.tid,
-                my_children.iter().map(|task| task.tid).collect::<Vec<_>>()
-            );
             INIT_TASK
                 .children
                 .lock()
@@ -1088,25 +1107,7 @@ impl Drop for Task {
             log::error!("TODO: 处理 robust_list_head");
         }
 
-        if let tid_addr = self.tid_address.get_mut().cast()
-            && let Ok(futex_key) = get_futex_key(tid_addr, false)
-        {
-            let mut futex_word = futex_lock(&futex_key);
-
-            let store_result = futex_word.relaxed_atom_store(tid_addr, 0);
-            if let Err(err) = store_result {
-                log::warn!("向 tid_address {tid_addr:p} 写入 0 失败，发生错误 {err:?}");
-            } else {
-                log::trace!("成功向 tid_address {tid_addr:p} 写入 0");
-            }
-
-            let woken = futex_word.wake(1, u32::MAX);
-            log::trace!("唤醒了 tid_address {tid_addr:p} 上的 {woken} 个等待者");
-        }
-
         // 注意，Task 被 drop 意味着它已经从父 Task 的 children 中被移除了，因此此处无需重复清理
-
-        unregister_task(self.tid);
 
         log::trace!("Task {} dropped", self.tid);
     }

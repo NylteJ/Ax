@@ -1,6 +1,7 @@
 pub mod futex;
 pub mod signal;
 pub mod task;
+pub mod task_arc;
 pub mod task_context;
 pub mod task_manager;
 pub mod task_scheduler;

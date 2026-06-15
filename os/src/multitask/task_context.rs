@@ -15,7 +15,7 @@ pub struct TaskContext {
     #[cfg(target_arch = "riscv64")]
     pub callee_saved_registers: [usize; 12], // s0 ~ s11
     #[cfg(target_arch = "loongarch64")]
-    pub callee_saved_registers: [usize; 9], // $s0 ~ $s8
+    pub callee_saved_registers: [usize; 10], // $s0 ~ $s9
 }
 
 const TASK_CONTEXT_SIZE: usize = size_of::<TaskContext>();
@@ -81,11 +81,11 @@ pub unsafe extern "C" fn switch_context(to: &TaskContext) {
     }
     #[cfg(target_arch = "loongarch64")]
     unsafe {
-        seq!(N in 0..=8 {
+        seq!(N in 0..=9 {
             naked_asm!(
                 // 1. 在当前内核栈上分配一块空间，用于存储当前上下文
                 "addi.d $sp, $sp, -{TASK_CONTEXT_SIZE}",
-                // 2. 保存当前上下文（$ra、$tp、$sp、PGDL、$s0~$s8）
+                // 2. 保存当前上下文（$ra、$tp、$sp、PGDL、$s0~$s9）
                 "st.d $ra, $sp, {RA_OFFSET}",
                 "st.d $tp, $sp, {TASK_ADDR_OFFSET}",
                 "st.d $sp, $sp, {SP_OFFSET}",
@@ -96,7 +96,7 @@ pub unsafe extern "C" fn switch_context(to: &TaskContext) {
                 )*
                 // 3. 更新当前 Task 结构体的内核栈顶指针
                 "st.d $sp, $tp, {KSTACK_OFFSET_IN_TASK}",
-                // 4. 恢复目标上下文（$ra、$tp、$sp、PGDL、$s0~$s8）
+                // 4. 恢复目标上下文（$ra、$tp、$sp、PGDL、$s0~$s9）
                 "ld.d $ra, $a0, {RA_OFFSET}",
                 "ld.d $tp, $a0, {TASK_ADDR_OFFSET}",
                 "ld.d $sp, $a0, {SP_OFFSET}",

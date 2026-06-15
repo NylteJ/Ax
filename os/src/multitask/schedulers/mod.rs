@@ -4,7 +4,7 @@ pub mod idle;
 pub mod realtime;
 
 pub trait Scheduler: Send + Sync {
-    fn add_task(&mut self, task: TaskArc) -> Result<(), ()>;
+    fn add_task(&mut self, task: TaskArc) -> Result<(), TaskArc>;
 
     fn pick_next(&mut self) -> Option<TaskArc>;
 

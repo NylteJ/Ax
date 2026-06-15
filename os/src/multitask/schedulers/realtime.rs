@@ -21,9 +21,9 @@ pub struct RealtimeScheduler {
 }
 
 impl Scheduler for RealtimeScheduler {
-    fn add_task(&mut self, task: TaskArc) -> Result<(), ()> {
+    fn add_task(&mut self, task: TaskArc) -> Result<(), TaskArc> {
         let (SchedulePolicy::FIFO | SchedulePolicy::RoundRobin { .. }) = &task.policy else {
-            return Err(());
+            return Err(task);
         };
 
         // 调度策略不在这里体现，此处两种策略没有区别

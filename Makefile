@@ -8,7 +8,7 @@ ifeq ($(MODE), release)
     CARGOFLAGS = --release
 	BUILDDICT = release
 else ifeq ($(MODE), debug)
-    CARGOFLAGS =
+    CARGOFLAGS = --features "has-debug-info"
 	BUILDDICT = debug
 else
 $(error "错误的 MODE: $(MODE). 应为 'release'(默认) 或 'debug'(debug target 强制使用).")

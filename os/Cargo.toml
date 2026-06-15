@@ -35,7 +35,12 @@ allocator-api2 = { version = "0.2.21", default-features = false }
 
 [features]
 framepointer = []
+has-debug-info = []
 default = ["framepointer"]
 
 [target.riscv64gc-unknown-none-elf.dependencies]
 riscv = "0.16.0"
+
+[profile.release]
+lto = "fat"
+codegen-units = 1

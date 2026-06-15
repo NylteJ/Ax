@@ -12,7 +12,11 @@ use hashbrown::{DefaultHashBuilder, HashMap};
 
 use crate::basic::sync::Mutex;
 
-const HEAP_SIZE_BYTES: usize = 32 * 1024 * 1024; // 32 MB
+const HEAP_SIZE_BYTES: usize = if cfg!(debug_assertions) {
+    256 * 1024 * 1024 // 256 MB（因为此时的内核栈非常非常大）
+} else {
+    64 * 1024 * 1024 // 64 MB（FIXME：其实这也有点大了，未来加栈溢出检测时可以将内核栈独立出去）
+};
 
 const BUDDY_SYSTEM_ALLOCATOR_ORDER: usize =
     HEAP_SIZE_BYTES.next_power_of_two().trailing_zeros() as usize + 1;

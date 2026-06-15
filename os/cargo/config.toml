@@ -2,14 +2,20 @@
 
 [target.riscv64gc-unknown-none-elf]
 rustflags = [
-    "-Clink-arg=-Tsrc/linker_rv.ld", "-Cforce-frame-pointers=yes"
+    "-Clink-arg=-Tsrc/linker_rv.ld", "-Cforce-frame-pointers=yes", "-Ctarget-feature=-v"
 ]
 
 [target.loongarch64-unknown-none]
 rustflags = [
-    "-Clink-arg=-Tsrc/linker_la.ld", "-Cforce-frame-pointers=yes"
+    "-Clink-arg=-Tsrc/linker_la.ld", "-Cforce-frame-pointers=yes", "-Ctarget-feature=-lsx,-lasx"
 ]
 
 [profile.dev]
 debug = 2
 # rustflags = ["-Cllvm-args=-dwarf-version=5"]
+
+[source.crates-io]
+replace-with = "vendored-sources"
+
+[source.vendored-sources]
+directory = "vendor"

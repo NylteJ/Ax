@@ -9,6 +9,7 @@ use crate::{
     },
     basic::{
         DropGuard, abort_and_shutdown,
+        debugger::debugbreak,
         stack::TaskKernelStackPtr,
         timer::{check_timers, reset_timer_interrupt},
     },
@@ -37,17 +38,9 @@ extern "C" fn trap_handler(context: &mut NativeTrapContext) {
     let signal_handling_guard;
     if !trap_is_from_kernel {
         cur_task.time_stats.lock().update_user_time();
-        kernel_time_updater = DropGuard::new(|| {
-            #[cfg(target_arch = "loongarch64")] // 没有人知道原因，我强烈怀疑这是编译器 bug 而非 UB
-            let cur_task = unsafe { current_task().as_ref_unchecked() };
-
-            cur_task.time_stats.lock().update_kernel_time()
-        });
+        kernel_time_updater = DropGuard::new(|| cur_task.time_stats.lock().update_kernel_time());
 
         signal_handling_guard = DropGuard::new(|| {
-            #[cfg(target_arch = "loongarch64")] // 没有人知道原因，我强烈怀疑这是编译器 bug 而非 UB
-            let cur_task = unsafe { current_task().as_ref_unchecked() };
-
             while let Some((signal_id, rt_data)) = cur_task.try_consume_signal() {
                 log::debug!(
                     "正在处理 TID = {} 的 Task 的 {signal_id:?} 信号",
@@ -102,13 +95,14 @@ extern "C" fn trap_handler(context: &mut NativeTrapContext) {
                 {
                     *UNKNOWN_SYSCALLS.lock().entry(id).or_insert(0) += 1;
                 }
-            } else {
-                log::trace!(
-                    "系统调用：TID = {}, id = {id} ({}), args = {args:x?} (HEX), return value = {ret_value:#x}",
-                    cur_task.tid,
-                    syscall::SYSCALL_ID_NAME_MAP.get(id).unwrap_or(&"???")
-                );
             }
+            // else {
+            //     log::trace!(
+            //         "系统调用：TID = {}, id = {id} ({}), args = {args:x?} (HEX), return value = {ret_value:#x}",
+            //         cur_task.tid,
+            //         syscall::SYSCALL_ID_NAME_MAP.get(id).unwrap_or(&"???")
+            //     );
+            // }
 
             if ret_value == ERRORCODE_SPECIAL_RESTART_SYSCALL {
                 log::trace!(
@@ -172,6 +166,8 @@ extern "C" fn trap_handler(context: &mut NativeTrapContext) {
                     println!();
 
                     println!("寄存器信息：\n{:#?}", context.regs);
+
+                    debugbreak();
 
                     abort_and_shutdown();
                 }

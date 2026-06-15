@@ -169,7 +169,7 @@ pub extern "C" fn main(_: usize, dtb: PhysAddr) -> ! {
 
     filesystem::init();
 
-    #[cfg(debug_assertions)]
+    #[cfg(feature = "has-debug-info")]
     basic::debugger::DEBUG_CONTEXT.init();
 
     log::debug!("设备树物理地址：{:#x}", dtb.0);

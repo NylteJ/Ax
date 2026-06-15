@@ -206,10 +206,10 @@ fn main() -> isize {
                 group!(b"basic-glibc" at b"glibc/basic" shell b"run-all.sh"),
                 group!(nobanner at b"musl" shell b"busybox_testcode.sh"),
                 group!(nobanner at b"glibc" shell b"busybox_testcode.sh"),
-                group!(b"libctest-musl" at b"musl" shell b"run-static.sh", b"run-dynamic.sh"),
-                group!(b"libctest-glibc" at b"glibc" shell b"run-static.sh", b"run-dynamic.sh"),
                 group!(nobanner at b"musl" shell b"libcbench_testcode.sh"),
                 group!(nobanner at b"glibc" shell b"libcbench_testcode.sh"),
+                group!(b"libctest-musl" at b"musl" shell b"run-static.sh", b"run-dynamic.sh"),
+                group!(b"libctest-glibc" at b"glibc" shell b"run-static.sh", b"run-dynamic.sh"),
                 b'\0',
             )
             .as_ptr(),

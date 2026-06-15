@@ -87,9 +87,9 @@ pub extern "C" fn clone(
 
     let ctid = ctid as *mut c_int;
 
-    let child = task.fork(flags, stack, ptid, tls, ctid, signal)?;
+    let child_tid = task.fork(flags, stack, ptid, tls, ctid, signal)?;
 
-    SyscallResult::success(child.tid)
+    SyscallResult::success(child_tid)
 }
 
 bitflags! {
@@ -208,9 +208,9 @@ pub extern "C" fn clone3(cl_args: *mut CloneArgs, size: usize) -> SyscallResult 
 
     let task = unsafe { current_task().as_ref_unchecked() };
 
-    let child = task.fork(flags, ustack, ptid, tls, ctid, exit_signal)?;
+    let child_tid = task.fork(flags, ustack, ptid, tls, ctid, exit_signal)?;
 
-    SyscallResult::success(child.tid)
+    SyscallResult::success(child_tid)
 }
 
 /// * 功能：执行一个指定的程序；

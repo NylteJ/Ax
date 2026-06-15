@@ -25,10 +25,11 @@ impl TaskScheduler {
         }
     }
 
-    pub fn add_task(&mut self, task: TaskArc) {
+    pub fn add_task(&mut self, mut task: TaskArc) {
         for scheduler in &mut self.schedulers {
-            if scheduler.add_task(task.clone()).is_ok() {
-                return;
+            match scheduler.add_task(task) {
+                Ok(()) => return,
+                Err(tsk) => task = tsk,
             }
         }
 

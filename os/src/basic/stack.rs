@@ -54,7 +54,7 @@ impl<const BYTES: usize> Debug for KernelStackPtr<BYTES> {
 
 // Rust 没有 emplace 系的支持（或者说支持得很烂），因此调试模式下不得不调大栈大小来防止各种东西把栈压爆
 // （骗你的，Release 模式也得调大，最想念无栈协程的一集）
-const KERNEL_STACK_BYTES: usize = if cfg!(debug_assertions) { 65536 } else { 16384 };
+const KERNEL_STACK_BYTES: usize = if cfg!(debug_assertions) { 65536 } else { 32768 };
 
 /// 每个任务独占的内核栈的指针
 pub type TaskKernelStackPtr = KernelStackPtr<KERNEL_STACK_BYTES>;

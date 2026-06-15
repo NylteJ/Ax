@@ -63,7 +63,7 @@ pub fn backtrace_at(mut frame_pointer: *const usize) {
 }
 
 pub fn print_pc_info_if_debug(pc: usize) {
-    #[cfg(debug_assertions)]
+    #[cfg(feature = "has-debug-info")]
     match DEBUG_CONTEXT.find_location(pc as u64) {
         Ok(None) => print!("<No location>"),
         Err(err) => print!("err: {err:?}"),
@@ -90,7 +90,7 @@ pub fn print_pc_info_if_debug(pc: usize) {
     }
 }
 
-#[cfg(debug_assertions)]
+#[cfg(feature = "has-debug-info")]
 pub struct DebugContext(
     super::sync::OnceInited<
         addr2line::Context<addr2line::gimli::EndianSlice<'static, addr2line::gimli::LittleEndian>>,
@@ -98,15 +98,15 @@ pub struct DebugContext(
 );
 
 // SAFETY: 我没细看但其实大概是不安全的，不过没关系！
-#[cfg(debug_assertions)]
+#[cfg(feature = "has-debug-info")]
 unsafe impl Send for DebugContext {}
-#[cfg(debug_assertions)]
+#[cfg(feature = "has-debug-info")]
 unsafe impl Sync for DebugContext {}
 
-#[cfg(debug_assertions)]
+#[cfg(feature = "has-debug-info")]
 pub static DEBUG_CONTEXT: DebugContext = DebugContext(super::sync::OnceInited::new());
 
-#[cfg(debug_assertions)]
+#[cfg(feature = "has-debug-info")]
 impl DebugContext {
     pub fn init(&self) {
         let __debug_data_start: usize;
@@ -144,7 +144,7 @@ impl DebugContext {
     }
 }
 
-#[cfg(debug_assertions)]
+#[cfg(feature = "has-debug-info")]
 impl core::ops::Deref for DebugContext {
     type Target =
         addr2line::Context<addr2line::gimli::EndianSlice<'static, addr2line::gimli::LittleEndian>>;
@@ -154,7 +154,7 @@ impl core::ops::Deref for DebugContext {
     }
 }
 
-#[cfg(debug_assertions)]
+#[cfg(feature = "has-debug-info")]
 #[used]
 #[unsafe(link_section = ".debug_infos")]
 static _PLACEHOLDER: [u8; 32 * 1024 * 1024] = [1; 32 * 1024 * 1024];
