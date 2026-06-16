@@ -187,7 +187,18 @@ extern "C" fn trap_handler(context: &mut NativeTrapContext) {
                         "=================================================================================="
                     );
 
-                    cur_task.send_signal(SignalId::SIGSEGV);
+                    let sigsegv_blocked = cur_task
+                        .signals_wl
+                        .lock()
+                        .mask
+                        .contains(SignalId::SIGSEGV.as_mask());
+                    if sigsegv_blocked {
+                        log::error!("然而，其屏蔽了 SIGSEGV");
+                        log::error!("为避免无限递归，内核将强行终止程序");
+                        cur_task.send_signal(SignalId::SIGKILL);
+                    } else {
+                        cur_task.send_signal(SignalId::SIGSEGV);
+                    }
                 }
             }
         }

@@ -138,6 +138,7 @@ pub static TABLE: [Option<SyscallFn>; MAX_SYSCALL_COUNT] = const {
     define!(29, filesystem::ioctl);
     define!(62, filesystem::lseek);
     define!(78, filesystem::readlinkat);
+    define!(48, filesystem::faccessat);
 
     define!(214, memory::brk);
     define!(222, memory::mmap);

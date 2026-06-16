@@ -422,6 +422,7 @@ fn init_libs(lib: vfs::Path) {
     #[cfg(target_arch = "loongarch64")]
     {
         define!(glibc lib "ld-linux-loongarch-lp64d.so.1" => /lib/...);
+        define!("/sdcd/musl/lib/libc.so" => "ld-musl-loongarch-lp64d.so.1");
         define!("/sdcd/musl/lib/libc.so" => "ld-musl-loongarch64-lp64d.so.1");
     }
 }

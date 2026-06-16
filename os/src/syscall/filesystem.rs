@@ -1612,3 +1612,18 @@ pub extern "C" fn readlinkat(
 
     SyscallResult::success(data.len())
 }
+
+pub extern "C" fn faccessat(dirfd: isize, path: *const c_char, mode: isize) -> SyscallResult {
+    let path = copy_str_from_user(path, FILENAME_LEN_HINT, PATH_LEN_MAX)?;
+    let walk_path_from = parse_walk_path_from(dirfd, path.as_ref())?;
+
+    let dentry = walk_path(walk_path_from)?.ensure()?.0;
+    let inode = dentry.data.lock().inode.clone().ok_or(ENOENT)?;
+
+    // 由于我们目前没有实现用户系统，目前只需要对执行位进行检查（root 用户总有读写权限）
+    if mode & 1 == 1 && !inode.data.read().mode.contains(INodeMode::UserExecute) {
+        return EACCES;
+    }
+
+    SyscallResult::success(0)
+}

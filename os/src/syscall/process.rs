@@ -187,7 +187,7 @@ pub extern "C" fn clone3(cl_args: *mut CloneArgs, size: usize) -> SyscallResult 
 
     let args = copy_one_from_user(cl_args)?;
 
-    let flags = args.flags.try_into().map_err(|_| EINVAL)?;
+    let flags = (args.flags >> 8).try_into().map_err(|_| EINVAL)?;
     let flags = CloneFlags::from_bits(flags).ok_or(EINVAL)?;
     flags.check_validity()?;
 
