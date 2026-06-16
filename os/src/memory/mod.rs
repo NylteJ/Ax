@@ -58,6 +58,12 @@ pub struct Page([u8; PAGE_BYTES]);
 static_assertions::const_assert_eq!(align_of::<Page>(), PAGE_BYTES);
 static_assertions::const_assert_eq!(size_of::<Page>(), PAGE_BYTES);
 
+impl Page {
+    pub fn as_bytes(&self) -> &[u8; PAGE_BYTES] {
+        &self.0
+    }
+}
+
 /// 全零只读物理页，用于零页在不写入时的优化
 ///
 /// 例如，对于 .bss 段等自动置零的段，只要不发生写入，就总可以把所有虚拟页都映射到这个页

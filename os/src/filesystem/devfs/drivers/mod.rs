@@ -1,5 +1,7 @@
+mod null;
 mod tty;
 mod urandom;
+mod zero;
 
 use core::mem::MaybeUninit;
 
@@ -120,6 +122,8 @@ macro_rules! define_driver {
 
 pub const DEV_TTY: DeviceId = DeviceId(5, 0);
 pub const DEV_URANDOM: DeviceId = DeviceId(1, 9);
+pub const DEV_NULL: DeviceId = DeviceId(1, 3);
+pub const DEV_ZERO: DeviceId = DeviceId(1, 5);
 
 /// 和 `/dev/urandom` 完全等价，但 `/dev/urandom` 不可访问时也有效
 /// （此外，它能安慰性质地减少些许开销）
@@ -141,6 +145,8 @@ fn init_char_drivers() {
         unsafe { UnsafeInited::init_unsafe(&URANDOM_DRIVER, extend_lifetime(&value)) };
         value
     });
+    define!(DEV_NULL, Box::new(null::NullDriver::new()));
+    define!(DEV_ZERO, Box::new(zero::ZeroDriver::new()));
 
     unsafe { UnsafeInited::init_unsafe(&CHAR_DEVICE_TYPES, types) };
 }

@@ -378,6 +378,8 @@ fn init_devs() {
 
     define!("tty", CharDevice(DEV_TTY));
     define!("urandom", CharDevice(DEV_URANDOM));
+    define!("null", CharDevice(DEV_NULL));
+    define!("zero", CharDevice(DEV_ZERO));
 }
 
 fn init_libs(lib: vfs::Path) {
