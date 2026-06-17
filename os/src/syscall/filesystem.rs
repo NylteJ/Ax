@@ -1628,7 +1628,11 @@ pub extern "C" fn symlinkat(
     let linkpath_wpf = parse_walk_path_from(newdirfd, linkpath.as_ref())?;
     let link_npath = walk_path(linkpath_wpf)?.ensure_neg()?;
 
-    link_npath.dir_inode()?.data.write().symlink(target, link_npath.0.0)?;
+    link_npath
+        .dir_inode()?
+        .data
+        .write()
+        .symlink(target, link_npath.0.0)?;
 
     SyscallResult::success(0)
 }
