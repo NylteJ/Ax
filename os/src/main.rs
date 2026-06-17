@@ -228,7 +228,7 @@ pub extern "C" fn main(_: usize, dtb: PhysAddr) -> ! {
         let block_device_1 = &*DEVICES.block[0];
         let block_device_2 = &*DEVICES.block[1];
 
-        const ROOT_BLOCK_COUNT: u64 = 2048;
+        const ROOT_BLOCK_COUNT: u64 = 8192;
 
         let (root_device, sdcard_device) = if block_device_1.block_count() == ROOT_BLOCK_COUNT {
             log::info!("已选定块设备 1 作为根文件系统");
@@ -286,6 +286,8 @@ pub extern "C" fn main(_: usize, dtb: PhysAddr) -> ! {
         let _ = get_or_create_path(&root_fs, "/etc");
 
         let _ = get_or_create_path(&root_fs, "/usr");
+
+        let _ = get_or_create_path(&root_fs, "/bin"); // 对其内容的填充在 init 中完成
 
         let lib = get_or_create_path(&root_fs, "/lib");
         init_libs(lib.clone());

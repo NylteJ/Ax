@@ -216,7 +216,7 @@ clippy-la:
 	}
 
 disk.img: $(wildcard disk_img/*) disk_img/rv-init disk_img/la-init
-	mkfs.ext4 -F -d ./disk_img disk.img 1M
+	mkfs.ext4 -F -d ./disk_img disk.img 4M
 
 disk-la.img: disk.img
 	cp disk.img disk-la.img

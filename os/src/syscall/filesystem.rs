@@ -693,6 +693,10 @@ pub extern "C" fn linkat(
     let new_wpf = parse_walk_path_from(newdirfd, newpath.as_ref())?;
     let new_dentry = walk_path(new_wpf)?.ensure_neg()?;
 
+    if old_dentry.filesystem.addr() != new_dentry.0.0.filesystem.addr() {
+        return EXDEV;
+    }
+
     new_dentry.dir_inode()?.data.write().link(
         new_dentry.0.0,
         old_dentry.data.lock().inode.as_ref().unwrap(),
@@ -1611,6 +1615,22 @@ pub extern "C" fn readlinkat(
     copy_slice_to_user(buf.cast::<u8>(), &data)?;
 
     SyscallResult::success(data.len())
+}
+
+pub extern "C" fn symlinkat(
+    target: *const c_char,
+    newdirfd: isize,
+    linkpath: *const c_char,
+) -> SyscallResult {
+    let linkpath = copy_str_from_user(linkpath, FILENAME_LEN_HINT, PATH_LEN_MAX)?;
+    let target = copy_str_from_user(target, PATH_LEN_HINT, PATH_LEN_MAX)?;
+
+    let linkpath_wpf = parse_walk_path_from(newdirfd, linkpath.as_ref())?;
+    let link_npath = walk_path(linkpath_wpf)?.ensure_neg()?;
+
+    link_npath.dir_inode()?.data.write().symlink(target, link_npath.0.0)?;
+
+    SyscallResult::success(0)
 }
 
 pub extern "C" fn faccessat(dirfd: isize, path: *const c_char, mode: isize) -> SyscallResult {

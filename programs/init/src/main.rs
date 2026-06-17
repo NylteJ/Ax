@@ -202,6 +202,8 @@ fn main() -> isize {
             b"sh\0".as_ptr(),
             b"-c\0".as_ptr(),
             concat_bytes!(
+                b"/sdcd/musl/busybox --install -s /bin;",
+
                 group!(b"basic-musl" at b"musl/basic" shell b"run-all.sh"),
                 group!(b"basic-glibc" at b"glibc/basic" shell b"run-all.sh"),
                 group!(nobanner at b"musl" shell b"busybox_testcode.sh"),
@@ -210,12 +212,16 @@ fn main() -> isize {
                 group!(nobanner at b"glibc" shell b"libcbench_testcode.sh"),
                 group!(b"libctest-musl" at b"musl" shell b"run-static.sh", b"run-dynamic.sh"),
                 group!(b"libctest-glibc" at b"glibc" shell b"run-static.sh", b"run-dynamic.sh"),
+
                 b'\0',
             )
             .as_ptr(),
             core::ptr::null(),
         ];
-        let envp: [*const u8; 1] = [core::ptr::null()];
+        let envp: [*const u8; 2] = [
+            b"PATH=/bin\0".as_ptr(),
+            core::ptr::null()
+        ];
         let fail_code = syscall!(221, argv[0], argv.as_ptr(), envp.as_ptr()).cast_signed();
         println!("execve 失败，返回值：{fail_code}");
         return fail_code;

@@ -138,6 +138,7 @@ pub static TABLE: [Option<SyscallFn>; MAX_SYSCALL_COUNT] = const {
     define!(29, filesystem::ioctl);
     define!(62, filesystem::lseek);
     define!(78, filesystem::readlinkat);
+    define!(36, filesystem::symlinkat);
     define!(48, filesystem::faccessat);
 
     define!(214, memory::brk);
@@ -322,12 +323,12 @@ impl FromResidual<Result<Infallible, SleepError>> for SyscallResult {
 }
 
 impl SyscallResult {
-    pub fn success(val: usize) -> Self {
+    pub const fn success(val: usize) -> Self {
         debug_assert!(val.cast_signed() >= 0);
         Self { value: val }
     }
 
-    pub fn raw(self) -> usize {
+    pub const fn raw(self) -> usize {
         self.value
     }
 }
