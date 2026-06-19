@@ -86,9 +86,12 @@ pub struct Waiting {
 
 impl Drop for Waiting {
     fn drop(&mut self) {
-        while let Some(entry) = self.wait_entries.pop_front() {
+        for entry in self.wait_entries.take() {
             let queue = unsafe { entry.my_queue.as_ref_unchecked() };
-            unsafe { queue.queue.lock().cursor_mut_from_ptr(&*entry).remove() };
+            let mut queue_guard = queue.queue.lock();
+
+            debug_assert!(queue_guard.iter().any(|e| core::ptr::eq(e, &*entry)));
+            unsafe { queue_guard.cursor_mut_from_ptr(&*entry).remove() };
         }
     }
 }
@@ -136,7 +139,7 @@ impl Waiting {
         let deadline_tick = get_cpu_tick() + us_to_cpu_tick(timeout_us);
 
         // 这里不需要担心竞态或者其它问题，因为计时器只会在处理时钟中断时触发，且我们不支持内核态抢占
-        wake_task_when(cur_task, deadline_tick);
+        let _timeout_guard = wake_task_when(cur_task, deadline_tick);
 
         Task::sleep_current();
 

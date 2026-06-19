@@ -11,7 +11,7 @@ use intrusive_collections::{
 };
 
 use crate::{
-    basic::shared_with_asm::SharedWithAsm,
+    basic::{global_allocator::debug_assert_heap_mem_valid, shared_with_asm::SharedWithAsm},
     multitask::{task::Task, task_manager::unregister_task},
 };
 
@@ -26,6 +26,7 @@ impl Deref for TaskArc {
     type Target = Task;
 
     fn deref(&self) -> &Self::Target {
+        debug_assert_heap_mem_valid(self.ptr.as_ptr());
         let task = unsafe { self.ptr.as_ref() };
         debug_assert!(task.refcount.load(Ordering::Relaxed) > 0);
         task
@@ -51,6 +52,7 @@ unsafe impl SharedWithAsm for TaskArc {
 
 impl Clone for TaskArc {
     fn clone(&self) -> Self {
+        debug_assert_heap_mem_valid(self.ptr.as_ptr());
         let old_ref = self.refcount.fetch_add(1, Ordering::Relaxed);
         debug_assert!(old_ref > 0);
         Self { ptr: self.ptr }
@@ -59,6 +61,8 @@ impl Clone for TaskArc {
 
 impl Drop for TaskArc {
     fn drop(&mut self) {
+        debug_assert_heap_mem_valid(self.ptr.as_ptr());
+
         let task: &Task = self; // 防止与 debug 检查冲突
 
         let old_ref = task.refcount.fetch_sub(1, Ordering::Release);
@@ -149,6 +153,7 @@ impl TaskArc {
         debug_assert!(*task.refcount.get_mut() == 1);
         let boxed = Box::try_new(task)?;
         let ptr = Box::into_raw(boxed);
+        log::trace!("task {ptr:p} created");
         Ok(Self {
             ptr: unsafe { NonNull::new_unchecked(ptr) },
         })

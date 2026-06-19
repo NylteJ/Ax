@@ -1,6 +1,9 @@
-use core::mem::MaybeUninit;
+use core::{any::Any, mem::MaybeUninit};
 
-use crate::filesystem::vfs::{self, FileOps, VfsError, VfsResult, default_fseek};
+use crate::filesystem::{
+    devfs::DevINode,
+    vfs::{self, FileOps, VfsError, VfsResult, default_fseek},
+};
 
 pub struct DevDirFile;
 
@@ -30,7 +33,29 @@ impl FileOps for DevDirFile {
     }
 
     fn get_dir(&self, pos: u64) -> VfsResult<Option<vfs::IterateDirData>> {
-        todo!()
+        let this = vfs::File::from_dyn(self);
+
+        let inode = this.inode;
+        debug_assert!((&this.get_inode().data.read().ops as &dyn Any).is::<DevINode>());
+        let inode = unsafe { inode.cast::<vfs::INode<DevINode>>().as_ref() };
+
+        let inode_data_guard = inode.data.read();
+        let DevINode::Directory(dir_vec) = &inode_data_guard.ops else {
+            return Err(VfsError::NotADirectory);
+        };
+
+        Ok(dir_vec
+            .get(pos as usize)
+            .map(|(name, _)| vfs::IterateDirData {
+                name: name.clone(),
+                next_pos: pos + 1,
+                inode_id: inode.id,
+                entry_type: match inode.data.read().ops {
+                    DevINode::DeviceFile(..) => vfs::IterateDirEntryType::RegularFile,
+                    DevINode::Directory(..) => vfs::IterateDirEntryType::Directory,
+                    DevINode::Symlink(..) => vfs::IterateDirEntryType::Symlink,
+                },
+            }))
     }
 
     fn poll(&self) -> VfsResult<vfs::PollStatus> {

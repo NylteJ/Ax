@@ -41,12 +41,12 @@ pub const PAGE_BYTES: usize = 1 << PAGE_SHIFT;
 // 此布局天然免疫 Meltdown 漏洞（因为根本没有内核态映射），也就不需要 KPTI 了。
 // （貌似也有说法是龙芯硬件上就免疫 Meltdown？总之结果就是不需要 KPTI）
 
-#[cfg(target_arch = "riscv64")]
 const MEMORY_START: usize = 0x80000000;
-#[cfg(target_arch = "loongarch64")]
-const MEMORY_START: usize = 0x90000000;
 
-const MEMORY_SIZE: usize = 0x30000000;
+#[cfg(target_arch = "riscv64")]
+const MEMORY_SIZE: usize = 0x40000000;
+#[cfg(target_arch = "loongarch64")]
+const MEMORY_SIZE: usize = 0x30000000; // LoongArch 64 会将 256 MB 内存放置在低地址区域（尽管那部分内存貌似不太好用）
 
 const MEMORY_END: usize = MEMORY_START + MEMORY_SIZE;
 

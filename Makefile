@@ -155,14 +155,14 @@ LA_QEMU_CMD_BASE := \
 		-m $(MEMORY) \
 		-nographic \
 		-smp $(SMP) \
-		-drive file=/repo/disk-la.img,if=none,format=raw,id=x0 \
- 		-device virtio-blk-pci,drive=x0 \
+		-drive file=/repo/disk-la.img,if=none,format=raw,id=x1 \
+ 		-device virtio-blk-pci,drive=x1 \
 		-no-reboot \
 		-device virtio-net-pci,netdev=net0 \
-		-netdev user,id=net0,hostfwd=tcp::5555-:5555,hostfwd=udp::5555-:5555 \
+		-netdev user,id=net0 \
 		-rtc base=utc \
-		-drive file=/repo/sdcard-la.img,if=none,format=raw,id=x1 \
-		-device virtio-blk-pci,drive=x1 \
+		-drive file=/repo/sdcard-la.img,if=none,format=raw,id=x0 \
+		-device virtio-blk-pci,drive=x0 \
 # 		-device virtio-blk-pci,drive=x0,bus=virtio-mmio-bus.0 \
 # 		-device virtio-blk-pci,drive=x1,bus=virtio-mmio-bus.1 \
 

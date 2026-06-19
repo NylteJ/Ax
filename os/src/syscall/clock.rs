@@ -78,7 +78,7 @@ pub extern "C" fn clock_gettime(clockid: usize, tp: *mut TimeSpec) -> SyscallRes
         }
 
         ClockId::PROCESS_CPUTIME_ID => {
-            debug_assert!(false);
+            // debug_assert!(false);
             return EOPNOTSUPP;
         }
     }

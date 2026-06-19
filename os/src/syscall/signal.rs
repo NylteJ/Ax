@@ -22,6 +22,7 @@ use crate::multitask::signal::SignalId;
 use crate::multitask::signal::SignalIdUnderlying;
 use crate::multitask::signal::SignalMask;
 use crate::multitask::signal::sigreturn;
+use crate::multitask::task_manager::foreach_task;
 use crate::multitask::task_manager::get_task_by_tid;
 use crate::multitask::wait::SleepError;
 use crate::syscall::SyscallResult;
@@ -244,7 +245,21 @@ pub extern "C" fn kill(pid: isize, sig: isize) -> SyscallResult {
 
             task.process.send_signal(signal);
         }
-        Target::Pgid(pgid) => todo!(),
+        Target::Pgid(pgid) => {
+            // FIXME: 现在这个实现的性能只能用悲剧形容
+            let mut any = false;
+
+            foreach_task(|task| {
+                if task.process.pgid == pgid {
+                    task.process.send_signal(signal);
+                    any = true;
+                }
+            });
+
+            if !any {
+                return ESRCH;
+            }
+        }
         Target::All => todo!(),
     }
 

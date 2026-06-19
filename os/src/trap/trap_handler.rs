@@ -269,10 +269,15 @@ fn print_trap_context(context: &NativeTrapContext) {
     );
     println!("return PC: {:#x}", context.ret_pc);
     println!("bad address: {:#x}", arch::NativeTrap::get_bad_address());
-    println!(
-        "Task TID: {}",
-        unsafe { current_task().as_ref_unchecked() }.tid
-    );
+
+    if let Some(task) = unsafe { current_task().as_ref() } {
+        println!("Task TID: {}", task.tid);
+    }
+
+    if context.is_trap_from_kernel() {
+        println!("异常发生地点的调用堆栈：");
+        crate::basic::debugger::backtrace_at(context.regs.fp as *const usize);
+    }
 }
 
 /// 从用户态进入内核态时，寄存器 tp 的值可能已经发生了改变。此函数会从当前栈中重新恢复 tp 的值，令其指向当前任务的 Task。

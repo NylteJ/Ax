@@ -140,6 +140,8 @@ pub static TABLE: [Option<SyscallFn>; MAX_SYSCALL_COUNT] = const {
     define!(78, filesystem::readlinkat);
     define!(36, filesystem::symlinkat);
     define!(48, filesystem::faccessat);
+    define!(53, filesystem::fchmodat);
+    define!(46, filesystem::ftruncate64);
 
     define!(214, memory::brk);
     define!(222, memory::mmap);
@@ -157,6 +159,7 @@ pub static TABLE: [Option<SyscallFn>; MAX_SYSCALL_COUNT] = const {
     define!(101, process::nanosleep);
     define!(96, process::set_tid_address);
     define!(94, process::exit_group);
+    define!(154, process::setpgid);
 
     define!(134, signal::rt_sigaction);
     define!(129, signal::kill);

@@ -1,4 +1,5 @@
 use core::{
+    cell::UnsafeCell,
     ffi::c_int,
     marker::PhantomPinned,
     mem::{offset_of, replace},
@@ -10,7 +11,7 @@ use core::{
 
 use alloc::{alloc::AllocError, collections::TryReserveError, sync::Arc, vec::Vec};
 use elf::{ElfBytes, endian::NativeEndian};
-use intrusive_collections::{LinkedListLink, UnsafeRef};
+use intrusive_collections::{LinkedListLink, RBTreeLink, UnsafeRef};
 
 use crate::{
     arch::{
@@ -98,6 +99,11 @@ pub struct Task {
     ///
     /// 空指针表示无需操作。
     pub tid_address: AtomicPtr<c_int>,
+
+    /// 受 `TIMERS` 锁保护
+    pub timer_rbtree_key: UnsafeCell<usize>,
+    /// 受 `TIMERS` 锁保护
+    pub timer_rbtree_link: RBTreeLink,
 
     pub(super) refcount: AtomicU32,
 
@@ -252,6 +258,9 @@ impl Task {
             time_stats: Mutex::new(TaskTimeStats::new()),
 
             tid_address: AtomicPtr::new(null_mut()),
+
+            timer_rbtree_key: UnsafeCell::new(0),
+            timer_rbtree_link: RBTreeLink::new(),
 
             refcount: AtomicU32::new(1),
 
@@ -455,6 +464,9 @@ impl Task {
 
             tid_address: AtomicPtr::new(ctid),
 
+            timer_rbtree_key: UnsafeCell::new(0),
+            timer_rbtree_link: RBTreeLink::new(),
+
             refcount: AtomicU32::new(1),
 
             _pin: PhantomPinned,
@@ -546,12 +558,23 @@ impl Task {
         cur_task.time_stats.lock().last_update_stamp = get_cpu_tick();
     }
 
+    /// 和 [`Self::switch_to`] 类似，但允许 `target` 为当前任务
+    pub fn switch_to_maybe_current(target: TaskArc) {
+        if addr_eq(target.deref(), current_task()) {
+            unsafe { target.into_asm() };
+        } else {
+            Self::switch_to(target);
+        }
+    }
+
     /// 获取父 Task 的引用
     pub fn parent_task(&self) -> &Task {
         unsafe { self.parent.read().as_ref() }
     }
 
-    /// 当此 Task 退出时调用，将子进程转移到 init 进程下并唤醒等待的父进程，并向父进程发送恰当的终止信号。它还会执行 CLEARTID 操作。
+    /// 当此 Task 退出时调用，将子进程转移到 init 进程下并唤醒等待的父进程，并向父进程发送恰当的终止信号。
+    ///
+    /// 它还会执行 CLEARTID 操作并释放一部分资源。
     pub fn on_exit(&self, signal: SignalId, return_value: u8) {
         let old = self
             .wait_state
@@ -589,6 +612,8 @@ impl Task {
             let woken = futex_word.wake(1, u32::MAX);
             log::trace!("唤醒了 tid_address {tid_addr:p} 上的 {woken} 个等待者");
         }
+
+        *self.files.write() = FileDescriptorTable::new();
     }
 
     /// 向此 Task 发送信号，若 Task 正在睡眠则还可能会唤醒 Task。
@@ -977,6 +1002,10 @@ impl Task {
     fn transfer_children_to_init(&self) {
         let my_children = self.children.lock().take();
         if !my_children.is_empty() {
+            for child in &my_children {
+                *child.parent.write() = NonNull::from_ref(&INIT_TASK);
+            }
+
             INIT_TASK
                 .children
                 .lock()
@@ -1027,12 +1056,9 @@ impl Task {
 
         loop {
             if let Some(next) = { TASK_SCHEDULER.lock().pick_next() } {
-                // 有概率下一个被唤醒的还是我们（如果外层循环真正起效，则很大概率还是我们），
-                // 此时不应切换，或者说我们可以假装已经切换过了
-                if !addr_eq(&*next, current_task()) {
-                    // 注意此时我们没有将 tp 蕴含的所有权转移到 Rust 端
-                    Task::switch_to(next);
-                }
+                // 注意有概率下一个被唤醒的还是我们（如果外层循环真正起效，则很大概率还是我们），
+                Task::switch_to_maybe_current(next);
+
                 // 注意我们没有将自身添加回调度器，也没有转移 tp 中的 TaskArc 的所有权，回到这里说明睡眠已经结束了
 
                 // 注意这个 Acquire load 是必须的，因为我们需要与唤醒者的 Release store 同步
@@ -1080,10 +1106,10 @@ impl Task {
     }
 
     fn wake(&self) {
-        // 注意我们先前睡眠时没有转移 tp 中的所有权，因此这里也不该转移，直接从 tp 克隆即可
+        // 注意我们先前睡眠时没有转移走 tp 中的所有权，而是留到这里转移
         TASK_SCHEDULER
             .lock()
-            .add_task(unsafe { TaskArc::clone_from_asm(self) });
+            .add_task(unsafe { TaskArc::from_asm(self) });
     }
 }
 

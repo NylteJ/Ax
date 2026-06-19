@@ -1,5 +1,6 @@
 pub mod devfs;
 pub mod ext4;
+pub mod procfs;
 pub mod tmpfs;
 pub mod vfs;
 
@@ -14,6 +15,7 @@ pub fn init() {
     tmpfs::register();
     ext4::register();
     devfs::register();
+    procfs::register();
 
     other::pipe::init();
 }
@@ -22,7 +24,7 @@ pub fn init_root(
     fs_type: &filesystems::FileSystemType,
     block_device: &'static dyn crate::devices::block_device::BlockDevice,
 ) {
-    let fs = fs_type.ops.new_fs(Some(block_device));
+    let fs = fs_type.new_fs(Some(block_device));
 
     let root = fs.root_dentry.clone();
 

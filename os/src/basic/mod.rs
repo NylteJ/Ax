@@ -159,20 +159,12 @@ pub fn cleanup_and_shutdown() -> ! {
     log::debug!("已进入清理并关机流程");
 
     let root_fs = crate::filesystem::vfs::ROOT_PATH.1.sub_fs.clone();
-    while let v = root_fs.full_gc()
-        && v > 0
-    {
-        log::trace!("这一轮 DEntry GC 回收了 {v} 个对象");
-    }
+    log::trace!("这一轮 DEntry GC 回收了 {} 个对象", root_fs.full_gc());
     root_fs.writeback(NonZero::<usize>::MAX);
     log::info!("二次回写（什么都不应发生）");
     root_fs.writeback(NonZero::<usize>::MAX);
     log::info!("再度清理");
-    while let v = root_fs.full_gc()
-        && v > 0
-    {
-        log::trace!("这一轮 DEntry GC 回收了 {v} 个对象");
-    }
+    log::trace!("这一轮 DEntry GC 回收了 {} 个对象", root_fs.full_gc());
 
     log::error!("TODO: 子文件系统");
     log::error!("TODO: INode GC");

@@ -29,9 +29,12 @@ use crate::{
             VfsResult, walk_path, walk_path_no_follow,
         },
     },
-    memory::uaccess::{
-        copy_from_user_uninit, copy_one_from_user, copy_one_to_user, copy_slice_to_user,
-        copy_str_from_user, copy_to_user, copy_vec_from_user,
+    memory::{
+        PAGE_BYTES,
+        uaccess::{
+            copy_from_user_uninit, copy_one_from_user, copy_one_to_user, copy_slice_to_user,
+            copy_str_from_user, copy_to_user, copy_vec_from_user,
+        },
     },
     multitask::{FDTableEntry, FileDescriptorFlags, current_task, signal::SignalMask},
     syscall::{
@@ -1173,11 +1176,6 @@ pub extern "C" fn statx(
     mask_raw: usize,
     statxbuf: *mut Statx,
 ) -> SyscallResult {
-    if dirfd < 0 {
-        return EBADF;
-    }
-    let dirfd = dirfd.cast_unsigned();
-
     let mask = StatxMask::from_bits_retain(mask_raw as _);
     let flags = StatxFlags::from_bits(flags.try_into().map_err(|_| EINVAL)?).ok_or(EINVAL)?;
 
@@ -1185,7 +1183,7 @@ pub extern "C" fn statx(
         unsafe { current_task().as_ref_unchecked() }
             .files
             .read()
-            .get(dirfd)
+            .get(dirfd.cast_unsigned())
             .ok_or(EBADF)?
             .0
             .data
@@ -1194,7 +1192,7 @@ pub extern "C" fn statx(
             .clone()
     } else {
         let path = copy_str_from_user(path, PATH_LEN_HINT, PATH_LEN_MAX)?;
-        let wpf = parse_walk_path_from(dirfd.cast_signed(), &path)?;
+        let wpf = parse_walk_path_from(dirfd, &path)?;
         walk_path(wpf)?.whatever()
     };
 
@@ -1647,6 +1645,51 @@ pub extern "C" fn faccessat(dirfd: isize, path: *const c_char, mode: isize) -> S
     // 由于我们目前没有实现用户系统，目前只需要对执行位进行检查（root 用户总有读写权限）
     if mode & 1 == 1 && !inode.data.read().mode.contains(INodeMode::UserExecute) {
         return EACCES;
+    }
+
+    SyscallResult::success(0)
+}
+
+pub extern "C" fn fchmodat(dirfd: isize, path: *const c_char, mode: usize) -> SyscallResult {
+    let path = copy_str_from_user(path, FILENAME_LEN_HINT, PATH_LEN_MAX)?;
+    let walk_path_from = parse_walk_path_from(dirfd, path.as_ref())?;
+
+    let dentry = walk_path(walk_path_from)?.ensure()?.0;
+    let inode = dentry.data.lock().inode.clone().ok_or(ENOENT)?;
+
+    let mode = INodeMode::from_bits_retain(mode as u16);
+
+    inode.data.write().mode.set_perm(mode.perm());
+
+    SyscallResult::success(0)
+}
+
+pub extern "C" fn ftruncate64(fd: isize, length: u64) -> SyscallResult {
+    let file = get_file_from_fd(fd)?;
+
+    let inode = file.get_inode();
+    let mut inode_wguard = inode.data.write();
+
+    let old_length = inode_wguard.file_size;
+
+    if old_length > length {
+        // FIXME: 这里最好还是要下放到底层文件系统，比如我们现在的 Ext4 这里其实就会出问题
+        inode_wguard.file_size = length;
+        if let Some(page_cache) = &mut inode_wguard.page_cache {
+            page_cache.truncate(length / PAGE_BYTES as u64);
+        }
+    } else {
+        drop(inode_wguard); // FIXME: 这里其实也有竞态窗口
+
+        let mut file_guard = file.data.lock();
+        file_guard.fseek(vfs::SeekFrom::Start(old_length));
+        file_guard.kwrite(
+            |data| {
+                data.fill(MaybeUninit::new(0));
+                Ok(data.len() as u64)
+            },
+            length - old_length,
+        )?;
     }
 
     SyscallResult::success(0)

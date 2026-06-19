@@ -104,6 +104,8 @@ pub extern "C" fn main(_: usize, dtb: PhysAddr) -> ! {
     clear_bss();
     arch::NativeRegs::set_trap_handler(arch::NativeTrap::trap_handler_raw_from_kernel);
 
+    arch::NativeRegs::set_tp(0);
+
     #[cfg(target_arch = "loongarch64")]
     memory::tlb_refill_handler::init();
 
@@ -169,6 +171,8 @@ pub extern "C" fn main(_: usize, dtb: PhysAddr) -> ! {
 
     filesystem::init();
 
+    basic::timer::init();
+
     #[cfg(feature = "has-debug-info")]
     basic::debugger::DEBUG_CONTEXT.init();
 
@@ -223,6 +227,7 @@ pub extern "C" fn main(_: usize, dtb: PhysAddr) -> ! {
         let ext4_type = get_filesystem_type(ByteStr::new("ext4")).unwrap();
         let tmpfs_type = get_filesystem_type(ByteStr::new("tmpfs")).unwrap();
         let devfs_type = get_filesystem_type(ByteStr::new("devfs")).unwrap();
+        let procfs_type = get_filesystem_type(ByteStr::new("procfs")).unwrap();
 
         // FIXME
         let block_device_1 = &*DEVICES.block[0];
@@ -259,29 +264,36 @@ pub extern "C" fn main(_: usize, dtb: PhysAddr) -> ! {
         }
 
         let tmp_1 = get_or_create_path(&root_fs, "/tmp");
-        let tmp_fs = tmpfs_type.ops.new_fs(None);
+        let tmp_fs = tmpfs_type.new_fs(None);
         let tmp_2 = tmp_fs.root_dentry.clone();
         vfs::MountPoint::mount(tmp_1, tmp_fs, tmp_2);
         log::info!("已将 tmpfs 挂载到 /tmp");
 
         let dev_1 = get_or_create_path(&root_fs, "/dev");
-        let dev_fs = devfs_type.ops.new_fs(None);
+        let dev_fs = devfs_type.new_fs(None);
         let dev_2 = dev_fs.root_dentry.clone();
         vfs::MountPoint::mount(dev_1, dev_fs, dev_2);
         log::info!("已将 devfs 挂载到 /dev");
         init_devs();
 
         let dev_shm = get_or_create_path(&root_fs, "/dev/shm");
-        let dev_shm_fs = tmpfs_type.ops.new_fs(None);
+        let dev_shm_fs = tmpfs_type.new_fs(None);
         let dev_shm_2 = dev_shm_fs.root_dentry.clone();
         vfs::MountPoint::mount(dev_shm, dev_shm_fs, dev_shm_2);
         log::info!("已将 tmpfs 挂载到 /dev/shm");
 
         let sdcard_1 = get_or_create_path(&root_fs, "/sdcd");
-        let sdcard_fs = ext4_type.ops.new_fs(Some(sdcard_device));
+        let sdcard_fs = ext4_type.new_fs(Some(sdcard_device));
         let sdcard_2 = sdcard_fs.root_dentry.clone();
         vfs::MountPoint::mount(sdcard_1, sdcard_fs, sdcard_2);
         log::info!("已将 sdcard 挂载到 /sdcd");
+
+        let proc_1 = get_or_create_path(&root_fs, "/proc");
+        let proc_fs = procfs_type.new_fs(None);
+        let proc_2 = proc_fs.root_dentry.clone();
+        vfs::MountPoint::mount(proc_1, proc_fs, proc_2);
+        log::info!("已将 procfs 挂载到 /proc");
+        init_proc();
 
         let _ = get_or_create_path(&root_fs, "/etc");
 
@@ -429,4 +441,38 @@ fn init_libs(lib: vfs::Path) {
         define!("/sdcd/musl/lib/libc.so" => "ld-musl-loongarch-lp64d.so.1");
         define!("/sdcd/musl/lib/libc.so" => "ld-musl-loongarch64-lp64d.so.1");
     }
+}
+
+fn init_proc() {
+    let proc = vfs::walk_path(vfs::PathToWalk::Absolute(ByteStr::new("/proc")))
+        .unwrap()
+        .ensure()
+        .expect("根目录下应该有 proc 目录");
+
+    let proc_inode = proc.0.data.lock().inode.clone().unwrap();
+
+    let mode = vfs::INodeMode::all_permitted();
+
+    use filesystem::devfs::drivers::DeviceId;
+
+    macro_rules! define {
+        ($name:literal, $val:literal) => {{
+            let neg = vfs::walk_path(vfs::PathToWalk::Relative(ByteStr::new($name), proc.clone()))
+                .unwrap()
+                .ensure_neg()
+                .expect(concat!("/proc/", $name, " 应当初始不存在"));
+
+            proc_inode
+                .data
+                .write()
+                .make_node(
+                    vfs::SpecialINodeType::BlockDevice(DeviceId(999, $val)),
+                    mode,
+                    neg.0.0,
+                )
+                .unwrap();
+        }};
+    }
+
+    define!("meminfo", 0);
 }

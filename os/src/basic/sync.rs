@@ -1,5 +1,3 @@
-#[cfg(debug_assertions)]
-use core::cell::Cell;
 use core::cell::UnsafeCell;
 use core::fmt::Debug;
 use core::hint;
@@ -11,11 +9,16 @@ use core::ptr::NonNull;
 use core::sync::atomic::AtomicBool;
 use core::sync::atomic::AtomicU8;
 use core::sync::atomic::AtomicU32;
+#[cfg(debug_assertions)]
+use core::sync::atomic::AtomicUsize;
 use core::sync::atomic::Ordering;
 
 use crate::basic::UnsafeInited;
+#[cfg(debug_assertions)]
+use crate::multitask::current_task;
+use crate::syscall;
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct RwLock<T: ?Sized> {
     state: AtomicU32,
     value: UnsafeCell<T>,
@@ -140,7 +143,7 @@ unsafe impl<T: ?Sized + Send> Send for RwLock<T> {}
 pub struct Mutex<T: ?Sized> {
     flag: AtomicBool,
     #[cfg(debug_assertions)]
-    debug_msg: Cell<Option<&'static core::panic::Location<'static>>>,
+    task: AtomicUsize,
     value: UnsafeCell<T>,
 }
 
@@ -150,7 +153,7 @@ impl<T> Mutex<T> {
             flag: AtomicBool::new(false),
             value: UnsafeCell::new(value),
             #[cfg(debug_assertions)]
-            debug_msg: Cell::new(None),
+            task: AtomicUsize::new(usize::MAX),
         }
     }
 
@@ -171,18 +174,23 @@ impl<T: ?Sized> Mutex<T> {
                 break guard;
             }
 
-            #[cfg(debug_assertions)]
-            panic!(
-                "我们现在还不支持并行，因此一定是发生了死锁。上一个上锁位置:\n{:?}",
-                self.debug_msg.take()
+            // 注意我们暂时不支持并行，因此没有必要自旋（也没有必要区分自旋锁/睡眠锁），直接切换任务即可
+            log::trace!(
+                "Mutex {self:p} 被锁住了，尝试切换到其它任务（警告：这可能是死锁的征兆！）"
             );
-            #[cfg(not(debug_assertions))]
-            panic!("我们现在还不支持并行，因此一定是发生了死锁");
-            hint::spin_loop();
+            #[cfg(debug_assertions)]
+            assert!(
+                unsafe { current_task().as_ref() }
+                    .is_none_or(|task| task.tid != self.task.load(Ordering::Relaxed)),
+                "死锁了！TID = {}",
+                self.task.load(Ordering::Relaxed)
+            );
+            syscall::basic::yield_();
         };
 
         #[cfg(debug_assertions)]
-        self.debug_msg.set(Some(core::panic::Location::caller()));
+        unsafe { current_task().as_ref() }
+            .inspect(|task| self.task.store(task.tid, Ordering::Relaxed));
 
         guard
     }
@@ -198,6 +206,8 @@ impl<T: ?Sized> Mutex<T> {
             Some(MutexGuard {
                 value: unsafe { NonNull::new_unchecked(self.value.get()) },
                 flag: &self.flag,
+                #[cfg(debug_assertions)]
+                task: &self.task,
             })
         }
     }
@@ -222,11 +232,15 @@ impl<T: ?Sized> Mutex<T> {
 pub struct MutexGuard<'a, T: ?Sized> {
     value: NonNull<T>,
     flag: &'a AtomicBool,
+    #[cfg(debug_assertions)]
+    task: &'a AtomicUsize,
 }
 
 impl<T: ?Sized> Drop for MutexGuard<'_, T> {
     fn drop(&mut self) {
         self.flag.store(false, Ordering::Release);
+        #[cfg(debug_assertions)]
+        self.task.store(usize::MAX, Ordering::Relaxed);
     }
 }
 

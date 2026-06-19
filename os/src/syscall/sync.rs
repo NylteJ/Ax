@@ -26,6 +26,7 @@ use crate::syscall::SyscallResult;
 use crate::syscall::common::TimeSpec;
 use crate::syscall::common::get_timeout_us;
 use crate::syscall::err_codes::*;
+use crate::trap::page_fault_type::PageFaultType;
 
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, TryFromPrimitive)]
@@ -400,9 +401,9 @@ pub fn get_futex_key(uaddr: *mut u32, private: bool) -> Result<FutexKey, Syscall
         let inpage_off = uaddr.addr() % PAGE_BYTES;
         let uvaddr = VirtAddr::from_ptr(uaddr);
 
-        let cur_addr_space = cur_addr_space.read();
+        let addr_space = cur_addr_space.read();
 
-        let vma = cur_addr_space.find_vma(uvaddr).ok_or(EFAULT)?;
+        let vma = addr_space.find_vma(uvaddr).ok_or(EFAULT)?;
 
         match &vma.vma_type {
             VMAType::File { file, page_index } => FutexKey::SharedFile {
@@ -410,10 +411,21 @@ pub fn get_futex_key(uaddr: *mut u32, private: bool) -> Result<FutexKey, Syscall
                 offset: *page_index * PAGE_BYTES as u64 + inpage_off as u64,
             },
             VMAType::Anonymous => {
-                let existing_pte = cur_addr_space.get_page_table().at::<0>(uvaddr.into());
+                let existing_pte = addr_space.get_page_table().at::<0>(uvaddr.into());
 
-                let pte = existing_pte.expect("TODO");
-                let phys_page = PhysPageNum::from_pte(pte);
+                let pte = if let Some(pte) = existing_pte {
+                    *pte
+                } else {
+                    drop(addr_space);
+
+                    let mut addr_space = cur_addr_space.write();
+                    addr_space
+                        .handle_page_fault(uvaddr, PageFaultType::Read)
+                        .map_err(|_| EFAULT)?;
+                    *addr_space.get_page_table().at::<0>(uvaddr.into()).unwrap()
+                };
+
+                let phys_page = PhysPageNum::from_pte(&pte);
 
                 FutexKey::SharedAnon {
                     addr: PhysAddr(PhysAddr::from(phys_page).0 + inpage_off),

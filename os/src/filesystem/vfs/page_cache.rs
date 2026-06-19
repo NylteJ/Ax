@@ -1,4 +1,4 @@
-use core::{ops::Deref, ptr::NonNull};
+use core::{num::NonZeroUsize, ops::Deref, ptr::NonNull};
 
 use intrusive_collections::{LinkedListLink, UnsafeRef, intrusive_adapter};
 use xarray::XArray;
@@ -87,5 +87,17 @@ impl PageCache {
         };
 
         unsafe { PAGE_METADATAS.mark_new_page(phys_page, page_type) }
+    }
+
+    pub fn truncate(&self, new_page_count: u64) {
+        unsafe { self.inode.as_ref().fs.as_ref() }.writeback(NonZeroUsize::MAX); // FIXME?
+
+        let mut data_guard = self.data.write();
+
+        let mut cursor = data_guard.pages.cursor_mut(new_page_count);
+        cursor.next();
+        while cursor.remove().is_some() {
+            cursor.next();
+        }
     }
 }

@@ -10,12 +10,17 @@ use buddy_system_allocator::Heap;
 #[cfg(debug_assertions)]
 use hashbrown::{DefaultHashBuilder, HashMap};
 
-use crate::basic::sync::Mutex;
+use crate::{basic::sync::Mutex, filesystem::filesystems::foreach_filesystem};
 
 const HEAP_SIZE_BYTES: usize = if cfg!(debug_assertions) {
     256 * 1024 * 1024 // 256 MB（因为此时的内核栈非常非常大）
 } else {
-    64 * 1024 * 1024 // 64 MB（FIXME：其实这也有点大了，未来加栈溢出检测时可以将内核栈独立出去）
+    // FIXME：其实这也有点大了，未来加栈溢出检测时可以将内核栈独立出去
+    if cfg!(target_arch = "riscv64") {
+        64 * 1024 * 1024 // 64 MB
+    } else {
+        128 * 1024 * 1024 // 128 MB（我也不知道为什么但 ltp 就是要这么多）
+    }
 };
 
 const BUDDY_SYSTEM_ALLOCATOR_ORDER: usize =
@@ -61,10 +66,7 @@ impl GlobalAllocatorInner {
             );
         }
 
-        unsafe {
-            self.allocator
-                .dealloc(unsafe { NonNull::new_unchecked(ptr) }, layout)
-        };
+        unsafe { self.allocator.dealloc(NonNull::new_unchecked(ptr), layout) };
     }
 
     const fn new() -> Self {
@@ -120,7 +122,36 @@ struct GlobalAllocator(Mutex<GlobalAllocatorInner>);
 
 unsafe impl GlobalAlloc for GlobalAllocator {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        unsafe { self.0.lock().alloc(layout) }
+        let try_alloc = || NonNull::new(unsafe { self.0.lock().alloc(layout) });
+
+        let get_rest_bytes = || {
+            let guard = self.0.lock();
+            guard.allocator.stats_total_bytes() - guard.allocator.stats_alloc_actual()
+        };
+
+        try_alloc().or_else(||{
+            log::warn!(
+                "内核堆内存不足，无法完成 {layout:?} 的分配请求（当前堆内存剩余 {} 字节），正在尝试释放内存...",
+                get_rest_bytes()
+            );
+
+            foreach_filesystem(|fs| {
+                let gced = fs.full_gc();
+                log::info!("从 FileSystem {fs:p} 中回收了 {gced} 个 DEntry");
+            });
+
+            log::info!("回收完毕，当前堆内存剩余 {} 字节", get_rest_bytes());
+
+            try_alloc()
+        }).or_else(||{
+            log::warn!("分配请求仍然失败！尝试更激进的回收策略...");
+
+            foreach_filesystem(|fs| fs.shrink_cache());
+
+            log::info!("激进回收完毕，当前堆内存剩余 {} 字节", get_rest_bytes());
+
+            try_alloc()
+        }).map_or(null_mut(), |ptr| ptr.as_ptr())
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
@@ -171,4 +202,29 @@ pub fn init_heap() {
 
 pub unsafe fn force_unlock_heap() {
     unsafe { GLOBAL_ALLOCATOR.0.assume_unlocked() };
+}
+
+#[cfg_attr(not(debug_assertions), inline(always))]
+pub fn debug_assert_heap_mem_valid<T>(ptr: *const T) {
+    #[cfg(debug_assertions)]
+    {
+        let mut allocator = GLOBAL_ALLOCATOR.0.lock();
+        let allocated = unsafe { allocator.allocated.assume_init_ref() };
+
+        use core::any::type_name;
+
+        let ptr_addr = ptr.addr();
+        let Some(layout) = allocated.get(&ptr_addr) else {
+            panic!(
+                "{} 类型的指针 {ptr_addr:#x} 不在已分配的堆内存中，或未指向分配的内存的起始位置",
+                type_name::<T>()
+            );
+        };
+        assert_eq!(
+            Layout::new::<T>(),
+            *layout,
+            "{} 类型的指针 {ptr_addr:#x} 指向的堆内存布局不匹配",
+            type_name::<T>()
+        );
+    }
 }

@@ -624,3 +624,21 @@ pub extern "C" fn exit_group(code: isize) -> ! {
 
     exit(code)
 }
+
+pub extern "C" fn setpgid(pid: usize, pgid: usize) -> SyscallResult {
+    let task = if pid == 0 {
+        unsafe { current_task().as_ref_unchecked() }
+    } else {
+        &get_task_by_tid(pid).ok_or(ESRCH)?
+    };
+
+    if get_task_by_tid(pgid).is_none() {
+        return EPERM;
+    }
+
+    if task.process.pgid != pgid {
+        todo!()
+    }
+
+    SyscallResult::success(0)
+}

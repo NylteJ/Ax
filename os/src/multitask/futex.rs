@@ -189,8 +189,9 @@ impl FutexGuard<'_> {
 
         drop(self); // 释放锁
 
+        let _timeout_guard;
         if let Some(ddl_tick) = ddl_tick {
-            wake_task_when(cur_task, ddl_tick);
+            _timeout_guard = wake_task_when(cur_task, ddl_tick);
         }
 
         Task::sleep_current();

@@ -99,7 +99,14 @@ impl INodeMode {
         Self::from_bits_retain(self.bits() & 0xF000)
     }
     pub fn set_kind(&mut self, kind: Self) {
-        *self = Self::from_bits_retain((self.bits() & 0o777) | kind.bits())
+        *self = self.perm() | kind;
+    }
+
+    pub fn perm(&self) -> Self {
+        Self::from_bits_retain(self.bits() & 0o777)
+    }
+    pub fn set_perm(&mut self, perm: Self) {
+        *self = self.kind() | perm;
     }
 }
 
@@ -141,6 +148,14 @@ impl<T: INodeOps> INode<T> {
             _dummy: (),
             data: RwLock::new(data),
         })
+    }
+
+    pub fn new_uncached(id: u32, fs: NonNull<FileSystem>, data: INodeData<T>) -> INodeArc {
+        let ret = Self::new_raw(id, fs, data);
+
+        unsafe { *ret.in_icache.get() = false };
+
+        ret
     }
 }
 
@@ -298,9 +313,9 @@ impl<T: ?Sized + INodeOps> INodeData<T> {
     }
     /// 在当前 INode 中删除对应 `dentry` 的空目录节点。
     pub fn rmdir(&mut self, dentry: &DEntryArc) -> VfsResult<()> {
-        if self.hard_links > 2 {
-            return Err(VfsError::DirectoryNotEmpty);
-        }
+        // if self.hard_links > 2 {
+        //     return Err(VfsError::DirectoryNotEmpty);
+        // }
 
         self.ops.rmdir(dentry)?;
         unhash(dentry.deref());

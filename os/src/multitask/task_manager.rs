@@ -50,3 +50,12 @@ pub fn get_task_by_tid(pid: usize) -> Option<TaskArc> {
     task.refcount.fetch_add(1, Ordering::Relaxed);
     Some(task)
 }
+
+pub fn foreach_task(f: impl FnMut(&Task)) {
+    // TODO: 性能优化（侵入式链表，请）
+    PID_TASK_MAP
+        .read()
+        .iter()
+        .filter_map(|ptr| unsafe { ptr.0.as_ref() })
+        .for_each(f);
+}

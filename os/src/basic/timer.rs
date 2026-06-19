@@ -1,10 +1,10 @@
-use core::{mem::replace, ops::Bound, ptr::NonNull};
-
-use alloc::collections::btree_map::BTreeMap;
+use intrusive_collections::{
+    Bound, KeyAdapter, RBTree as IntrusiveRBTree, RBTreeLink, UnsafeRef, intrusive_adapter,
+};
 
 use crate::{
     arch::{self, interfaces::Chrono},
-    basic::{UnsafeInited, cold_path, sync::Mutex},
+    basic::{UnsafeInited, sync::Mutex},
     multitask::task::Task,
 };
 
@@ -38,62 +38,103 @@ pub fn init_clock_freq() {
     unsafe { UnsafeInited::init_unsafe(&CLOCK_FREQ, arch::NativeChrono::get_clock_freq()) };
 }
 
-struct TaskPtr(pub NonNull<Task>);
-unsafe impl Send for TaskPtr {}
-unsafe impl Sync for TaskPtr {}
+intrusive_adapter!(TaskTimerAdapter = UnsafeRef<Task>: Task { timer_rbtree_link => RBTreeLink });
 
-static TIMERS: Mutex<BTreeMap<usize, TaskPtr>> = Mutex::new(BTreeMap::new());
+fn timeout_tick(task: &Task) -> usize {
+    *unsafe { task.timer_rbtree_key.get().as_ref_unchecked() }
+}
+fn set_timeout_tick(task: &Task, tick: usize) {
+    *unsafe { task.timer_rbtree_key.get().as_mut_unchecked() } = tick;
+}
 
-pub fn wake_task_when(task: &Task, cpu_tick: usize) {
-    let task = TaskPtr(NonNull::from(task));
-
-    let mut timers = TIMERS.lock();
-
-    let mut cursor = timers.lower_bound_mut(Bound::Excluded(&cpu_tick));
-    debug_assert!(
-        cursor.peek_prev().is_none_or(|(tick, _)| *tick <= cpu_tick)
-            && cursor.peek_next().is_none_or(|(tick, _)| *tick > cpu_tick)
-    );
-
-    if cursor.peek_prev().is_none_or(|(tick, _)| *tick != cpu_tick) {
-        unsafe { cursor.insert_after_unchecked(cpu_tick, task) };
-    } else {
-        let mut new_tick = cpu_tick + 1;
-        while cursor
-            .peek_next()
-            .is_some_and(|(tick, _)| *tick == new_tick)
-        {
-            cursor.next();
-            new_tick += 1;
-        }
-
-        debug_assert!(cursor.peek_next().is_none_or(|(tick, _)| *tick > new_tick));
-        unsafe { cursor.insert_after_unchecked(new_tick, task) };
+impl<'a> KeyAdapter<'a> for TaskTimerAdapter {
+    type Key = usize;
+    fn get_key(&self, s: &'a Task) -> usize {
+        timeout_tick(s)
     }
 }
 
-pub fn check_timers() {
-    let timeouted = {
-        let mut timers = TIMERS.lock();
-        let tick = get_cpu_tick();
+static TIMERS: UnsafeInited<Mutex<IntrusiveRBTree<TaskTimerAdapter>>> =
+    unsafe { UnsafeInited::uninit() };
 
-        // 绝大多数时候我们并不需要唤醒任何任务，因此先判断以避免在此时产生堆分配
-        // （是的，BTreeMap::split_off 在没有 split 任何东西时也会产生堆分配）
-        if timers
-            .lower_bound(Bound::Excluded(&tick))
-            .peek_prev()
-            .is_none()
-        {
-            return;
+struct RemoveTimerGuard<'a> {
+    task: &'a Task,
+}
+
+impl<'a> Drop for RemoveTimerGuard<'a> {
+    fn drop(&mut self) {
+        let mut timers = TIMERS.lock();
+
+        if !self.task.timer_rbtree_link.is_linked() {
+            return; // 说明已经超时唤醒过了
         }
 
-        cold_path();
+        unsafe {
+            timers
+                .cursor_mut_from_ptr(self.task)
+                .remove()
+                .unwrap_unchecked()
+        };
+    }
+}
 
-        let rest = timers.split_off(&tick);
-        replace(&mut *timers, rest)
+pub fn init() {
+    unsafe {
+        UnsafeInited::init_unsafe(
+            &TIMERS,
+            Mutex::new(IntrusiveRBTree::new(TaskTimerAdapter::new())),
+        )
     };
+}
 
-    for task in timeouted.into_values() {
-        unsafe { task.0.as_ref() }.try_wake();
+#[must_use = "返回值是 RAII 守卫"]
+pub fn wake_task_when(task: &Task, cpu_tick: usize) -> impl Drop + '_ {
+    let task_uref = unsafe { UnsafeRef::from_raw(task) };
+
+    let mut timers = TIMERS.lock();
+
+    let mut cursor = timers.lower_bound_mut(Bound::Included(&cpu_tick));
+    debug_assert!(
+        cursor
+            .peek_prev()
+            .get()
+            .is_none_or(|task| timeout_tick(task) < cpu_tick)
+            && cursor
+                .get()
+                .is_none_or(|task| timeout_tick(task) >= cpu_tick)
+    );
+
+    let mut actual_tick = cpu_tick;
+    while cursor
+        .get()
+        .is_some_and(|task| timeout_tick(task) == actual_tick)
+    {
+        cursor.move_next();
+        actual_tick += 1;
+    }
+
+    debug_assert!(
+        cursor
+            .peek_prev()
+            .get()
+            .is_none_or(|task| timeout_tick(task) < actual_tick)
+            && cursor
+                .get()
+                .is_none_or(|task| timeout_tick(task) > actual_tick)
+    );
+    set_timeout_tick(task, actual_tick);
+    cursor.insert_before(task_uref);
+
+    return RemoveTimerGuard { task };
+}
+
+pub fn check_timers() {
+    let mut timers = TIMERS.lock();
+    let tick = get_cpu_tick();
+
+    // 注意这里需要一直持有锁，否则我们还得用非侵入式容器盛装超时的任务（不然 RemoveTimerGuard 会认为 Task 还在红黑树中）
+    let mut cursor = timers.front_mut();
+    while cursor.get().is_some_and(|task| timeout_tick(task) <= tick) {
+        cursor.remove().unwrap().try_wake();
     }
 }

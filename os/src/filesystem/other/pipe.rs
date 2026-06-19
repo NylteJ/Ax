@@ -23,12 +23,13 @@ use crate::{
         get_new_anon_block_device_id,
         vfs::{self, VfsError, VfsResult},
     },
-    memory::PAGE_BYTES,
     multitask::{current_task, signal::SignalId},
     syscall::filesystem::{KstatInner, Time},
 };
 
-const BUFFER_BYTES: usize = 4096;
+// ltp 会开非常非常多的 pipe，所以这个值最好别设太大
+// 但注意 POSIX 标准规定保证原子性的写入数据量至少为 512 字节，因此也最好不要比那还小，否则实现会变得很麻烦
+const BUFFER_BYTES: usize = 512;
 
 type RingBuffer = ringbuf::LocalRb<ringbuf::storage::Array<u8, BUFFER_BYTES>>;
 
@@ -209,9 +210,11 @@ impl vfs::FileOps for PipeWriteFile {
         let atomic = len <= BUFFER_BYTES;
         if atomic {
             let buffer = loop {
-                let buffer = pipe.buffer.lock();
-                if buffer.vacant_len() >= len {
-                    break buffer;
+                {
+                    let buffer = pipe.buffer.lock();
+                    if buffer.vacant_len() >= len {
+                        break buffer;
+                    }
                 }
                 check_pipe_alive(pipe)?;
                 crate::syscall::basic::yield_(); // 假装睡眠
@@ -221,9 +224,11 @@ impl vfs::FileOps for PipeWriteFile {
         } else {
             loop {
                 let buffer = loop {
-                    let buffer = pipe.buffer.lock();
-                    if buffer.vacant_len() > 0 {
-                        break buffer;
+                    {
+                        let buffer = pipe.buffer.lock();
+                        if buffer.vacant_len() > 0 {
+                            break buffer;
+                        }
                     }
                     check_pipe_alive(pipe)?;
                     crate::syscall::basic::yield_(); // 假装睡眠
@@ -278,7 +283,7 @@ impl Drop for PipeWriteFile {
 pub fn new_anonymous_pipes() -> (vfs::FileArc, vfs::FileArc) {
     let fs = NonNull::from_ref(&**PIPE_FS);
 
-    let inode = vfs::INode::new_raw(
+    let inode = vfs::INode::new_uncached(
         PIPE_FS.ops.inode_id.fetch_add(1, Ordering::Relaxed),
         fs,
         vfs::INodeData {
@@ -437,7 +442,7 @@ impl vfs::INodeOps for PipeINode {
             st_gid: 0, // FIXME
             st_rdev: 0,
             st_size: 0,
-            st_blksize: PAGE_BYTES as u32,
+            st_blksize: BUFFER_BYTES as u32,
             st_blocks: 0,
             st_atime: Time::from_sec(0), // FIXME
             st_mtime: Time::from_sec(0), // FIXME

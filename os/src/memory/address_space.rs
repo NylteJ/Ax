@@ -465,10 +465,10 @@ impl AddressSpace {
                 }
             }
             VMAType::File { file, page_index } => 'handle: {
+                let old_entry = self.page_table.at_mut(virt_page_num);
+
                 if !vma.flags.contains(VMAFlags::Shared) {
                     // 私有映射
-                    let old_entry = self.page_table.at_mut(virt_page_num);
-
                     if let Some(old_entry) = old_entry {
                         // 写时复制
                         debug_assert_eq!(fault_type, PageFaultType::Write);
@@ -504,6 +504,17 @@ impl AddressSpace {
                         // 我们最终还是要复制一次。那么，再考虑到页缓存也是必要的，也就是说无论如何我们都要读取两次，因此两次 trap
                         // 也是完全可接受的。
                         page_flag.remove(PTEFlags::Write);
+                    }
+                } else {
+                    // 共享映射
+                    if let Some(old_entry) = old_entry {
+                        // FIXME：这里实际上是在给 clone_cow 擦屁股，因为 clone_cow 理论上不应修改共享映射
+                        //        无论如何，这里实际上什么都不用做，我们直接修改对应权限位即可
+                        debug_assert_eq!(fault_type, PageFaultType::Write);
+                        debug_assert!(!old_entry.flags().contains(PTEFlags::Write));
+
+                        old_entry.bits |= PTEFlagsNative::from(PTEFlags::Write).bits();
+                        break 'handle;
                     }
                 }
 

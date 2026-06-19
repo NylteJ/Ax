@@ -1,3 +1,4 @@
+use core::ffi::c_int;
 use core::ffi::c_void;
 use core::slice;
 use core::sync::atomic::Ordering;
@@ -8,6 +9,7 @@ use crate::basic::timer::cpu_tick_to_us;
 use crate::basic::timer::get_cpu_tick;
 use crate::filesystem::devfs::drivers::URANDOM_DRIVER;
 use crate::filesystem::vfs::FileOps;
+use crate::memory::uaccess::copy_one_from_user;
 use crate::memory::uaccess::copy_one_to_user;
 use crate::memory::uaccess::copy_slice_to_user;
 use crate::memory::uaccess::copy_to_user;
@@ -24,6 +26,13 @@ pub struct TimeVal {
     pub usec: usize,
 }
 
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct TimeZone {
+    pub minuteswest: c_int,
+    pub dsttime: c_int,
+}
+
 /// * 功能：获取时间；
 /// * 输入： timespec结构体指针用于获得时间值；
 /// * 返回值：成功返回0，失败返回-1;
@@ -31,8 +40,9 @@ pub struct TimeVal {
 /// struct timespec *ts;
 /// int ret = syscall(SYS_gettimeofday, ts, 0);
 /// ```
-pub extern "C" fn gettimeofday(tv: *mut TimeVal, tz: usize) -> SyscallResult {
-    if tz != 0 {
+pub extern "C" fn gettimeofday(tv: *mut TimeVal, tz: *mut TimeZone) -> SyscallResult {
+    if !tz.is_null() {
+        let _ = copy_one_from_user(tz);
         log::error!("gettimeofday 不支持时区");
         return EINVAL;
     }
@@ -85,7 +95,7 @@ pub extern "C" fn uname(uts: *mut c_void) -> SyscallResult {
         [
             entry(b"Ax"),        // sysname
             entry(b"Ax"),        // nodename
-            entry(b"5 (fake)"),  // release
+            entry(b"5.7.0"),     // release
             entry(b"0.0.1"),     // version
             entry(b"Unknown"),   // machine
             entry(b"localhost"), // domainname

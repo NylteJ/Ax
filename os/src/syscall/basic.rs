@@ -3,7 +3,11 @@ use core::{mem::replace, ptr::addr_eq, slice};
 use num_enum::TryFromPrimitive;
 
 use crate::{
-    basic::{cleanup_and_shutdown, shared_with_asm::SharedWithAsm, timer::get_cpu_tick},
+    basic::{
+        cleanup_and_shutdown,
+        shared_with_asm::SharedWithAsm,
+        timer::{check_timers, get_cpu_tick},
+    },
     memory::uaccess::{copy_from_user, copy_one_from_user, copy_one_to_user, copy_to_user},
     multitask::{
         current_task,
@@ -58,6 +62,12 @@ pub extern "C" fn exit(ec: isize) -> ! {
     }
     debug_assert!(cur.tid != INIT_PID, "init 进程不应退出");
 
+    // FIXME...?
+    if cur.tid == INIT_PID {
+        println!("init 进程退出，关机");
+        cleanup_and_shutdown();
+    }
+
     cur.on_exit(SignalId::SIGINVAL, ec as u8);
 
     let Some(next_task) = TASK_SCHEDULER.lock().pick_next() else {
@@ -80,17 +90,17 @@ pub extern "C" fn yield_() -> isize {
     //     unsafe { current_task().as_ref_unchecked() }.tid
     // );
 
+    // FIXME: 这实际上是目前用 yield 模拟 sleep 所需要的变通方案
+    //        正统 sleep 会检查这一点
+    check_timers();
+
     let mut scheduler = TASK_SCHEDULER.lock();
     let cur = current_task();
     scheduler.add_task(unsafe { TaskArc::from_asm(cur) });
     let next_task = scheduler.pick_next().unwrap();
     drop(scheduler);
 
-    if !addr_eq(&*next_task, cur) {
-        Task::switch_to(next_task);
-    } else {
-        unsafe { next_task.into_asm() };
-    }
+    Task::switch_to_maybe_current(next_task);
 
     0
 }

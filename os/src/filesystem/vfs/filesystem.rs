@@ -70,6 +70,7 @@ impl<T: FileSystemOps + 'static> FileSystem<T> {
             let addr = NonNull::new(weak.as_ptr() as *mut FileSystem<T>).unwrap();
             let (root_inode, init_root_dentry) = roots(addr, &ops);
             root_inode.data.write().mode.set_kind(INodeMode::Directory); // 根目录一定要是目录 \o/
+            debug_assert!(unsafe { *root_inode.in_icache.get() });
             FileSystem {
                 dev,
                 dcache: RwLock::new(HashMap::new()),
@@ -136,6 +137,8 @@ impl FileSystem {
     }
 
     /// 回收至多 `max_count` 个 DEntry，返回实际回收的数量
+    ///
+    /// 注意此处回收的 DEntry 可能导致更多 DEntry 变得可被回收
     pub fn gc(&self, max_count: NonZero<usize>) -> usize {
         // 注意这里 DCache 锁必须一直持有，以防查找操作复活 DEntry
         let mut dcache_guard = self.dcache.write();
@@ -188,10 +191,19 @@ impl FileSystem {
     }
 
     /// 尽可能多地回收 DEntry，返回实际回收的数量
-    ///
-    /// 注意，由于回收 DEntry 这一过程可能导致新的 DEntry 进入 LRU 链表，它并不保证回收全部可回收的 DEntry。
     pub fn full_gc(&self) -> usize {
-        self.gc(NonZero::<usize>::MAX)
+        let mut ret = 0;
+        while let released = self.gc(NonZero::<usize>::MAX)
+            && released > 0
+        {
+            ret += released;
+        }
+        ret
+    }
+
+    pub fn shrink_cache(&self) {
+        self.dcache.write().shrink_to_fit();
+        self.icache.write().shrink_to_fit();
     }
 
     pub fn writeback(&self, max_count: NonZero<usize>) {
