@@ -16,12 +16,7 @@ unsafe impl Hal for VirtIOHal {
     // 我们已经断言 PCI 设备支持硬件维护一致性，因此这里可以直接像普通分配器一样分配内存
 
     fn dma_alloc(pages: usize, _direction: BufferDirection) -> (PhysAddr, NonNull<u8>) {
-        let page = PhysPageNum::<0>(
-            FRAME_ALLOCATOR
-                .lock()
-                .alloc(pages)
-                .expect("物理页分配不应失败"),
-        );
+        let page = FRAME_ALLOCATOR.alloc(pages);
 
         // 注意：这里分配的页直接交给库，不由我们管理，因此也不用注册到 PAGE_METADATAS
         log::debug!(
@@ -47,7 +42,7 @@ unsafe impl Hal for VirtIOHal {
         );
 
         let page = PhysPageNum::<0>::from(MyPhysAddr(paddr as usize));
-        FRAME_ALLOCATOR.lock().dealloc(page.0, pages);
+        FRAME_ALLOCATOR.dealloc(page, pages);
 
         log::debug!(
             "为 VirtIO 设备解分配了 {pages} 页物理内存，起始页号 {:#x}",

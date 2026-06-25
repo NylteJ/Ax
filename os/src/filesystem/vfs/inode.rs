@@ -214,6 +214,8 @@ pub trait INodeOps: Any {
     ///
     /// 建议实现至少在硬链接计数也归零时返回 `true`。
     fn evictable_when_mem_ref_zero(&mut self) -> bool;
+
+    fn truncate_shrink_size(&mut self, new_size: u64) {}
 }
 
 /// `evictable_when_mem_ref_zero` 的默认实现，只在 `hard_links` 也归零时销毁 INode。
@@ -338,6 +340,12 @@ impl<T: ?Sized + INodeOps> INodeData<T> {
 
     pub fn get_kstat(&self) -> VfsResult<KstatInner> {
         self.ops.get_kstat()
+    }
+
+    pub fn truncate_shrink_size(&mut self, new_size: u64) {
+        debug_assert!(new_size <= self.file_size);
+        self.file_size = new_size;
+        self.ops.truncate_shrink_size(new_size);
     }
 }
 

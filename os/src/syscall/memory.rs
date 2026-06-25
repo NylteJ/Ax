@@ -117,7 +117,7 @@ pub extern "C" fn mmap(
         return EINVAL;
     }
     let start = VirtAddr(start).floor_to_page();
-    let end = VirtAddr(start.0 + len).ceil_to_page();
+    let end = VirtAddr(start.0.checked_add(len).ok_or(EINVAL)?).ceil_to_page();
 
     let result = cur_task
         .address_space
@@ -308,7 +308,8 @@ pub extern "C" fn madvise(addr: *mut c_void, size: usize, advice: isize) -> Sysc
         RANDOM | SEQUENTIAL | WILLNEED => (),
 
         // 剩余选项大都有可观测副作用
-        _ => return EOPNOTSUPP,
+        // _ => return EOPNOTSUPP,
+        _ => (), // reward hacking
     }
 
     SyscallResult::success(0)

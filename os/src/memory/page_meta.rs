@@ -97,9 +97,9 @@ impl PageMeta {
         if old == 1 {
             match self.page_type {
                 PageType::Anonymous | PageType::File { .. } => {
-                    let physical_page_num = self.get_index() + METAS_ARRAY_OFFSET;
+                    let phys_page_num = self.get_index() + METAS_ARRAY_OFFSET;
 
-                    FRAME_ALLOCATOR.lock().dealloc(physical_page_num, 1);
+                    FRAME_ALLOCATOR.dealloc(PhysPageNum(phys_page_num), 1);
 
                     // crate::println!(
                     //     "Page {physical_page_num:#x} released (type: {:?})",
@@ -141,7 +141,7 @@ impl PageMeta {
     }
 
     pub unsafe fn pagecache_mark_dirty(&self, page_cache: &PageCache) {
-        let PageType::File { page_index, .. } = &self.page_type else {
+        let PageType::File { .. } = &self.page_type else {
             unsafe { unreachable_unchecked() };
         };
 
@@ -151,10 +151,10 @@ impl PageMeta {
         let old_flags = PageFlags::from_bits_retain(old_flags);
 
         if !old_flags.intersects(PageFlags::Dirty | PageFlags::WritingBack) {
-            log::trace!(
-                "INode {:#x} Page {page_index} become Dirty",
-                page_cache.inode.addr()
-            );
+            // log::trace!(
+            //     "INode {:#x} Page {page_index} become Dirty",
+            //     page_cache.inode.addr()
+            // );
             page_cache
                 .data
                 .write()
@@ -216,6 +216,10 @@ impl Deref for PageMetaGuard {
     type Target = PageMeta;
 
     fn deref(&self) -> &Self::Target {
+        debug_assert!(
+            self.reference.ref_count.load(Ordering::Relaxed) > 0
+                || matches!(&self.reference.page_type, PageType::Phantom)
+        );
         self.reference.get_ref()
     }
 }

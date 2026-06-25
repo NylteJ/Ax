@@ -266,6 +266,7 @@ impl INodeOps for Ext4INode {
             let inline_storge = bytemuck::cast_slice_mut(&mut inode_ref.inode.block);
             inline_storge[..target_bytes].copy_from_slice(&target);
             inline_storge[target_bytes] = b'\0';
+            inode_ref.inode.set_flags(0);
         } else {
             todo!()
         }
@@ -308,6 +309,12 @@ impl INodeOps for Ext4INode {
 
     fn evictable_when_mem_ref_zero(&mut self) -> bool {
         true
+    }
+
+    fn truncate_shrink_size(&mut self, new_size: u64) {
+        let fs = vfs::INode::get_filesystem::<Ext4Fs>(self);
+        let ext4 = unsafe { extend_lifetime(&fs.ops.ext4) };
+        ext4.truncate_inode(&mut self.inode, new_size).unwrap();
     }
 }
 

@@ -28,17 +28,10 @@ impl FileSystemOps for Ext4Fs {
 
         let ino_data_rguard = inode.data.read();
         let file_size = ino_data_rguard.file_size;
-
-        // FIXME: 是否当真不需要写回？
-        let mut inode_ref = unsafe {
-            (&raw const ino_data_rguard.ops)
-                .cast::<Ext4INode>()
-                .as_ref_unchecked()
-        }
-        .inode
-        .clone();
-
         drop(ino_data_rguard);
+
+        // Read the inode fresh from disk to get the latest extent tree state.
+        let mut inode_ref = self.ext4.get_inode_ref(inode.id);
 
         let offset = page_index * PAGE_BYTES as u64;
         let actual_size = file_size - offset;
@@ -46,6 +39,19 @@ impl FileSystemOps for Ext4Fs {
 
         self.ext4
             .write_at_2(&mut inode_ref, offset as usize, &page_data[..end_off])?;
+
+        // Update the VFS inode cache with the now-correct on-disk state.
+        let mut ino_data_wguard = inode.data.write();
+        let vfs_file_size = ino_data_wguard.file_size;
+        let ext4_inode = unsafe {
+            (&raw mut ino_data_wguard.ops)
+                .cast::<Ext4INode>()
+                .as_mut_unchecked()
+        };
+        ext4_inode.inode = inode_ref;
+        if vfs_file_size > ext4_inode.inode.inode.size() {
+            ext4_inode.inode.inode.set_size(vfs_file_size);
+        }
 
         Ok(())
     }
@@ -58,18 +64,8 @@ impl FileSystemOps for Ext4Fs {
     ) -> VfsResult<usize> {
         debug_assert!((&inode.data.read().ops as &dyn Any).is::<Ext4INode>());
 
-        let ino_data_rguard = inode.data.read();
-
-        // FIXME: 同上
-        let mut inode_ref = unsafe {
-            (&raw const ino_data_rguard.ops)
-                .cast::<Ext4INode>()
-                .as_ref_unchecked()
-        }
-        .inode
-        .clone();
-
-        drop(ino_data_rguard);
+        // Read the inode fresh from disk to get the latest extent tree state.
+        let mut inode_ref = self.ext4.get_inode_ref(inode.id);
 
         Ok(self
             .ext4

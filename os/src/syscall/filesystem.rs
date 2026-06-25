@@ -320,15 +320,19 @@ pub extern "C" fn openat(
 
     let file = if file_open_flags.contains(FileOpenFlags::O_CREAT) {
         match walked {
-            crate::filesystem::vfs::WalkedPath::Positive(Path(dentry, mount)) => {
+            vfs::WalkedPath::Positive(Path(dentry, mount)) => {
                 if file_open_flags.contains(FileOpenFlags::O_EXCL) {
                     return EEXIST;
                 }
                 dentry.data.lock().ops.open(mount, file_flags)?
             }
-            crate::filesystem::vfs::WalkedPath::Negative(neg) => {
+            vfs::WalkedPath::Negative(neg) => {
                 if !file_open_flags.contains(FileOpenFlags::O_CREAT) {
                     return ENOENT;
+                }
+
+                if file_open_flags.contains(FileOpenFlags::O_DIRECTORY) {
+                    return ENOTDIR; // 无从创建
                 }
 
                 let mode = INodeMode::from_bits(mode as u16).ok_or(EINVAL)?;
@@ -346,6 +350,13 @@ pub extern "C" fn openat(
 
         path.0.data.lock().ops.open(path.1, file_flags)?
     };
+
+    // 若有 O_DIRECTORY，则目标必须是目录（O_CREATE 的路径上面检查过了）
+    if file_open_flags.contains(FileOpenFlags::O_DIRECTORY)
+        && file.get_inode().data.read().mode.kind() != INodeMode::Directory
+    {
+        return ENOTDIR;
+    }
 
     let fd_entry = if file_open_flags.contains(FileOpenFlags::O_CLOEXEC) {
         FDTableEntry::cloexec(file)
@@ -1673,12 +1684,14 @@ pub extern "C" fn ftruncate64(fd: isize, length: u64) -> SyscallResult {
     let old_length = inode_wguard.file_size;
 
     if old_length > length {
-        // FIXME: 这里最好还是要下放到底层文件系统，比如我们现在的 Ext4 这里其实就会出问题
-        inode_wguard.file_size = length;
-        if let Some(page_cache) = &mut inode_wguard.page_cache {
+        inode_wguard.truncate_shrink_size(length);
+
+        let inode_rguard = inode_wguard.downgrade(); // 避免阻塞写回
+
+        if let Some(page_cache) = &inode_rguard.page_cache {
             page_cache.truncate(length / PAGE_BYTES as u64);
         }
-    } else {
+    } else if old_length < length {
         drop(inode_wguard); // FIXME: 这里其实也有竞态窗口
 
         let mut file_guard = file.data.lock();
@@ -1690,6 +1703,38 @@ pub extern "C" fn ftruncate64(fd: isize, length: u64) -> SyscallResult {
             },
             length - old_length,
         )?;
+    }
+
+    log::trace!("truncated INode {inode:p}, {old_length} -> {length}");
+
+    SyscallResult::success(0)
+}
+
+pub extern "C" fn fchownat(
+    dirfd: isize,
+    path: *const c_char,
+    owner: isize,
+    group: isize,
+    flags: usize,
+) -> SyscallResult {
+    let path = copy_str_from_user(path, FILENAME_LEN_HINT, PATH_LEN_MAX)?;
+    let walk_path_from = parse_walk_path_from(dirfd, path.as_ref())?;
+
+    let path = walk_path(walk_path_from)?.ensure()?;
+
+    if flags != 0 {
+        log::error!("TODO: 处理 fchownat 的 flags: {flags:#x}");
+        let _ = flags;
+    }
+
+    if owner != -1 {
+        log::error!("TODO: 处理 fchownat 的 owner: {owner}");
+        let _ = owner;
+    }
+
+    if group != -1 {
+        log::error!("TODO: 处理 fchownat 的 group: {group}");
+        let _ = group;
     }
 
     SyscallResult::success(0)

@@ -23,10 +23,10 @@ use crate::{
         vfs::{FileFlags, PathToWalk, walk_path},
     },
     memory::{
-        STACK_ALIGN,
+        PAGE_BYTES, STACK_ALIGN,
         uaccess::{
             CopyError, copy_from_user, copy_from_user_uninit, copy_one_from_user, copy_one_to_user,
-            copy_str_from_user, copy_to_user,
+            copy_str_from_user, copy_to_user, copy_vec_from_user,
         },
     },
     multitask::{
@@ -164,7 +164,7 @@ impl CloneFlags {
 }
 
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, bytemuck::AnyBitPattern)]
 pub struct CloneArgs {
     // https://www.man7.org/linux/man-pages/man2/clone3.2.html
     flags: u64,
@@ -181,11 +181,29 @@ pub struct CloneArgs {
 }
 
 pub extern "C" fn clone3(cl_args: *mut CloneArgs, size: usize) -> SyscallResult {
-    if size != size_of::<CloneArgs>() {
-        todo!("{size} vs. {}", size_of::<CloneArgs>());
-    }
+    const CLONE_ARGS_SIZE: usize = size_of::<CloneArgs>();
+    let args = if size != CLONE_ARGS_SIZE {
+        static_assertions::const_assert!(CLONE_ARGS_SIZE <= PAGE_BYTES);
+        if size > PAGE_BYTES {
+            return E2BIG;
+        }
 
-    let args = copy_one_from_user(cl_args)?;
+        if size > CLONE_ARGS_SIZE {
+            let cl_args_raw = core::ptr::slice_from_raw_parts(cl_args.cast::<u8>(), size);
+
+            let data = copy_vec_from_user(cl_args_raw)?;
+            if data[size..].iter().any(|byte| *byte != 0) {
+                return E2BIG;
+            }
+
+            bytemuck::cast_slice(&data[..CLONE_ARGS_SIZE])[0]
+        } else {
+            debug_assert!(size < CLONE_ARGS_SIZE);
+            return EINVAL;
+        }
+    } else {
+        copy_one_from_user(cl_args)?
+    };
 
     let flags = (args.flags >> 8).try_into().map_err(|_| EINVAL)?;
     let flags = CloneFlags::from_bits(flags).ok_or(EINVAL)?;
@@ -204,7 +222,11 @@ pub extern "C" fn clone3(cl_args: *mut CloneArgs, size: usize) -> SyscallResult 
 
     assert!(!flags.contains(CloneFlags::NEWPID), "TODO");
     assert!(!flags.contains(CloneFlags::NEWCGROUP), "TODO");
-    assert!(!flags.contains(CloneFlags::PIDFD), "TODO");
+
+    if flags.contains(CloneFlags::PIDFD) {
+        log::error!("TODO: clone3 with CLONE_PIDFD");
+        return EOPNOTSUPP;
+    }
 
     let task = unsafe { current_task().as_ref_unchecked() };
 

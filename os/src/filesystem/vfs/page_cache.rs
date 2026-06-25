@@ -1,4 +1,4 @@
-use core::{num::NonZeroUsize, ops::Deref, ptr::NonNull};
+use core::{ops::Deref, ptr::NonNull, sync::atomic::Ordering};
 
 use intrusive_collections::{LinkedListLink, UnsafeRef, intrusive_adapter};
 use xarray::XArray;
@@ -7,9 +7,8 @@ use crate::{
     basic::{extend_lifetime, sync::RwLock},
     filesystem::vfs::INode,
     memory::{
-        address::PhysPageNum,
         frame_allocator::FRAME_ALLOCATOR,
-        page_meta::{PAGE_METADATAS, PageMeta, PageMetaGuard, PageType},
+        page_meta::{PageFlags, PageMeta, PageMetaGuard, PageType},
     },
 };
 
@@ -74,30 +73,31 @@ impl PageCache {
     }
 
     pub fn alloc_without_insert(&self, page_index: u64) -> PageMetaGuard {
-        let phys_page = PhysPageNum(
-            FRAME_ALLOCATOR
-                .lock()
-                .alloc(1)
-                .expect("应当能分配物理页作为缓存"), // TODO: 回收机制（可以为每个 FRAME_ALLOCATOR 的对应调用都加上）
-        );
-
-        let page_type = PageType::File {
+        FRAME_ALLOCATOR.alloc_one_as(PageType::File {
             page_index,
             dirty: LinkedListLink::new(),
-        };
-
-        unsafe { PAGE_METADATAS.mark_new_page(phys_page, page_type) }
+        })
     }
 
     pub fn truncate(&self, new_page_count: u64) {
-        unsafe { self.inode.as_ref().fs.as_ref() }.writeback(NonZeroUsize::MAX); // FIXME?
+        let node = unsafe { self.inode.as_ref() };
+        let fs = unsafe { node.fs.as_ref() };
 
         let mut data_guard = self.data.write();
+        let data = &mut *data_guard;
 
-        let mut cursor = data_guard.pages.cursor_mut(new_page_count);
+        let mut cursor = data.pages.cursor_mut(new_page_count);
         cursor.next();
-        while cursor.remove().is_some() {
+        while let Some(removed) = cursor.remove() {
             cursor.next();
+
+            let old_flags = removed.flags.load(Ordering::Relaxed);
+            let old_flags = PageFlags::from_bits_retain(old_flags);
+
+            if old_flags.contains(PageFlags::Dirty) {
+                fs.writeback_page(node, &removed);
+                unsafe { data.dirty_sent.cursor_mut_from_ptr(&*removed) }.remove();
+            }
         }
     }
 }

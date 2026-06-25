@@ -176,7 +176,14 @@ impl Ext4 {
         
         // get the inode reference
         let file_size = inode_ref.inode.size();
-        let total_blocks = (file_size + BLOCK_SIZE as u64 - 1) / BLOCK_SIZE as u64;
+        // Calculate total blocks from both the inode size and the actual block count.
+        // The inode size may be set by higher layers without blocks being allocated,
+        // so we use the minimum to avoid trying to read non-existent blocks.
+        let total_blocks_from_size =
+            (file_size + BLOCK_SIZE as u64 - 1) / BLOCK_SIZE as u64;
+        let total_blocks_from_blocks = inode_ref.inode.blocks_count()
+            / (BLOCK_SIZE as u64 / EXT4_INODE_BLOCK_SIZE as u64);
+        let total_blocks = core::cmp::min(total_blocks_from_size, total_blocks_from_blocks);
 
         // if the offset is greater than the file size, return 0
         if offset >= file_size as usize {
@@ -312,7 +319,16 @@ impl Ext4 {
 
         // start block index
         let mut iblk_idx = iblock_start;
-        let ifile_blocks = (file_size + BLOCK_SIZE as u64 - 1) / BLOCK_SIZE as u64;
+        // Calculate the number of allocated logical blocks from both the inode size
+        // AND the actual block count. The inode size may have been set by higher layers
+        // (e.g. VFS) without blocks actually being allocated, so we must use the minimum
+        // of the two to avoid assuming blocks exist when they don't.
+        let ifile_blocks_from_size =
+            (file_size + BLOCK_SIZE as u64 - 1) / BLOCK_SIZE as u64;
+        let ifile_blocks_from_blocks = inode_ref.inode.blocks_count()
+            / (BLOCK_SIZE as u64 / EXT4_INODE_BLOCK_SIZE as u64);
+        let ifile_blocks =
+            core::cmp::min(ifile_blocks_from_size, ifile_blocks_from_blocks) as u64;
 
         // Calculate the unaligned size
         let unaligned = offset % BLOCK_SIZE;
@@ -332,7 +348,7 @@ impl Ext4 {
         let blocks_to_allocate = if iblk_idx >= ifile_blocks as usize {
             total_blocks_needed
         } else {
-            max(0, total_blocks_needed - (ifile_blocks as usize - iblk_idx))
+            total_blocks_needed.saturating_sub(ifile_blocks as usize - iblk_idx)
         };
 
         if blocks_to_allocate > 0 {

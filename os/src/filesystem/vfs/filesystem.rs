@@ -25,13 +25,15 @@ use crate::{
         devfs::drivers::DeviceId,
         vfs::{
             DEntry, DEntryArc, DEntryData, INode, INodeArc, INodeDirtyState, INodeMode, Mount,
-            VfsError, VfsResult, cache::get_value_arc_from_cache, dentry_arc::DCacheArc,
+            VfsError, VfsResult,
+            cache::{CachedValueArc, get_value_arc_from_cache},
+            dentry_arc::DCacheArc,
             inode_arc::ICacheArc,
         },
     },
     memory::{
         PAGE_BYTES,
-        page_meta::{PageFlags, PageType},
+        page_meta::{PageFlags, PageMeta, PageType},
     },
 };
 
@@ -139,7 +141,7 @@ impl FileSystem {
     /// 回收至多 `max_count` 个 DEntry，返回实际回收的数量
     ///
     /// 注意此处回收的 DEntry 可能导致更多 DEntry 变得可被回收
-    pub fn gc(&self, max_count: NonZero<usize>) -> usize {
+    pub fn gc_dentry(&self, max_count: NonZero<usize>) -> usize {
         // 注意这里 DCache 锁必须一直持有，以防查找操作复活 DEntry
         let mut dcache_guard = self.dcache.write();
         let mut lru_guard = self.dlru_sent.lock();
@@ -191,9 +193,9 @@ impl FileSystem {
     }
 
     /// 尽可能多地回收 DEntry，返回实际回收的数量
-    pub fn full_gc(&self) -> usize {
+    pub fn full_gc_dentry(&self) -> usize {
         let mut ret = 0;
-        while let released = self.gc(NonZero::<usize>::MAX)
+        while let released = self.gc_dentry(NonZero::<usize>::MAX)
             && released > 0
         {
             ret += released;
@@ -243,12 +245,6 @@ impl FileSystem {
         // 现在释放脏 INode 链表锁
         drop(list_guard);
 
-        let fs_ops = if count > 0 {
-            &unsafe { first.as_value(OFFSET).as_ref().fs.as_ref() }.ops
-        } else {
-            return;
-        };
-
         let mut re_dirty_sent = LruNode::new_unlinked();
         unsafe { re_dirty_sent.to_sentinel() };
         let re_dirty_sent_ptr = re_dirty_sent.lru.get_mut().next;
@@ -260,35 +256,20 @@ impl FileSystem {
 
             log::trace!("正在回写 INode {} ({node_addr:#x})", node.id);
 
-            let node_data_rguard = node.data.read();
+            let Some(node_data_rguard) = node.data.try_read() else {
+                log::warn!("INode {} ({node_addr:#x}) 正在被修改，跳过回写", node.id);
+                node.dirty_state
+                    .store(INodeDirtyState::Dirty.bits(), Ordering::Relaxed);
+                unsafe { re_dirty_sent.lru_add(node, OFFSET) };
+                continue;
+            };
+
             if let Some(page_cache) = &node_data_rguard.page_cache {
                 let data = page_cache.data.write().dirty_sent.take();
                 drop(node_data_rguard);
 
                 for page in data {
-                    let old_state = page
-                        .flags
-                        .swap(PageFlags::WritingBack.bits(), Ordering::Relaxed);
-                    debug_assert_eq!(old_state, PageFlags::Dirty.bits());
-
-                    let PageType::File { page_index, .. } = page.page_type else {
-                        unsafe { unreachable_unchecked() };
-                    };
-
-                    log::trace!(
-                        "正在回写 INode {} ({node_addr:#x}) 的 Page {}，物理页起始地址 {:#x}",
-                        node.id,
-                        page_index,
-                        page.get_addr()
-                    );
-
-                    let writeback_result = fs_ops.writeback_page(node, page_index, unsafe {
-                        page.visit_memory().transpose_ref().assume_init_by_ref()
-                    });
-
-                    if let Err(err) = writeback_result {
-                        todo!("错误处理");
-                    }
+                    self.writeback_page(node, &page);
                 }
             }
 
@@ -308,7 +289,14 @@ impl FileSystem {
                 log::trace!("INode {} ({node_addr:#x}) 在回写后再度变脏，挂回", node.id);
                 unsafe { re_dirty_sent.lru_add(node, OFFSET) };
             } else {
-                drop(unsafe { get_value_arc_from_cache::<INodeArc>(node) }); // 触发可能的引用计数归零
+                // FIXME
+                // let icache_rguard = self.icache.read();
+                if unsafe { *node.in_icache.get() } {
+                    drop(unsafe { get_value_arc_from_cache::<INodeArc>(node) });
+                } else {
+                    node.mem_refcount.fetch_add(1, Ordering::Relaxed);
+                    drop(unsafe { INodeArc::from_exists_unchecked(node) });
+                }
             }
 
             current_node = prev_node;
@@ -326,6 +314,82 @@ impl FileSystem {
             unsafe { lst.as_mut() }.next = list_guard.lru.get_mut().next;
             let sent_next = replace(&mut list_guard.lru.get_mut().next, re_dirty_sent.next);
             unsafe { sent_next.as_node().as_mut() }.prev = re_dirty_sent.next;
+        }
+    }
+
+    pub fn writeback_page(&self, node: &INode, page: &PageMeta) {
+        let old_state = page
+            .flags
+            .swap(PageFlags::WritingBack.bits(), Ordering::Relaxed);
+        debug_assert_eq!(old_state, PageFlags::Dirty.bits());
+
+        let PageType::File { page_index, .. } = page.page_type else {
+            unsafe { unreachable_unchecked() };
+        };
+
+        log::trace!(
+            "正在回写 INode {} ({node:p}) 的 Page {}，物理页起始地址 {:#x}",
+            node.id,
+            page_index,
+            page.get_addr()
+        );
+
+        let writeback_result = self.ops.writeback_page(node, page_index, unsafe {
+            page.visit_memory().transpose_ref().assume_init_by_ref()
+        });
+
+        if let Err(err) = writeback_result {
+            todo!("错误处理");
+        }
+    }
+
+    pub fn gc_inode(&self) {
+        // 此处代码和 DCache 的版本类似但有所不同，因为 INode 必须考虑是否为脏
+
+        // 注意这里 ICache 锁必须一直持有，以防查找操作复活 INode
+        let mut icache_guard = self.icache.write();
+        let mut lru_guard = self.ilru_sent.lock();
+
+        let sent = LruPtr::from_sentinel(&mut lru_guard);
+        let lru = lru_guard.lru.get_mut();
+
+        let first = lru.prev; // 别忘了我们是反着销毁的！
+
+        const OFFSET: usize = offset_of!(INode, lru);
+
+        let mut current_node = lru.prev;
+        while !current_node.addr_eq(&sent) {
+            let prev_node = unsafe { current_node.as_node().as_ref().prev };
+            let node = unsafe { current_node.as_value(OFFSET).as_ref() };
+
+            forget(unsafe { Self::remove_icache_entry(&mut icache_guard, node.id) }); // 稍后统一销毁
+
+            current_node = prev_node;
+        }
+
+        // 现在，current_node 是第一个未被回收的节点，我们需要将它和 sent 连接起来
+        // 注意尽管 current_node 可能就是 sent，lru_guard 并不持有真正意义上的引用，因此不违反别名规则
+        lru.prev = current_node;
+        unsafe { current_node.as_node().as_mut() }.next = sent;
+
+        // 接下来我们不再需要 DCache 锁或 LRU 锁，释放它们，然后真正销毁那些 DEntry
+        // 销毁必须是延迟的，否则销毁过程中可能有新的 DEntry 因子 DEntry 全部被销毁而需要链入 LRU，导致死锁
+        drop(lru_guard);
+        drop(icache_guard);
+
+        // 注意最后一个要销毁的块的 prev 仍然指向 current_node（尽管它现在可能已经悬垂）
+        let mut current = first;
+        while !current.addr_eq(&current_node) {
+            let prev = unsafe { current.as_node().as_ref() }.prev;
+
+            let cur_ref = unsafe { current.as_value(OFFSET).as_ref() };
+            debug_assert_eq!(
+                cur_ref.dirty_state.load(Ordering::Relaxed),
+                INodeDirtyState::empty().bits()
+            ); // FIXME!
+            unsafe { ICacheArc::drop_manually(current.as_value(OFFSET).as_ref()) };
+
+            current = prev;
         }
     }
 }

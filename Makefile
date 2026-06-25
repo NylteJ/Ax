@@ -168,7 +168,8 @@ LA_QEMU_CMD_BASE := \
 
 WINDOWS_TERMINAL_PATH ?= /mnt/d/Downloads/Chrome/terminal-1.22.11751.0/wt.exe
 
-DOCKER_ARGS_BASE := -it --rm -v .:/repo -p 1234:1234 zhouzhouyi/os-contest:20260104
+# DOCKER_ARGS_BASE := -it --rm -v .:/repo -p 1234:1234 zhouzhouyi/os-contest:20260104
+DOCKER_ARGS_BASE := --rm -v .:/repo -p 1234:1234 zhouzhouyi/os-contest:20260104
 
 .PHONY: debug-rv
 debug-rv: disk.img

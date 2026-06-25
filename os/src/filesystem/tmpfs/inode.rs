@@ -9,7 +9,6 @@ use crate::basic::extend_lifetime;
 use crate::filesystem::tmpfs::{TmpFs, TmpFsDentry};
 use crate::filesystem::vfs::{
     INodeArc, INodeMode, INodeOps, INodeRenameFlags, VfsError, VfsResult,
-    default_evictable_when_mem_ref_zero,
 };
 
 use crate::filesystem::vfs;
@@ -364,17 +363,22 @@ impl INodeOps for TmpFsINode {
             return Err(VfsError::FileAlreadyExists);
         };
 
+        let target_len = target.len() as u64;
+
         let new_inode = vfs::INode::new(
             fs.ops.inode_id.fetch_add(1, Ordering::Relaxed),
             NonNull::from_ref(fs),
             vfs::INodeData {
-                file_size: target.len() as u64,
+                file_size: target_len,
                 hard_links: 1,
                 mode: INodeMode::all_permitted() | INodeMode::SymbolLink,
                 page_cache: None, // 用不着
                 ops: TmpFsINode {
                     inode_type: INodeType::Symlink(target),
-                    stat: Self::get_stat(),
+                    stat: KstatInner {
+                        st_size: target_len,
+                        ..Self::get_stat()
+                    },
                 },
             },
         );
@@ -395,7 +399,11 @@ impl INodeOps for TmpFsINode {
     }
 
     fn evictable_when_mem_ref_zero(&mut self) -> bool {
-        default_evictable_when_mem_ref_zero(self)
+        true
+    }
+
+    fn truncate_shrink_size(&mut self, new_size: u64) {
+        self.stat.st_size = new_size;
     }
 }
 
@@ -431,7 +439,7 @@ impl TmpFsINode {
     fn new_normal(fs: &vfs::FileSystem<TmpFs>, mode: INodeMode) -> vfs::INodeArc {
         let is_dir = mode.kind() == INodeMode::Directory;
 
-        let mut ret = vfs::INode::new(
+        let mut ret = vfs::INode::new_uncached(
             fs.ops.inode_id.fetch_add(1, Ordering::Relaxed),
             NonNull::from_ref(fs),
             vfs::INodeData {

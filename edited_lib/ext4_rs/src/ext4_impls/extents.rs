@@ -385,11 +385,27 @@ impl Ext4 {
                 return self.insert_extent(inode_ref, new_extent);
             }
 
-            
+
             // Not empty, insert at search result pos + 1
-            log::info!("[insert_new_extent] Inserting at root at position {} (entries: {})", 
-                node.position + 1, header.entries_count);
-            *inode_ref.inode.root_extent_mut_at(node.position + 1) = *new_extent;
+            // Shift existing extents to make room before inserting
+            let insert_pos = node.position + 1;
+            log::info!("[insert_new_extent] Inserting at root at position {} (entries: {})",
+                insert_pos, header.entries_count);
+            let entries = header.entries_count as usize;
+            // Shift extents >= insert_pos to the right
+            for i in (insert_pos..entries).rev() {
+                let src = i * core::mem::size_of::<Ext4Extent>();
+                let dst = (i + 1) * core::mem::size_of::<Ext4Extent>();
+                let ext_copy = inode_ref.inode.root_extent_at(i);
+                // Write via raw pointer to the new position
+                let dst_ptr = unsafe {
+                    (inode_ref.inode.block.as_mut_ptr() as *mut u8)
+                        .add(core::mem::size_of::<Ext4ExtentHeader>() + dst)
+                        as *mut Ext4Extent
+                };
+                unsafe { dst_ptr.write_unaligned(ext_copy) };
+            }
+            *inode_ref.inode.root_extent_mut_at(insert_pos) = *new_extent;
             inode_ref.inode.root_extent_header_mut().entries_count += 1;
             
             log::debug!("[insert_new_extent] Successfully inserted at root:");
@@ -409,14 +425,32 @@ impl Ext4 {
             let node_block = node.pblock_of_node;
             let mut ext4block =
             Block::load(&self.block_device, node_block * BLOCK_SIZE);
-            let new_ex_offset = core::mem::size_of::<Ext4ExtentHeader>() + core::mem::size_of::<Ext4Extent>() * (node.position + 1);
+
+            let insert_pos = node.position + 1;
+            let entries = node.header.entries_count as usize;
+            let ext_size = core::mem::size_of::<Ext4Extent>();
+            let hdr_size = core::mem::size_of::<Ext4ExtentHeader>();
+
+            // Shift existing extents >= insert_pos to the right
+            for i in (insert_pos..entries).rev() {
+                let src_off = hdr_size + i * ext_size;
+                let dst_off = hdr_size + (i + 1) * ext_size;
+                let ext_copy: Ext4Extent = ext4block.read_offset_as(src_off);
+                // Write back at the shifted position
+                unsafe {
+                    let dst_ptr =
+                        ext4block.data.as_mut_ptr().add(dst_off) as *mut Ext4Extent;
+                    dst_ptr.write_unaligned(ext_copy);
+                }
+            }
 
             // insert new extent
+            let new_ex_offset = hdr_size + ext_size * insert_pos;
             let ex: &mut Ext4Extent = ext4block.read_offset_as_mut(new_ex_offset);
             *ex = *new_extent;
             let header: &mut Ext4ExtentHeader = ext4block.read_offset_as_mut(0);
 
-            // update entry count 
+            // update entry count
             header.entries_count += 1;
             log::info!("[insert_new_extent] Updated non-root node: entries={}, max={}", 
                 header.entries_count, header.max_entries_count);

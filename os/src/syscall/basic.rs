@@ -60,7 +60,7 @@ pub extern "C" fn exit(ec: isize) -> ! {
 
         log::info!("所有未知系统调用：\n{list:#?}")
     }
-    debug_assert!(cur.tid != INIT_PID, "init 进程不应退出");
+    // debug_assert!(cur.tid != INIT_PID, "init 进程不应退出");
 
     // FIXME...?
     if cur.tid == INIT_PID {

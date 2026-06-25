@@ -66,7 +66,6 @@ pub enum Interrupt {
 pub enum Exception {
     InstructionMisaligned = 0,
     InstructionFault = 1,
-    IllegalInstruction = 2,
     Breakpoint = 3,
     LoadMisaligned = 4,
     LoadFault = 5,
@@ -79,6 +78,7 @@ pub enum Exception {
     LoadPageFault = 13,
     StorePageFault = 15,
     InstructionPageFault = 12,
+    IllegalInstruction = 2,
 }
 
 #[cfg(target_arch = "loongarch64")]
@@ -113,7 +113,6 @@ pub enum Exception {
     AddressNotAligned = 0x9,
     BoundsCheckFault = 0xA,
     Breakpoint = 0xC,
-    InstructionNonDefined = 0xD,
     InstructionPrivilegeIllegal = 0xE,
     FloatingPointUnavailable = 0xF,
 
@@ -121,6 +120,7 @@ pub enum Exception {
     StorePageFault = 0x2,       // 即 PageInvalidStore
     InstructionPageFault = 0x3, // 即 PageInvalidFetch
     Syscall = 0xB,
+    IllegalInstruction = 0xD, // 即 InstructionNonDefined
 }
 
 impl Exception {

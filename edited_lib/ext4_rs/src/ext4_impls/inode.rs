@@ -78,6 +78,16 @@ impl Ext4 {
             // get the last path
             let path = path.path.last().unwrap();
 
+            // If no extent was found for this logical block, return an error
+            // instead of silently returning pblock=0 (which would corrupt
+            // the superblock located at physical block 0).
+            if path.extent.is_none() {
+                return_errno_with_message!(
+                    Errno::EIO,
+                    "No extent found for logical block"
+                );
+            }
+
             // get physical block id
             let fblock = path.pblock;
 
@@ -424,8 +434,26 @@ impl Ext4 {
         }
 
         let mut current_header = root_header;
-        let mut current_block = inode_ref.inode.root_extent_block();
         let mut depth = root_header.depth;
+
+        // For an inline extent tree (depth 0), read the last extent
+        // directly from the inode's block array.
+        if depth == 0 {
+            // The extents are inline in the inode's block field
+            let entries = current_header.entries_count as usize;
+            let last_extent_pos = EXT4_EXTENT_HEADER_SIZE + (entries - 1) * EXT4_EXTENT_SIZE;
+            // Convert the inode block array ([u32; 15]) to bytes
+            let block_bytes = unsafe {
+                core::slice::from_raw_parts(
+                    inode_ref.inode.block.as_ptr() as *const u8,
+                    60,
+                )
+            };
+            let last_extent = Ext4Extent::load_from_u8(&block_bytes[last_extent_pos..]);
+            return Ok(last_extent);
+        }
+
+        let mut current_block = inode_ref.inode.root_extent_block();
 
         while depth > 0 {
             let index_block = Block::load(&self.block_device, current_block as usize * BLOCK_SIZE);

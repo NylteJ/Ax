@@ -19,6 +19,11 @@ impl vfs::FileOps for TmpFsFile {
         let this = vfs::File::<Self>::from_dyn_mut(self);
         let inode_read_guard = unsafe { this.inode.as_ref() }.data.read();
         let pos = &mut this.data.get_mut().pos;
+
+        if inode_read_guard.file_size <= *pos {
+            return Ok(0);
+        }
+
         file_io_common(
             false,
             pos,
@@ -87,15 +92,19 @@ impl vfs::FileOps for TmpFsFile {
             return Err(VfsError::NotADirectory);
         };
 
-        Ok(dir_vec.get(pos as usize).map(|(name, _)| IterateDirData {
-            name: name.clone(),
-            next_pos: pos + 1,
-            inode_id: inode.id,
-            entry_type: match inode.data.read().ops.inode_type {
-                INodeType::File => vfs::IterateDirEntryType::RegularFile,
-                INodeType::Directory(..) => vfs::IterateDirEntryType::Directory,
-                INodeType::Symlink(..) => vfs::IterateDirEntryType::Symlink,
-            },
+        Ok(dir_vec.get(pos as usize).map(|(name, child_inode)| {
+            let child = unsafe { child_inode.downcast_ref::<TmpFsINode>().unwrap_unchecked() };
+            let child_guard = child.data.read();
+            IterateDirData {
+                name: name.clone(),
+                next_pos: pos + 1,
+                inode_id: child.id,
+                entry_type: match child_guard.ops.inode_type {
+                    INodeType::File => vfs::IterateDirEntryType::RegularFile,
+                    INodeType::Directory(..) => vfs::IterateDirEntryType::Directory,
+                    INodeType::Symlink(..) => vfs::IterateDirEntryType::Symlink,
+                },
+            }
         }))
     }
 

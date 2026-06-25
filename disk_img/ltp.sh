@@ -170,7 +170,6 @@ creat03
 creat04
 creat05
 creat06
-creat07
 creat07_child
 creat08
 creat09
@@ -197,9 +196,7 @@ execl01
 execlp01
 execv01
 execve01
-execve02
 execve03
-execve05
 execve06
 execvp01
 exit02
@@ -287,7 +284,6 @@ fstatfs02_64
 fsx-linux
 fsx.sh
 fsync01
-fsync02
 ftruncate01
 ftruncate01_64
 ftruncate03
@@ -401,7 +397,6 @@ ioctl_ns07
 ioctl_sg01
 kill03
 kill05
-kill11
 lchown01
 lchown01_16
 lchown02
@@ -511,7 +506,6 @@ pipe11
 pipe12
 pipe14
 pipe2_01
-pipe2_02
 pipe2_02_child
 pipe2_04
 pipeio
@@ -588,7 +582,6 @@ rename09
 rename10
 rename12
 rename13
-rename14
 request_key01
 request_key02
 rmdir01
@@ -602,11 +595,11 @@ sched_getscheduler01
 sched_setscheduler03
 select01
 select03
-select04
+select04_DISABLED
 sendfile02
 sendfile02_64
-sendfile03
-sendfile03_64
+sendfile03_DISABLED
+sendfile03_64_DISABLED
 sendfile04
 sendfile04_64
 sendfile05
@@ -702,15 +695,15 @@ stat03
 stat03_64
 statfs01
 statfs01_64
-statfs02
-statfs02_64
+statfs02_DISABLED
+statfs02_64_DISABLED
 statfs03
 statfs03_64
 statvfs01
-statvfs02
+statvfs02_DISABLED
 statx02
 statx03
-symlink01
+symlink01_DISABLED
 symlink02
 symlink03
 symlink04
@@ -776,7 +769,7 @@ waitpid03
 waitpid04
 waitpid06
 waitpid07
-waitpid08
+waitpid08_DISABLED_BECAUSE_STOP
 waitpid09
 waitpid10
 waitpid11

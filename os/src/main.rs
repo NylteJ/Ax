@@ -48,6 +48,7 @@
 #![feature(allocator_api)]
 #![feature(macro_metavar_expr)]
 #![feature(vec_push_within_capacity)]
+#![feature(layout_for_ptr)]
 //
 #![deny(unused_must_use)]
 

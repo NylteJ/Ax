@@ -1,7 +1,7 @@
-use core::sync::atomic::AtomicU32;
+use core::{mem::MaybeUninit, sync::atomic::AtomicU32};
 
 use crate::{
-    filesystem::vfs::{self, FileSystemOps, VfsError, VfsResult},
+    filesystem::vfs::{self, FileSystemOps, VfsResult},
     memory::PAGE_BYTES,
 };
 
@@ -23,9 +23,12 @@ impl FileSystemOps for TmpFs {
         &self,
         _inode: &vfs::INode,
         _page_index: u64,
-        _buffer: &mut [core::mem::MaybeUninit<u8>; PAGE_BYTES],
+        buffer: &mut [MaybeUninit<u8>; PAGE_BYTES],
     ) -> VfsResult<usize> {
-        debug_assert!(false, "TmpFS 永远不应该有页缓存未命中");
-        Err(VfsError::OperationNotSupported)
+        // 正常情况下 TmpFs 不存在页缓冲未命中
+        // 然而，如果通过 lseek 等方式，跳过中间部分直接延长文件长度，则可能导致此函数被调用
+        // 此时写入全 0 即可，甚至不用检查文件大小
+        buffer.fill(MaybeUninit::new(0));
+        Ok(buffer.len())
     }
 }

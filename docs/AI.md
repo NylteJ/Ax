@@ -80,3 +80,13 @@ make check WHITELIST=".env .vscode"
 - 白名单条目若为目录（如 `.git/`），其尾部斜杠会被自动去除，匹配时仍按名称处理。
 - 脚本会生成临时文件 `.whitelist.tmp`，执行结束后自动删除。
 ````
+
+2. 一处 bugfix，使用 Claude Code + DeepSeek V4 Pro（借由 CC Switch 实现），提示词：
+```
+目前此内核存在 bug，在写回 ext4 上的文件内容时，会导致磁盘损坏。请尝试调查并修复。你可以通过 `make regen-disk run-rv MODE=debug`
+  重新生成磁盘镜像并编译运行（带日志）以复现和调查问题，并通过 `e2fsck -f -n ./disk.img` 检验磁盘是否正常。该内核存在很多其它不完善之处，因此 e2fsck
+  输出一些错误是可以接受的，只要其超级块不会再损坏就够了（具体而言，这要求你消除 `e2fsck: Superblock invalid, trying backup blocks...e2fsck: Bad magic number in super-block while
+  trying to open ./disk.img` 报错）。另外，尽管目前运行的测试脚本为 madvise 相关脚本，问题很有可能与之无关，而是完全位于文件系统。此外，edited_lib/exy4_rs
+  也并不完全可靠，必要时你可以对其进行修改。
+```
+输出过长，不在此展示。

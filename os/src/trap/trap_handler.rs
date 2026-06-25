@@ -151,60 +151,27 @@ extern "C" fn trap_handler(context: &mut NativeTrapContext) {
                     );
                     context.ret_pc = fixup;
                 } else {
-                    use crate::{print, println};
-
-                    println!("内核态发生 PageFault！");
-                    print_trap_context(context);
-
-                    println!("============其它上下文信息============");
-                    print!("返回 PC：{:#x}  ", context.ret_pc);
-                    crate::basic::debugger::print_pc_info_if_debug(context.ret_pc);
-                    println!();
-
-                    println!("栈帧指针：{:#x}", context.regs.fp);
-                    crate::basic::debugger::backtrace_at(context.regs.fp as *const usize);
-                    println!();
-
-                    println!("寄存器信息：\n{:#?}", context.regs);
-
-                    debugbreak();
-
-                    abort_and_shutdown();
+                    kernel_fault(context);
                 }
             } else {
                 if try_handle_user_page_fault(fault).is_err() {
-                    log::error!(
-                        "=====================================☆\u{fe0f}喜报☆\u{fe0f}====================================="
-                    );
-                    log::error!(
-                        "用户态程序（PID = {}）发生 PageFault（{fault:?}）",
-                        cur_task.tid,
-                    );
-                    log::info!("其试图访问：{:#x}", arch::NativeTrap::get_bad_address());
-                    log::info!("对应代码所在地址：{:#x}", context.ret_pc);
-                    log::debug!("寄存器信息：\n{:#?}", context.regs);
-                    log::error!(
-                        "=================================================================================="
-                    );
-
-                    let sigsegv_blocked = cur_task
-                        .signals_wl
-                        .lock()
-                        .mask
-                        .contains(SignalId::SIGSEGV.as_mask());
-                    if sigsegv_blocked {
-                        log::error!("然而，其屏蔽了 SIGSEGV");
-                        log::error!("为避免无限递归，内核将强行终止程序");
-                        cur_task.send_signal(SignalId::SIGKILL);
-                    } else {
-                        cur_task.send_signal(SignalId::SIGSEGV);
-                    }
+                    user_fault(context);
                 }
+            }
+        }
+
+        Trap::Exception(Exception::IllegalInstruction) => {
+            if trap_is_from_kernel {
+                kernel_fault(context);
+            } else {
+                user_fault(context);
             }
         }
 
         #[cfg(target_arch = "loongarch64")]
         Trap::Exception(Exception::FloatingPointUnavailable) => {
+            core::intrinsics::cold_path(); // 目前只会触发一次
+
             log::warn!(
                 "当前任务（TID = {}）使用了浮点指令。目前我们的内核未使用浮点，因此暂时无需额外处理，只是未来扩展时需要注意（以及，目前此提示实际上只会触发一次，因为 EUEN 并不会被保存）",
                 cur_task.tid
@@ -314,4 +281,56 @@ lazy_static! {
 
         [define!(copy), define!(strcpy), define!(memset)]
     };
+}
+
+#[cold]
+#[inline(never)]
+fn kernel_fault(context: &NativeTrapContext) -> ! {
+    use crate::{print, println};
+
+    println!("内核态发生 PageFault！");
+    print_trap_context(context);
+
+    println!("============其它上下文信息============");
+    print!("返回 PC：{:#x}  ", context.ret_pc);
+    crate::basic::debugger::print_pc_info_if_debug(context.ret_pc);
+    println!();
+
+    println!("栈帧指针：{:#x}", context.regs.fp);
+    crate::basic::debugger::backtrace_at(context.regs.fp as *const usize);
+    println!();
+
+    println!("寄存器信息：\n{:#?}", context.regs);
+
+    debugbreak();
+
+    abort_and_shutdown();
+}
+
+fn user_fault(context: &NativeTrapContext) {
+    let cur_task = unsafe { current_task().as_ref_unchecked() };
+
+    log::error!(
+        "=====================================☆\u{fe0f}喜报☆\u{fe0f}====================================="
+    );
+    log::error!("用户态程序（PID = {}）发生 Fault", cur_task.tid,);
+    log::info!("其试图访问：{:#x}", arch::NativeTrap::get_bad_address());
+    log::info!("对应代码所在地址：{:#x}", context.ret_pc);
+    log::debug!("寄存器信息：\n{:#?}", context.regs);
+    log::error!(
+        "=================================================================================="
+    );
+
+    let sigsegv_blocked = cur_task
+        .signals_wl
+        .lock()
+        .mask
+        .contains(SignalId::SIGSEGV.as_mask());
+    if sigsegv_blocked {
+        log::error!("然而，其屏蔽了 SIGSEGV");
+        log::error!("为避免无限递归，内核将强行终止程序");
+        cur_task.send_signal(SignalId::SIGKILL);
+    } else {
+        cur_task.send_signal(SignalId::SIGSEGV);
+    }
 }

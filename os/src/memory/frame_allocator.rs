@@ -1,11 +1,67 @@
-use buddy_system_allocator::LockedFrameAllocator;
-use lazy_static::lazy_static;
+use core::{intrinsics::likely, num::NonZeroUsize};
 
-use crate::memory::{MEMORY_END, PAGE_BYTES, PAGE_SHIFT, address::VirtAddr};
+use crate::{
+    basic::{UnsafeInited, sync::Mutex},
+    filesystem::filesystems::foreach_filesystem,
+    memory::{
+        MEMORY_END, PAGE_BYTES, PAGE_SHIFT,
+        address::{PhysPageNum, VirtAddr},
+        page_meta::{PAGE_METADATAS, PageMetaGuard, PageType},
+    },
+};
 
-lazy_static! {
-    pub static ref FRAME_ALLOCATOR: LockedFrameAllocator<11> = LockedFrameAllocator::new();
+const ORDER: usize = 2;
+
+pub struct FrameAllocator {
+    allocator: Mutex<buddy_system_allocator::FrameAllocator<ORDER>>,
 }
+
+impl FrameAllocator {
+    #[track_caller]
+    pub fn try_alloc(&self, frame_count: usize) -> Option<PhysPageNum<0>> {
+        likely(frame_count == 1);
+
+        let try_alloc = || self.allocator.lock().alloc(frame_count);
+
+        try_alloc()
+            .or_else(|| {
+                log::warn!("未能分配 {frame_count} 个物理页帧，尝试执行回收");
+
+                foreach_filesystem(|fs| {
+                    fs.writeback(NonZeroUsize::MAX);
+                    fs.gc_inode();
+                });
+
+                log::info!("回收完毕，再度尝试分配");
+
+                try_alloc()
+            })
+            .map(|idx| PhysPageNum(idx))
+    }
+
+    #[track_caller]
+    pub fn alloc(&self, frame_count: usize) -> PhysPageNum<0> {
+        self.try_alloc(frame_count)
+            .unwrap_or_else(|| panic!("无法分配 {frame_count} 个物理页帧"))
+    }
+
+    #[track_caller]
+    pub fn alloc_one_as(&self, page_type: PageType) -> PageMetaGuard {
+        let page_num = self.alloc(1);
+
+        // SAFETY: 分配器保证了这点
+        unsafe { PAGE_METADATAS.mark_new_page(page_num, page_type) }
+    }
+
+    #[track_caller]
+    pub fn dealloc(&self, frame_index: PhysPageNum<0>, frame_count: usize) {
+        likely(frame_count == 1);
+
+        self.allocator.lock().dealloc(frame_index.0, frame_count);
+    }
+}
+
+pub static FRAME_ALLOCATOR: UnsafeInited<FrameAllocator> = unsafe { UnsafeInited::uninit() };
 
 pub fn init() {
     let ekernel: usize;
@@ -22,5 +78,12 @@ pub fn init() {
         (end - start) * PAGE_BYTES / 1024
     );
 
-    FRAME_ALLOCATOR.lock().add_frame(start, end);
+    let mut allocator = buddy_system_allocator::FrameAllocator::<ORDER>::new();
+    allocator.add_frame(start, end);
+
+    unsafe {
+        UnsafeInited::init_unsafe(&FRAME_ALLOCATOR, FrameAllocator {
+            allocator: Mutex::new(allocator),
+        })
+    };
 }

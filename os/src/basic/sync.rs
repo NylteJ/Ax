@@ -1,6 +1,8 @@
 use core::cell::UnsafeCell;
 use core::fmt::Debug;
 use core::hint;
+use core::mem::ManuallyDrop;
+use core::mem::forget;
 use core::mem::offset_of;
 use core::ops::Deref;
 use core::ops::DerefMut;
@@ -47,24 +49,30 @@ impl<T: ?Sized> RwLock<T> {
     #[track_caller]
     pub fn read(&self) -> RwLockReadGuard<'_, T> {
         loop {
-            let state = self.state.load(Ordering::Relaxed);
-            if state != Self::WRITER_BIT
-                && self
-                    .state
-                    .compare_exchange_weak(state, state + 1, Ordering::Acquire, Ordering::Relaxed)
-                    .is_ok()
-            {
-                break;
+            if let Some(guard) = self.try_read() {
+                break guard;
             }
 
             panic!("我们现在还不支持并行，因此一定是发生了死锁");
             hint::spin_loop();
         }
+    }
 
-        RwLockReadGuard {
-            value: unsafe { NonNull::new_unchecked(self.value.get()) },
-            state: &self.state,
-        }
+    #[track_caller]
+    pub fn try_read(&self) -> Option<RwLockReadGuard<'_, T>> {
+        self.state
+            .fetch_update(Ordering::Acquire, Ordering::Relaxed, |state| {
+                if state != Self::WRITER_BIT {
+                    Some(state + 1)
+                } else {
+                    None
+                }
+            })
+            .ok()
+            .map(|_| RwLockReadGuard {
+                value: unsafe { NonNull::new_unchecked(self.value.get()) },
+                state: &self.state,
+            })
     }
 
     #[track_caller]
@@ -135,6 +143,41 @@ impl<T: ?Sized> DerefMut for RwLockWriteGuard<'_, T> {
 
 unsafe impl<T: ?Sized> DerefPure for RwLockReadGuard<'_, T> {}
 unsafe impl<T: ?Sized> DerefPure for RwLockWriteGuard<'_, T> {}
+
+struct TemporaryReleaseGuard<'a, T> {
+    rwlock: &'a RwLock<T>,
+}
+
+impl<T> Drop for TemporaryReleaseGuard<'_, T> {
+    fn drop(&mut self) {
+        forget(self.rwlock.write());
+    }
+}
+
+impl<T> RwLockWriteGuard<'_, T> {
+    /// 临时释放锁。
+    ///
+    /// 其返回的 RAII 守卫会在析构时重新获取锁
+    #[must_use]
+    pub fn temporary_release(&mut self) -> impl Drop + '_ {
+        self.state.store(0, Ordering::Release);
+        TemporaryReleaseGuard {
+            rwlock: unsafe { RwLock::from_value(self.value).as_ref() },
+        }
+    }
+}
+
+impl<'a, T: ?Sized> RwLockWriteGuard<'a, T> {
+    #[must_use]
+    pub fn downgrade(self) -> RwLockReadGuard<'a, T> {
+        let this = ManuallyDrop::new(self);
+        this.state.store(1, Ordering::Release);
+        RwLockReadGuard {
+            value: this.value,
+            state: this.state,
+        }
+    }
+}
 
 unsafe impl<T: ?Sized + Send + Sync> Sync for RwLock<T> {}
 unsafe impl<T: ?Sized + Send> Send for RwLock<T> {}

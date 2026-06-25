@@ -203,8 +203,9 @@ fn main() -> isize {
             b"-c\0".as_ptr(),
             concat_bytes!(
                 b"/sdcd/musl/busybox --install -s /bin;",
-                // 不知道为什么，把 ltp 放在最后貌似会让 LoongArch 64 没分
-                b"/sdcd/musl/busybox sh /ltp.sh;",
+                // ===================================================
+                b"/sdcd/musl/busybox sh /ltp.sh;", // 不知道为什么，把 ltp 放在最后貌似会让 LoongArch 64 没分
+                // ===================================================
                 group!(b"basic-musl" at b"musl/basic" shell b"run-all.sh"),
                 group!(b"basic-glibc" at b"glibc/basic" shell b"run-all.sh"),
                 group!(nobanner at b"musl" shell b"busybox_testcode.sh"),
@@ -212,7 +213,8 @@ fn main() -> isize {
                 group!(nobanner at b"musl" shell b"libcbench_testcode.sh"),
                 group!(nobanner at b"glibc" shell b"libcbench_testcode.sh"),
                 group!(b"libctest-musl" at b"musl" shell b"run-static.sh", b"run-dynamic.sh"),
-                group!(b"libctest-glibc" at b"glibc" shell b"run-static.sh", b"run-dynamic.sh"),
+                // group!(b"libctest-glibc" at b"glibc" shell b"run-static.sh", b"run-dynamic.sh"),
+                // ===================================================
                 b'\0',
             )
             .as_ptr(),

@@ -3,6 +3,7 @@ use core::mem::MaybeUninit;
 use core::{
     alloc::{GlobalAlloc, Layout},
     arch::{asm, global_asm},
+    num::NonZeroUsize,
     ptr::{NonNull, null_mut},
 };
 
@@ -19,12 +20,16 @@ const HEAP_SIZE_BYTES: usize = if cfg!(debug_assertions) {
     if cfg!(target_arch = "riscv64") {
         64 * 1024 * 1024 // 64 MB
     } else {
-        128 * 1024 * 1024 // 128 MB（我也不知道为什么但 ltp 就是要这么多）
+        0 * 1024 * 1024 // 0 MB（我们下面会添加低地址区段的 256 MB）
     }
 };
 
-const BUDDY_SYSTEM_ALLOCATOR_ORDER: usize =
-    HEAP_SIZE_BYTES.next_power_of_two().trailing_zeros() as usize + 1;
+const MAX_BYTES_PER_ALLOCATION: usize = 8 * 1024 * 1024;
+
+const BUDDY_SYSTEM_ALLOCATOR_ORDER: usize = MAX_BYTES_PER_ALLOCATION
+    .next_power_of_two()
+    .trailing_zeros() as usize
+    + 1;
 
 struct GlobalAllocatorInner {
     allocator: Heap<BUDDY_SYSTEM_ALLOCATOR_ORDER>,
@@ -136,7 +141,7 @@ unsafe impl GlobalAlloc for GlobalAllocator {
             );
 
             foreach_filesystem(|fs| {
-                let gced = fs.full_gc();
+                let gced = fs.full_gc_dentry();
                 log::info!("从 FileSystem {fs:p} 中回收了 {gced} 个 DEntry");
             });
 
@@ -146,7 +151,11 @@ unsafe impl GlobalAlloc for GlobalAllocator {
         }).or_else(||{
             log::warn!("分配请求仍然失败！尝试更激进的回收策略...");
 
-            foreach_filesystem(|fs| fs.shrink_cache());
+            foreach_filesystem(|fs| {
+                fs.writeback(NonZeroUsize::MAX);
+                fs.gc_inode();
+                fs.shrink_cache();
+            });
 
             log::info!("激进回收完毕，当前堆内存剩余 {} 字节", get_rest_bytes());
 
@@ -198,6 +207,21 @@ pub fn init_heap() {
         "已初始化内核堆，对应物理地址：{kheap_start:#x} ~ {:#x} ({HEAP_SIZE_BYTES} 字节)",
         kheap_start + HEAP_SIZE_BYTES
     );
+
+    #[cfg(target_arch = "loongarch64")]
+    {
+        use crate::memory::address::PhysAddr;
+
+        const START: usize = PhysAddr(0x00000000).to_virtual_address().0;
+        const END: usize = PhysAddr(0x10000000).to_virtual_address().0;
+
+        unsafe { global_allocator.allocator.add_to_heap(START, END) };
+
+        log::info!(
+            "已将低地址区段内存添加到内核堆，地址范围：{START:#x} ~ {END:#x} ({} 字节)",
+            END - START
+        );
+    }
 }
 
 pub unsafe fn force_unlock_heap() {
@@ -205,7 +229,7 @@ pub unsafe fn force_unlock_heap() {
 }
 
 #[cfg_attr(not(debug_assertions), inline(always))]
-pub fn debug_assert_heap_mem_valid<T>(ptr: *const T) {
+pub fn debug_assert_heap_mem_valid<T: ?Sized>(ptr: *const T) {
     #[cfg(debug_assertions)]
     {
         let mut allocator = GLOBAL_ALLOCATOR.0.lock();
@@ -221,7 +245,7 @@ pub fn debug_assert_heap_mem_valid<T>(ptr: *const T) {
             );
         };
         assert_eq!(
-            Layout::new::<T>(),
+            unsafe { Layout::for_value_raw(ptr) },
             *layout,
             "{} 类型的指针 {ptr_addr:#x} 指向的堆内存布局不匹配",
             type_name::<T>()
