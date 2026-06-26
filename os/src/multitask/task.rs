@@ -105,6 +105,8 @@ pub struct Task {
     /// 受 `TIMERS` 锁保护
     pub timer_rbtree_link: RBTreeLink,
 
+    pub user_ids: Mutex<TaskUserIds>,
+
     pub(super) refcount: AtomicU32,
 
     _pin: PhantomPinned, // Task 的地址需要在 tp、内核栈等区域存储，因此不能移动
@@ -172,6 +174,18 @@ impl TaskTimeStats {
         self.children_user_time += children.user_time;
         self.children_kernel_time += children.kernel_time;
     }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct TaskUserIds {
+    pub uid: u32,
+    pub gid: u32,
+    pub fsuid: u32,
+    pub fsgid: u32,
+    pub euid: u32,
+    pub egid: u32,
+    pub suid: u32,
+    pub sgid: u32,
 }
 
 unsafe impl Send for Task {}
@@ -261,6 +275,18 @@ impl Task {
 
             timer_rbtree_key: UnsafeCell::new(0),
             timer_rbtree_link: RBTreeLink::new(),
+
+            // root
+            user_ids: Mutex::new(TaskUserIds {
+                uid: 0,
+                gid: 0,
+                fsuid: 0,
+                fsgid: 0,
+                euid: 0,
+                egid: 0,
+                suid: 0,
+                sgid: 0,
+            }),
 
             refcount: AtomicU32::new(1),
 
@@ -466,6 +492,8 @@ impl Task {
 
             timer_rbtree_key: UnsafeCell::new(0),
             timer_rbtree_link: RBTreeLink::new(),
+
+            user_ids: Mutex::new(*self.user_ids.lock()),
 
             refcount: AtomicU32::new(1),
 

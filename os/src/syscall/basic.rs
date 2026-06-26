@@ -292,3 +292,14 @@ pub extern "C" fn prlimit64(
 
     SyscallResult::success(0)
 }
+
+pub extern "C" fn getrlimit(resource: usize, rlimit: *mut RLimit) -> SyscallResult {
+    let resource: u8 = resource.try_into().map_err(|_| EINVAL)?;
+    let resource: RLimitResource = resource.try_into().map_err(|_| EINVAL)?;
+
+    let cur_task = unsafe { current_task().as_ref_unchecked() };
+
+    copy_one_to_user(rlimit, &cur_task.process.rlimits.read()[resource])?;
+
+    SyscallResult::success(0)
+}

@@ -124,6 +124,7 @@ impl<T: ?Sized> Drop for RwLockWriteGuard<'_, T> {
 impl<T: ?Sized> Deref for RwLockReadGuard<'_, T> {
     type Target = T;
 
+    #[inline(always)]
     fn deref(&self) -> &Self::Target {
         unsafe { self.value.as_ref() }
     }
@@ -131,11 +132,13 @@ impl<T: ?Sized> Deref for RwLockReadGuard<'_, T> {
 impl<T: ?Sized> Deref for RwLockWriteGuard<'_, T> {
     type Target = T;
 
+    #[inline(always)]
     fn deref(&self) -> &Self::Target {
         unsafe { self.value.as_ref() }
     }
 }
 impl<T: ?Sized> DerefMut for RwLockWriteGuard<'_, T> {
+    #[inline(always)]
     fn deref_mut(&mut self) -> &mut Self::Target {
         unsafe { self.value.as_mut() }
     }
@@ -290,12 +293,14 @@ impl<T: ?Sized> Drop for MutexGuard<'_, T> {
 impl<T: ?Sized> Deref for MutexGuard<'_, T> {
     type Target = T;
 
+    #[inline(always)]
     fn deref(&self) -> &Self::Target {
         unsafe { self.value.as_ref() }
     }
 }
 
 impl<T: ?Sized> DerefMut for MutexGuard<'_, T> {
+    #[inline(always)]
     fn deref_mut(&mut self) -> &mut Self::Target {
         unsafe { self.value.as_mut() }
     }

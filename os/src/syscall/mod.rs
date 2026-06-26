@@ -106,6 +106,7 @@ pub static TABLE: [Option<SyscallFn>; MAX_SYSCALL_COUNT] = const {
     define!(124, basic::yield_);
     define!(153, basic::times);
     define!(261, basic::prlimit64);
+    define!(163, basic::getrlimit);
 
     define!(114, clock::clock_getres);
     define!(113, clock::clock_gettime);
@@ -176,6 +177,12 @@ pub static TABLE: [Option<SyscallFn>; MAX_SYSCALL_COUNT] = const {
     define!(175, user::geteuid);
     define!(176, user::getgid);
     define!(177, user::getegid);
+    define!(147, user::setresuid);
+    define!(148, user::getresuid);
+    define!(149, user::setresgid);
+    define!(150, user::getresgid);
+    define!(145, user::setreuid);
+    define!(143, user::setregid);
 
     define!(169, misc::gettimeofday);
     define!(160, misc::uname);
@@ -539,11 +546,14 @@ pub const SYSCALL_ID_NAME_MAP: [&str; MAX_SYSCALL_COUNT] = {
     map[136] = "rt_sigpending";
     map[137] = "rt_sigtimedwait";
     map[139] = "rt_sigreturn";
+    map[143] = "setregid";
     map[144] = "setgid";
     map[145] = "setreuid";
     map[146] = "setuid";
     map[147] = "setresuid";
+    map[148] = "getresuid";
     map[149] = "setresgid";
+    map[150] = "getresgid";
     map[153] = "times";
     map[154] = "setpgid";
     map[155] = "getpgid";
@@ -552,6 +562,7 @@ pub const SYSCALL_ID_NAME_MAP: [&str; MAX_SYSCALL_COUNT] = {
     map[158] = "getgroups";
     map[159] = "setgroups";
     map[160] = "uname";
+    map[163] = "getrlimit";
     map[165] = "getrusage";
     map[166] = "umask";
     map[167] = "prctl";

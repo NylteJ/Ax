@@ -44,4 +44,3 @@ riscv = "0.16.0"
 [profile.release]
 lto = "fat"
 codegen-units = 1
-debug = true
