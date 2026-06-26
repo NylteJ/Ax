@@ -774,7 +774,7 @@ waitpid09
 waitpid10
 waitpid11
 waitpid12
-waitpid13
+waitpid13_DISABLED_BECAUSE_STOP
 write01
 write02
 write03

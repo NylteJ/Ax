@@ -22,14 +22,7 @@ use crate::{
 
 use crate::syscall::err_codes::*;
 
-/// * 功能：触发进程终止，无返回值；
-/// * 输入：终止状态值；
-/// * 返回值：无返回值；
-/// ```c
-/// int ec;
-/// syscall(SYS_exit, ec);
-/// ```
-pub extern "C" fn exit(ec: isize) -> ! {
+pub fn exit_kernel(ec: isize, signal: SignalId) -> ! {
     log::trace!(
         "Task {} exited with code {1} ({1:#x}).",
         unsafe { current_task().as_ref_unchecked() }.tid,
@@ -68,7 +61,7 @@ pub extern "C" fn exit(ec: isize) -> ! {
         cleanup_and_shutdown();
     }
 
-    cur.on_exit(SignalId::SIGINVAL, ec as u8);
+    cur.on_exit(signal, ec as u8);
 
     let Some(next_task) = TASK_SCHEDULER.lock().pick_next() else {
         log::info!("所有用户程序运行完毕，关机");
@@ -82,6 +75,17 @@ pub extern "C" fn exit(ec: isize) -> ! {
 
     Task::switch_to(next_task);
     unreachable!();
+}
+
+/// * 功能：触发进程终止，无返回值；
+/// * 输入：终止状态值；
+/// * 返回值：无返回值；
+/// ```c
+/// int ec;
+/// syscall(SYS_exit, ec);
+/// ```
+pub extern "C" fn exit(ec: isize) -> ! {
+    exit_kernel(ec, SignalId::SIGINVAL);
 }
 
 pub extern "C" fn yield_() -> isize {

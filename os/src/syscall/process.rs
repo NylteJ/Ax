@@ -38,6 +38,7 @@ use crate::{
     },
     syscall::{
         self, SyscallResult,
+        basic::exit_kernel,
         common::TimeSpec,
         filesystem::{PATH_LEN_HINT, PATH_LEN_MAX},
         signal::{SignalActionFlags, restart_syscall_if_able},
@@ -633,7 +634,7 @@ pub extern "C" fn set_tid_address(tidptr: *mut c_int) -> usize {
     cur_task.tid
 }
 
-pub extern "C" fn exit_group(code: isize) -> ! {
+pub fn exit_group_kernel(code: isize, signal: SignalId) -> ! {
     let cur_task = unsafe { current_task().as_ref_unchecked() };
 
     let is_already_exiting = cur_task.process.is_exiting.swap(true, Ordering::Relaxed);
@@ -644,7 +645,11 @@ pub extern "C" fn exit_group(code: isize) -> ! {
         }
     }
 
-    exit(code)
+    exit_kernel(code, signal)
+}
+
+pub extern "C" fn exit_group(code: isize) -> ! {
+    exit_group_kernel(code, SignalId::SIGINVAL);
 }
 
 pub extern "C" fn setpgid(pid: usize, pgid: usize) -> SyscallResult {
@@ -663,4 +668,18 @@ pub extern "C" fn setpgid(pid: usize, pgid: usize) -> SyscallResult {
     }
 
     SyscallResult::success(0)
+}
+
+pub extern "C" fn getpgid(pid: usize) -> SyscallResult {
+    let task = if pid == 0 {
+        unsafe { current_task().as_ref_unchecked() }
+    } else {
+        &get_task_by_tid(pid).ok_or(ESRCH)?
+    };
+
+    if task.process.pid != task.tid {
+        return ESRCH;
+    }
+
+    SyscallResult::success(task.process.pgid)
 }

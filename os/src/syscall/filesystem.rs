@@ -1739,3 +1739,48 @@ pub extern "C" fn fchownat(
 
     SyscallResult::success(0)
 }
+
+pub extern "C" fn fchown(fd: isize, owner: isize, group: isize) -> SyscallResult {
+    let file = get_file_from_fd(fd)?;
+
+    if owner != -1 {
+        log::error!("TODO: 处理 fchown 的 owner: {owner}");
+        let _ = owner;
+    }
+
+    if group != -1 {
+        log::error!("TODO: 处理 fchown 的 group: {group}");
+        let _ = group;
+    }
+
+    SyscallResult::success(0)
+}
+
+pub extern "C" fn fadvise64_64(
+    fd: isize,
+    offset: usize,
+    len: usize,
+    advice: usize,
+) -> SyscallResult {
+    let file = get_file_from_fd(fd)?;
+
+    #[derive(TryFromPrimitive)]
+    #[repr(usize)]
+    #[allow(non_camel_case_types)]
+    enum Advice {
+        POSIX_FADV_NORMAL = 0,
+        POSIX_FADV_SEQUENTIAL = 1,
+        POSIX_FADV_RANDOM = 2,
+        POSIX_FADV_WILLNEED = 3,
+        POSIX_FADV_DONTNEED = 4,
+        POSIX_FADV_NOREUSE = 5,
+    }
+
+    let advice = Advice::try_from(advice).map_err(|_| EINVAL)?;
+
+    // 所有 fadvice 都能安全忽略
+    let _ = file;
+    let _ = advice;
+
+    SyscallResult::success(0)
+}

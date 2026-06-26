@@ -49,19 +49,14 @@ extern "C" fn trap_handler(context: &mut NativeTrapContext) {
 
                 let behavior = cur_task.signal_handler.read().handle(signal_id, rt_data);
 
-                let sid_value = signal_id.value().into();
-
                 use crate::multitask::signal::SignalBehavior;
                 match behavior {
-                    // 这里直接调用 exit_group 是没问题的，其内部有防重入设施，必要时会退化为 exit
-                    SignalBehavior::Terminate => {
-                        log::error!("TODO: 进程因信号终止时传递对应信号给 waitpid");
-                        syscall::process::exit_group(sid_value);
-                    }
+                    // 这里直接调用 exit_group_kernel 是没问题的，其内部有防重入设施，必要时会退化为 exit
+                    SignalBehavior::Terminate => syscall::process::exit_group_kernel(0, signal_id),
                     SignalBehavior::Ignored => (),
                     SignalBehavior::TerminateAndDumpCore => {
                         log::error!("TODO: core dump");
-                        syscall::process::exit_group(sid_value);
+                        syscall::process::exit_group_kernel(0, signal_id);
                     }
 
                     SignalBehavior::Stop => todo!(),

@@ -144,6 +144,8 @@ pub static TABLE: [Option<SyscallFn>; MAX_SYSCALL_COUNT] = const {
     define!(53, filesystem::fchmodat);
     define!(46, filesystem::ftruncate64);
     define!(54, filesystem::fchownat);
+    define!(55, filesystem::fchown);
+    define!(223, filesystem::fadvise64_64);
 
     define!(214, memory::brk);
     define!(222, memory::mmap);
@@ -162,6 +164,7 @@ pub static TABLE: [Option<SyscallFn>; MAX_SYSCALL_COUNT] = const {
     define!(96, process::set_tid_address);
     define!(94, process::exit_group);
     define!(154, process::setpgid);
+    define!(155, process::getpgid);
 
     define!(134, signal::rt_sigaction);
     define!(129, signal::kill);
@@ -488,6 +491,7 @@ pub const SYSCALL_ID_NAME_MAP: [&str; MAX_SYSCALL_COUNT] = {
     map[51] = "chroot";
     map[53] = "fchmodat";
     map[54] = "fchownat";
+    map[55] = "fchown";
     map[56] = "openat";
     map[57] = "close";
     map[59] = "pipe2";
