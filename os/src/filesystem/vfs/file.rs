@@ -11,7 +11,7 @@ use uninit::extension_traits::MaybeUninitExt;
 
 use crate::{
     basic::{bstr::ByteString, extend_lifetime, sync::Mutex},
-    filesystem::vfs::{INode, INodeDirtyState, Path, VfsError, VfsResult},
+    filesystem::vfs::{INode, INodeDirtyState, INodeMode, Path, VfsError, VfsResult},
     memory::{
         PAGE_BYTES,
         uaccess::{copy_from_user_uninit, copy_to_user},

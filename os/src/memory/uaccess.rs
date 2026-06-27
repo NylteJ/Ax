@@ -15,13 +15,14 @@ pub enum CopyError {
     UserPointerNotInUserSpace,
     BadAccess,
     TooLong,
+    CapacityOverflow,
     OutOfMemory,
 }
 
 impl From<alloc::collections::TryReserveError> for CopyError {
     fn from(value: alloc::collections::TryReserveError) -> Self {
         match value.kind() {
-            alloc::collections::TryReserveErrorKind::CapacityOverflow => CopyError::TooLong,
+            alloc::collections::TryReserveErrorKind::CapacityOverflow => CopyError::CapacityOverflow,
             alloc::collections::TryReserveErrorKind::AllocError { .. } => CopyError::OutOfMemory,
         }
     }

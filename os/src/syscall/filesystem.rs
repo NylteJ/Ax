@@ -634,22 +634,40 @@ pub struct IoVec {
     iov_len: usize,
 }
 
+fn do_writev(file: &mut vfs::FileData, iov: &[IoVec]) -> VfsResult<u64> {
+    // writev 保证原子性，因此需要大粒度锁
+    let mut total_written = 0;
+
+    for IoVec { iov_base, iov_len } in iov {
+        total_written += file.write(iov_base.cast(), *iov_len as u64)?;
+    }
+
+    Ok(total_written)
+}
+
 pub extern "C" fn writev(fd: isize, iov: *const IoVec, iovcnt: usize) -> SyscallResult {
     let file = get_file_from_fd(fd)?;
 
     let iov = copy_vec_from_user(ptr::slice_from_raw_parts(iov, iovcnt))?;
 
-    let mut total_written = 0;
+    let total_written = do_writev(&mut file.data.lock(), &iov)?;
 
-    // writev 保证原子性，因此需要大粒度锁
-    {
-        let mut file_lock_guard = file.data.lock();
-        for IoVec { iov_base, iov_len } in iov {
-            total_written += file_lock_guard.write(iov_base.cast(), iov_len as u64)?;
+    SyscallResult::success(total_written as usize)
+}
+
+fn do_readv(file: &mut vfs::FileData, iov: &[IoVec]) -> VfsResult<u64> {
+    // readv 保证原子性，因此需要大粒度锁
+    let mut total_read = 0;
+
+    for IoVec { iov_base, iov_len } in iov {
+        let new_read = file.read(iov_base.cast(), *iov_len as u64)?;
+        total_read += new_read;
+        if new_read != *iov_len as u64 {
+            break;
         }
     }
 
-    SyscallResult::success(total_written as usize)
+    Ok(total_read)
 }
 
 pub extern "C" fn readv(fd: isize, iov: *const IoVec, iovcnt: usize) -> SyscallResult {
@@ -657,21 +675,81 @@ pub extern "C" fn readv(fd: isize, iov: *const IoVec, iovcnt: usize) -> SyscallR
 
     let iov = copy_vec_from_user(ptr::slice_from_raw_parts(iov, iovcnt))?;
 
-    let mut total_read = 0;
-
-    // readv 保证原子性，因此需要大粒度锁
-    {
-        let mut file_lock_guard = file.data.lock();
-        for IoVec { iov_base, iov_len } in iov {
-            let new_read = file_lock_guard.read(iov_base.cast(), iov_len as u64)?;
-            total_read += new_read;
-            if new_read != iov_len as u64 {
-                break;
-            }
-        }
-    }
+    let total_read = do_readv(&mut file.data.lock(), &iov)?;
 
     SyscallResult::success(total_read as usize)
+}
+
+fn simulate_atomic_p_operations(
+    fd: isize,
+    offset: isize,
+    op: impl FnOnce(&mut vfs::FileData) -> VfsResult<u64>,
+) -> SyscallResult {
+    if offset < 0 {
+        return EINVAL;
+    }
+
+    let file = get_file_from_fd(fd)?;
+
+    // 这里我们在持有锁的情况下用 fseek + read 模拟 pread
+    // 并发层面的原子性是可以保证的，但这样的确不能确保文件位移被正确还原了
+    // FIXME
+
+    let mut file_guard = file.data.lock();
+    let old_pos = file_guard.pos;
+
+    file_guard.fseek(vfs::SeekFrom::Start(offset as u64))?;
+
+    let result = op(&mut file_guard);
+
+    let new_pos = file_guard
+        .fseek(vfs::SeekFrom::Start(old_pos))
+        .expect("这里不应失败");
+    debug_assert_eq!(new_pos, old_pos);
+
+    let len = result?;
+
+    SyscallResult::success(len as usize)
+}
+
+pub extern "C" fn pread64(
+    fd: isize,
+    buf: *mut c_void,
+    count: usize,
+    offset: isize,
+) -> SyscallResult {
+    simulate_atomic_p_operations(fd, offset, |file| file.read(buf as *mut u8, count as u64))
+}
+
+pub extern "C" fn pwrite64(
+    fd: isize,
+    buf: *const c_void,
+    count: usize,
+    offset: isize,
+) -> SyscallResult {
+    simulate_atomic_p_operations(fd, offset, |file| {
+        file.write(buf as *const u8, count as u64)
+    })
+}
+
+pub extern "C" fn preadv(
+    fd: isize,
+    iov: *const IoVec,
+    iovcnt: usize,
+    offset: isize,
+) -> SyscallResult {
+    let iov = copy_vec_from_user(ptr::slice_from_raw_parts(iov, iovcnt))?;
+    simulate_atomic_p_operations(fd, offset, |file| do_readv(file, &iov))
+}
+
+pub extern "C" fn pwritev(
+    fd: isize,
+    iov: *const IoVec,
+    iovcnt: usize,
+    offset: isize,
+) -> SyscallResult {
+    let iov = copy_vec_from_user(ptr::slice_from_raw_parts(iov, iovcnt))?;
+    simulate_atomic_p_operations(fd, offset, |file| do_writev(file, &iov))
 }
 
 /// 功能：创建文件的链接；

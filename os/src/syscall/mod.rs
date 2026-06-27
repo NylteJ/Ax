@@ -130,6 +130,10 @@ pub static TABLE: [Option<SyscallFn>; MAX_SYSCALL_COUNT] = const {
     define!(80, filesystem::fstat);
     define!(66, filesystem::writev);
     define!(65, filesystem::readv);
+    define!(67, filesystem::pread64);
+    define!(68, filesystem::pwrite64);
+    define!(69, filesystem::preadv);
+    define!(70, filesystem::pwritev);
     define!(79, filesystem::fstatat);
     define!(25, filesystem::fcntl);
     define!(291, filesystem::statx);
@@ -234,6 +238,7 @@ impl FromResidual<Result<Infallible, CopyError>> for SyscallResult {
         match residual.unwrap_err() {
             CopyError::UserPointerNotInUserSpace | CopyError::BadAccess => err_codes::EFAULT,
             CopyError::TooLong => err_codes::ENAMETOOLONG,
+            CopyError::CapacityOverflow => err_codes::EINVAL,
             CopyError::OutOfMemory => err_codes::ENOMEM,
         }
     }
@@ -503,6 +508,8 @@ pub const SYSCALL_ID_NAME_MAP: [&str; MAX_SYSCALL_COUNT] = {
     map[66] = "writev";
     map[67] = "pread64";
     map[68] = "pwrite64";
+    map[69] = "preadv";
+    map[70] = "pwritev";
     map[71] = "sendfile";
     map[72] = "pselect6";
     map[73] = "ppoll";
