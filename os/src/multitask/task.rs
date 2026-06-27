@@ -377,6 +377,22 @@ impl Task {
 
             // 我们还需要初始化 page_table_register，这个需要在后面写入
 
+            // 对于 LoongArch，还需要保存浮点寄存器和 EUEN
+            #[cfg(target_arch = "loongarch64")]
+            unsafe {
+                let euen: usize;
+                core::arch::asm!("csrrd {0}, 0x2", out(reg) euen);
+
+                if euen & 1 != 0 {
+                    crate::multitask::task_context::store_fregs_to(ret_task_ctxt_ptr);
+                }
+
+                ret_task_ctxt_ptr
+                    .byte_add(offset_of!(TaskContext, euen))
+                    .cast::<usize>()
+                    .write(euen);
+            };
+
             // 剩余部分保持未初始化即可，它们会被 TrapContext 覆盖因此完全不重要
         }
         // 于是相对应的，kstack 也要改变，以伪造出该 Task 已经挂起的场景

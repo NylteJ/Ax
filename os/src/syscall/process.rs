@@ -347,6 +347,18 @@ pub extern "C" fn execve(
     debug_assert_eq!(*current_sp % STACK_ALIGN, 0);
     debug_assert_eq!(*current_sp + data_bytes, data_end);
 
+    // 对于 LoongArch 64，我们可以清除 EUEN 中的浮点位
+    #[cfg(target_arch = "loongarch64")]
+    {
+        use bit_field::BitField;
+        use core::arch::asm;
+
+        let mut euen: usize;
+        unsafe { asm!("csrrd {0}, 0x2", out(reg) euen) };
+        euen.set_bit(0, false);
+        unsafe { asm!("csrwr {0}, 0x2", inlateout(reg) euen => _) };
+    }
+
     SyscallResult::success(0) // 这个返回值其实没什么意义，它会成为新程序启动时的 a0，但除此之外不会有更多作用
 }
 

@@ -90,14 +90,13 @@ extern "C" fn trap_handler(context: &mut NativeTrapContext) {
                 {
                     *UNKNOWN_SYSCALLS.lock().entry(id).or_insert(0) += 1;
                 }
+            } else {
+                log::trace!(
+                    "系统调用：TID = {}, id = {id} ({}), args = {args:x?} (HEX), return value = {ret_value:#x}",
+                    cur_task.tid,
+                    syscall::SYSCALL_ID_NAME_MAP.get(id).unwrap_or(&"???")
+                );
             }
-            // else {
-            //     log::trace!(
-            //         "系统调用：TID = {}, id = {id} ({}), args = {args:x?} (HEX), return value = {ret_value:#x}",
-            //         cur_task.tid,
-            //         syscall::SYSCALL_ID_NAME_MAP.get(id).unwrap_or(&"???")
-            //     );
-            // }
 
             if ret_value == ERRORCODE_SPECIAL_RESTART_SYSCALL {
                 log::trace!(
@@ -165,10 +164,10 @@ extern "C" fn trap_handler(context: &mut NativeTrapContext) {
 
         #[cfg(target_arch = "loongarch64")]
         Trap::Exception(Exception::FloatingPointUnavailable) => {
-            core::intrinsics::cold_path(); // 目前只会触发一次
+            debug_assert!(!trap_is_from_kernel, "内核不应使用浮点指令");
 
-            log::warn!(
-                "当前任务（TID = {}）使用了浮点指令。目前我们的内核未使用浮点，因此暂时无需额外处理，只是未来扩展时需要注意（以及，目前此提示实际上只会触发一次，因为 EUEN 并不会被保存）",
+            log::info!(
+                "当前任务（TID = {}）使用了浮点指令！我们的内核不使用浮点寄存器，因此浮点寄存器只会在任务切换时被保存和恢复",
                 cur_task.tid
             );
 
