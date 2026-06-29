@@ -1,4 +1,4 @@
-use core::{mem::replace, ptr::addr_eq, slice};
+use core::mem::replace;
 
 use num_enum::TryFromPrimitive;
 
@@ -8,7 +8,7 @@ use crate::{
         shared_with_asm::SharedWithAsm,
         timer::{check_timers, get_cpu_tick},
     },
-    memory::uaccess::{copy_from_user, copy_one_from_user, copy_one_to_user, copy_to_user},
+    memory::uaccess::{copy_one_from_user, copy_one_to_user},
     multitask::{
         current_task,
         signal::SignalId,
@@ -16,7 +16,7 @@ use crate::{
         task_manager::get_task_by_tid,
         task_scheduler::TASK_SCHEDULER,
     },
-    print, println,
+    println,
     syscall::SyscallResult,
 };
 

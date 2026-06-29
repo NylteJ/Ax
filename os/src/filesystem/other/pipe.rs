@@ -15,21 +15,20 @@ use uninit::extension_traits::MaybeUninitExt;
 use crate::{
     basic::{
         UnsafeInited,
-        bstr::{ByteStr, ByteString},
+        bstr::ByteStr,
         extend_lifetime,
         sync::{Mutex, MutexGuard},
     },
+    dummy_inode_body,
     filesystem::{
         get_new_anon_block_device_id,
         vfs::{self, VfsError, VfsResult},
     },
     multitask::{current_task, signal::SignalId},
-    syscall::filesystem::{KstatInner, Time},
 };
 
-// ltp 会开非常非常多的 pipe，所以这个值最好别设太大
-// 但注意 POSIX 标准规定保证原子性的写入数据量至少为 512 字节，因此也最好不要比那还小，否则实现会变得很麻烦
-const BUFFER_BYTES: usize = 512;
+// ltp pipe11 要求缓冲区至少有 4096 字节
+const BUFFER_BYTES: usize = 4096;
 
 type RingBuffer = ringbuf::LocalRb<ringbuf::storage::Array<u8, BUFFER_BYTES>>;
 
@@ -382,78 +381,7 @@ struct PipeINode {
 }
 
 impl vfs::INodeOps for PipeINode {
-    fn create(
-        &mut self,
-        _mode: vfs::INodeMode,
-        _dentry: vfs::DEntryArc,
-    ) -> VfsResult<vfs::INodeArc> {
-        unimplemented!()
-    }
-
-    fn lookup(&self, _name: &ByteStr, _dentry: vfs::DEntryArc) -> VfsResult<vfs::DEntryArc> {
-        unimplemented!()
-    }
-
-    fn link(&mut self, _dentry: vfs::DEntryArc, _target: &vfs::INodeArc) -> VfsResult<()> {
-        unimplemented!()
-    }
-
-    fn unlink(&mut self, _dentry: &vfs::DEntryArc) -> VfsResult<()> {
-        unimplemented!()
-    }
-
-    fn mkdir(
-        &mut self,
-        _dentry: vfs::DEntryArc,
-        _mode: vfs::INodeMode,
-    ) -> VfsResult<vfs::INodeArc> {
-        unimplemented!()
-    }
-
-    fn rmdir(&mut self, _dentry: &vfs::DEntryArc) -> VfsResult<()> {
-        unimplemented!()
-    }
-
-    fn rename(
-        &mut self,
-        _new_node: Option<&mut vfs::INodeData>,
-        _old_name: &ByteStr,
-        _new_name: ByteString,
-        _flags: vfs::INodeRenameFlags,
-    ) -> VfsResult<()> {
-        unimplemented!()
-    }
-
-    fn symlink(
-        &mut self,
-        _target: ByteString,
-        _dentry: vfs::DEntryArc,
-    ) -> VfsResult<vfs::INodeArc> {
-        unimplemented!()
-    }
-
-    fn read_symlink(&self) -> VfsResult<ByteString> {
-        unreachable!("不可能是符号链接，此请求在 VFS 层就应被拦截")
-    }
-
-    fn get_kstat(&self) -> VfsResult<KstatInner> {
-        Ok(KstatInner {
-            st_uid: 0, // FIXME
-            st_gid: 0, // FIXME
-            st_rdev: 0,
-            st_size: 0,
-            st_blksize: BUFFER_BYTES as u32,
-            st_blocks: 0,
-            st_atime: Time::from_sec(0), // FIXME
-            st_mtime: Time::from_sec(0), // FIXME
-            st_ctime: Time::from_sec(0), // FIXME
-            ..Default::default()
-        })
-    }
-
-    fn evictable_when_mem_ref_zero(&mut self) -> bool {
-        true
-    }
+    dummy_inode_body!();
 }
 
 impl PipeINode {

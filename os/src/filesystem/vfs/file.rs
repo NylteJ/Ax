@@ -364,6 +364,11 @@ impl<T: ?Sized + FileOps> FileData<T> {
     pub fn ioctl(&mut self, cmd: IoctlCommand, arg: *mut ()) -> VfsResult<usize> {
         self.ops.ioctl(cmd, arg)
     }
+
+    /// 获取 ops。注意 ops 上的函数并不为直接调用设计，随意使用它有可能违反内存安全。
+    pub unsafe fn get_ops(&mut self) -> &mut T {
+        &mut self.ops
+    }
 }
 
 pub fn default_fseek<T: FileOps + 'static>(this: &mut T, seek_from: SeekFrom) -> VfsResult<u64> {

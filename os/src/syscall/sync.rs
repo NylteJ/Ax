@@ -1,8 +1,5 @@
 use core::ptr::NonNull;
-use core::sync::atomic::AtomicU32;
-use core::sync::atomic::Ordering;
 
-use alloc::vec::Vec;
 use bitflags::bitflags;
 use num_enum::TryFromPrimitive;
 
@@ -13,8 +10,6 @@ use crate::memory::PAGE_BYTES;
 use crate::memory::address::PhysAddr;
 use crate::memory::address::PhysPageNum;
 use crate::memory::address::VirtAddr;
-use crate::memory::address::VirtPageNum;
-use crate::memory::uaccess::copy_one_from_user;
 use crate::memory::virtual_memory_area::VMAType;
 use crate::multitask::current_task;
 use crate::multitask::futex::FutexKey;

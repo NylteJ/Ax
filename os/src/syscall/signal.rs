@@ -1,6 +1,4 @@
 use core::ffi::c_int;
-use core::ffi::c_long;
-use core::ffi::c_short;
 use core::ffi::c_void;
 use core::mem::offset_of;
 use core::mem::replace;

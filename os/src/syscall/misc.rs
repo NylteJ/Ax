@@ -1,6 +1,5 @@
 use core::ffi::c_int;
 use core::ffi::c_void;
-use core::slice;
 use core::sync::atomic::Ordering;
 
 use bitflags::bitflags;
@@ -12,7 +11,6 @@ use crate::filesystem::vfs::FileOps;
 use crate::memory::uaccess::copy_one_from_user;
 use crate::memory::uaccess::copy_one_to_user;
 use crate::memory::uaccess::copy_slice_to_user;
-use crate::memory::uaccess::copy_to_user;
 use crate::multitask::current_task;
 use crate::multitask::task_manager::get_task_by_tid;
 use crate::syscall::SyscallResult;

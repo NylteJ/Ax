@@ -9,6 +9,7 @@ pub mod filesystems;
 mod other;
 mod utils;
 
+pub use other::epoll::EPollFile;
 pub use other::pipe::new_anonymous_pipes;
 
 pub fn init() {
@@ -18,6 +19,7 @@ pub fn init() {
     procfs::register();
 
     other::pipe::init();
+    other::epoll::init();
 }
 
 pub fn init_root(

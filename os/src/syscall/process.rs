@@ -1,23 +1,18 @@
 use core::{
-    ffi::{c_char, c_int, c_long, c_uint},
+    ffi::{c_char, c_int},
     mem::MaybeUninit,
     num::NonZero,
-    pin::Pin,
     ptr::addr_eq,
     sync::atomic::Ordering,
 };
 
-use alloc::{sync::Arc, vec::Vec};
+use alloc::vec::Vec;
 use bit_field::BitField;
 use bitflags::bitflags;
-use intrusive_collections::PointerOps;
 use rand::Rng;
 
 use crate::{
-    basic::{
-        debugger::debugbreak,
-        timer::{get_cpu_tick, us_to_cpu_tick},
-    },
+    basic::timer::{get_cpu_tick, us_to_cpu_tick},
     filesystem::{
         devfs::drivers::URANDOM_DRIVER,
         vfs::{FileFlags, PathToWalk, walk_path},
@@ -32,22 +27,20 @@ use crate::{
     multitask::{
         current_task,
         signal::SignalId,
-        task::{AuxId, AuxiliaryEntry, Task, TaskArc, USER_STACK_BYTES},
+        task::{AuxId, AuxiliaryEntry, Task, USER_STACK_BYTES},
         task_manager::get_task_by_tid,
         wait::{SleepError, SleepWithTimeoutResult, Waiting},
     },
     syscall::{
-        self, SyscallResult,
+        SyscallResult,
         basic::exit_kernel,
         common::TimeSpec,
         filesystem::{PATH_LEN_HINT, PATH_LEN_MAX},
-        signal::{SignalActionFlags, restart_syscall_if_able},
+        signal::restart_syscall_if_able,
     },
 };
 
 use crate::syscall::err_codes::*;
-
-pub use super::basic::exit;
 
 /// * 功能：创建一个子进程；
 /// * 输入：

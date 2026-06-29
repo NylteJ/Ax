@@ -88,7 +88,6 @@ pub extern "C" fn setresgid(rgid: isize, egid: isize, sgid: isize) -> SyscallRes
     SyscallResult::success(0)
 }
 
-// 此部分参考了 NoAxiom
 pub extern "C" fn setreuid(ruid: isize, euid: isize) -> SyscallResult {
     let mut uids = cur_uids_mtx_guard();
     let unprivileged = uids.euid != 0;
@@ -105,7 +104,6 @@ pub extern "C" fn setreuid(ruid: isize, euid: isize) -> SyscallResult {
     SyscallResult::success(0)
 }
 
-// 此部分参考了 NoAxiom
 pub extern "C" fn setregid(rgid: isize, egid: isize) -> SyscallResult {
     let mut uids = cur_uids_mtx_guard();
     let unprivileged = uids.euid != 0;

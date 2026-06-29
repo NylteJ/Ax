@@ -1,13 +1,10 @@
 use core::{
     ffi::{c_char, c_int, c_long, c_short, c_uchar, c_uint, c_ulong, c_ushort, c_void},
-    mem::{MaybeUninit, replace, swap},
-    ops::FromResidual,
-    pin::Pin,
-    ptr::{self, NonNull, addr_eq, from_raw_parts, from_raw_parts_mut, null_mut},
-    slice,
+    mem::{MaybeUninit, replace},
+    ptr::{self, NonNull, addr_eq},
 };
 
-use alloc::{borrow::ToOwned, collections::vec_deque::VecDeque, str, sync::Arc, vec::Vec};
+use alloc::{collections::vec_deque::VecDeque, str, vec::Vec};
 use bitflags::{Flags, bitflags};
 use num_enum::TryFromPrimitive;
 use uninit::AsMaybeUninit;
@@ -15,25 +12,22 @@ use uninit::AsMaybeUninit;
 use crate::{
     basic::{
         DropGuard,
-        bstr::{ByteStr, ByteString},
-        extend_lifetime_mut,
+        bstr::ByteStr,
         timer::{get_cpu_tick, us_to_cpu_tick},
     },
     filesystem::{
         devfs::drivers::DeviceId,
-        filesystems::get_filesystem_type,
         new_anonymous_pipes,
         vfs::{
-            self, DEntryArc, File, FileArc, FileFlags, FileOps, FileSystem, INodeArc, INodeMode,
-            IterateDirData, MountPoint, Path, PathToWalk, PollStatus, ROOT_PATH, VfsError,
-            VfsResult, walk_path, walk_path_no_follow,
+            self, FileArc, FileFlags, FileOps, INodeMode, MountPoint, Path, PathToWalk, PollStatus,
+            ROOT_PATH, VfsError, VfsResult, walk_path, walk_path_no_follow,
         },
     },
     memory::{
         PAGE_BYTES,
         uaccess::{
-            copy_from_user_uninit, copy_one_from_user, copy_one_to_user, copy_slice_to_user,
-            copy_str_from_user, copy_to_user, copy_vec_from_user,
+            copy_one_from_user, copy_one_to_user, copy_slice_to_user, copy_str_from_user,
+            copy_to_user, copy_vec_from_user,
         },
     },
     multitask::{FDTableEntry, FileDescriptorFlags, current_task, signal::SignalMask},
@@ -50,7 +44,7 @@ pub(super) const PATH_LEN_HINT: usize = 64;
 pub(super) const FILENAME_LEN_HINT: usize = 32;
 pub(super) const PATH_LEN_MAX: usize = 32768;
 
-fn get_file_from_fd(fd: isize) -> Result<FileArc, SyscallResult> {
+pub(super) fn get_file_from_fd(fd: isize) -> Result<FileArc, SyscallResult> {
     if fd < 0 {
         return Err(EBADF);
     }
@@ -62,7 +56,7 @@ fn get_file_from_fd(fd: isize) -> Result<FileArc, SyscallResult> {
     Ok(file)
 }
 
-fn cur_fd_rlimit() -> usize {
+pub(super) fn cur_fd_rlimit() -> usize {
     let cur_task = unsafe { current_task().as_ref_unchecked() };
     cur_task.process.rlimits.read()[RLIMIT_NOFILE].rlim_cur
 }
@@ -578,7 +572,7 @@ pub extern "C" fn getdents64(fd: isize, buf: *mut c_void, len: usize) -> Syscall
     let (data, _) = file.data.lock().iterate_dir(buffer)?;
 
     debug_assert!(data.len() <= len);
-    copy_to_user(buf as *mut u8, data);
+    copy_to_user(buf as *mut u8, data)?;
 
     SyscallResult::success(data.len())
 }
@@ -1815,14 +1809,14 @@ pub extern "C" fn ftruncate64(fd: isize, length: u64) -> SyscallResult {
         drop(inode_wguard); // FIXME: 这里其实也有竞态窗口
 
         let mut file_guard = file.data.lock();
-        file_guard.fseek(vfs::SeekFrom::Start(old_length));
+        file_guard.fseek(vfs::SeekFrom::Start(old_length))?;
         file_guard.kwrite(
             |data| {
                 data.fill(MaybeUninit::new(0));
                 Ok(data.len() as u64)
             },
             length - old_length,
-        )?;
+        )?; // FIXME: 异常时的回滚
     }
 
     log::trace!("truncated INode {inode:p}, {old_length} -> {length}");

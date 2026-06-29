@@ -1,4 +1,4 @@
-# 以下代码衍生自 NoAxiom 的 user/apps/run_tests/src/ltp_script_la.rs，有改动
+#!/bin/sh
 
 file_list="
 abort01
@@ -192,6 +192,10 @@ dup207
 dup3_01
 dup3_02
 dynamic_debug01.sh
+epoll_ctl01
+epoll_ctl02
+epoll_ctl03
+epoll_ctl04
 execl01
 execlp01
 execv01
@@ -784,41 +788,26 @@ write06
 writetest
 writev07
 "
-set -- $file_list
 
-cd /sdcd/musl/ltp/testcases/bin
+for test_dir in "/sdcd/musl/ltp/testcases/bin" "/sdcd/glibc/ltp/testcases/bin"; do
+    case "$test_dir" in
+        *musl*) label="ltp-musl" ;;
+        *)      label="ltp-glibc" ;;
+    esac
 
-echo "#### OS COMP TEST GROUP START ltp-musl ####"
+    cd "$test_dir" || exit 1
 
-for file in $@; do
-  if [ -f "$file" ]; then
-    echo "RUN LTP CASE $(basename "$file")"
+    echo "#### OS COMP TEST GROUP START $label ####"
 
-    "./$file"
-    ret=$?
+    for file in $file_list; do
+        if [ -f "$file" ]; then
+            name=$(basename "$file")
+            echo "RUN LTP CASE $name"
+            "./$file"
+            status=$?
+            echo "FAIL LTP CASE $name : $status"
+        fi
+    done
 
-    echo "FAIL LTP CASE $(basename "$file") : $ret"
-  fi
+    echo "#### OS COMP TEST GROUP END $label ####"
 done
-
-
-echo "#### OS COMP TEST GROUP END ltp-musl ####"
-
-cd /sdcd/glibc/ltp/testcases/bin
-
-
-echo "#### OS COMP TEST GROUP START ltp-glibc ####"
-
-for file in $@; do
-  if [ -f "$file" ]; then
-    echo "RUN LTP CASE $(basename "$file")"
-
-    "./$file"
-    ret=$?
-
-    echo "FAIL LTP CASE $(basename "$file") : $ret"
-  fi
-done
-
-
-echo "#### OS COMP TEST GROUP END ltp-glibc ####"

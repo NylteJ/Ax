@@ -1,8 +1,6 @@
-#![allow(unused)] // FIXME: temp
 use core::{
     arch::asm,
     convert::Infallible,
-    mem::transmute,
     ops::{ControlFlow, FromResidual, Try},
     ptr::NonNull,
 };
@@ -10,8 +8,7 @@ use core::{
 use alloc::collections::TryReserveError;
 
 use crate::{
-    basic::sync::Mutex,
-    filesystem::vfs::{VfsError, VfsResult},
+    filesystem::vfs::VfsError,
     memory::uaccess::CopyError,
     multitask::{
         InsertFDError,
@@ -25,6 +22,7 @@ pub mod common;
 
 pub mod basic;
 pub mod clock;
+pub mod epoll;
 pub mod filesystem;
 pub mod memory;
 pub mod misc;
@@ -111,6 +109,9 @@ pub static TABLE: [Option<SyscallFn>; MAX_SYSCALL_COUNT] = const {
     define!(114, clock::clock_getres);
     define!(113, clock::clock_gettime);
     define!(112, clock::clock_settime);
+
+    define!(20, epoll::epoll_create1);
+    define!(21, epoll::epoll_ctl);
 
     define!(17, filesystem::getcwd);
     define!(59, filesystem::pipe2);
@@ -359,12 +360,14 @@ impl SyscallResult {
 mod err_codes {
     macro_rules! err_code {
         ($name:ident, $val:expr) => {
+            #[allow(unused)]
             pub const $name: SyscallResult = SyscallResult {
                 value: -($val as isize) as usize,
             };
         };
         ($name:ident, $val:expr, $doc:expr) => {
             #[doc = $doc]
+            #[allow(unused)]
             pub const $name: SyscallResult = SyscallResult {
                 value: -($val as isize) as usize,
             };
@@ -373,76 +376,64 @@ mod err_codes {
 
     use super::SyscallResult;
 
-    // vvv 以下代码衍生自 NighthawkOS 的 lib/systype/src/error.rs，有修改 vvv
-
-    err_code!(EPERM, 1, "Operation not permitted");
-    err_code!(ENOENT, 2, "No such file or directory");
-    err_code!(ESRCH, 3, "No such process");
-    err_code!(EINTR, 4, "Interrupted system call");
-    err_code!(EIO, 5, "I/O error");
-    err_code!(ENXIO, 6, "No such device or address");
-    err_code!(E2BIG, 7, "Argument list too long");
-    err_code!(ENOEXEC, 8, "Exec format error");
-    err_code!(EBADF, 9, "Bad file number");
-    err_code!(ECHILD, 10, "No child processes");
-    err_code!(EAGAIN, 11, "Try again");
-    err_code!(ENOMEM, 12, "Out of memory");
-    err_code!(EACCES, 13, "Permission denied");
-    err_code!(EFAULT, 14, "Bad address");
-    err_code!(ENOTBLK, 15, "Block device required");
-    err_code!(EBUSY, 16, "Device or resource busy");
-    err_code!(EEXIST, 17, "File exists");
-    err_code!(EXDEV, 18, "Cross-device link");
-    err_code!(ENODEV, 19, "No such device");
-    err_code!(ENOTDIR, 20, "Not a directory");
-    err_code!(EISDIR, 21, "Is a directory");
-    err_code!(EINVAL, 22, "Invalid argument");
-    err_code!(ENFILE, 23, "File table overflow");
-    err_code!(EMFILE, 24, "Too many open files");
-    err_code!(ENOTTY, 25, "Not a typewriter");
-    err_code!(ETXTBSY, 26, "Text file busy");
-    err_code!(EFBIG, 27, "File too large");
-    err_code!(ENOSPC, 28, "No space left on device");
-    err_code!(ESPIPE, 29, "Illegal seek");
-    err_code!(EROFS, 30, "Read-only file system");
-    err_code!(EMLINK, 31, "Too many links");
-    err_code!(EPIPE, 32, "Broken pipe");
-    err_code!(EDOM, 33, "Math argument out of domain of func");
-    err_code!(ERANGE, 34, "Math result not representable");
-    err_code!(EDEADLK, 35, "Resource deadlock would occur");
-    err_code!(ENAMETOOLONG, 36, "File name too long");
-    err_code!(ENOLCK, 37, "No record locks available");
-    err_code!(ENOSYS, 38, "Invalid system call number");
-    err_code!(ENOTEMPTY, 39, "Directory not empty");
-    err_code!(ELOOP, 40, "Trap in Infinite loop");
-    err_code!(ENODATA, 61, "No data");
-    err_code!(EOVERFLOW, 75, "Too much data");
-    err_code!(ENOTSOCK, 88, "Socket operation on non-socket");
-    err_code!(ENOPROTOOPT, 92, "Protocol not available");
-    err_code!(EPROTONOSUPPORT, 93, "Protocol not supported");
-    err_code!(EOPNOTSUPP, 95, "Unsupported");
-    err_code!(
-        EAFNOSUPPORT,
-        97,
-        "EAFNOSUPPORT 远程端点指定的地址族不能与这种类型的套接字一起使用"
-    );
-    err_code!(EADDRINUSE, 98, "Socket address is already in use");
-    err_code!(EADDRNOTAVAIL, 99, "Address not available");
-    err_code!(ECONNRESET, 104, "Connection reset");
-    err_code!(EISCONN, 106, "Transport endpoint is already connected");
-    err_code!(ENOTCONN, 107, "Transport endpoint is not connected");
-    err_code!(ETIMEDOUT, 110, "Connection timed out");
-    err_code!(ECONNREFUSED, 111, "Connection refused");
-    err_code!(
-        EINPROGRESS,
-        115,
-        "The socket is nonblocking and the connection cannot be completed immediately.(connect.2)"
-    );
-    err_code!(ESTALE, 116, "Stale file.");
-    err_code!(ECANCELED, 125, "operation is cancelled");
-    err_code!(EUTFFAIL, 188, "UTF-8 Convert Failed");
-
-    // ^^^ 以上代码衍生自 NighthawkOS 的 lib/systype/src/error.rs，有修改 ^^^
+    // 这部分代码曾源于 NighthawkOS 的 lib/systype/src/error.rs，但已删去了所有独创性表达
+    err_code!(EPERM, 1);
+    err_code!(ENOENT, 2);
+    err_code!(ESRCH, 3);
+    err_code!(EINTR, 4);
+    err_code!(EIO, 5);
+    err_code!(ENXIO, 6);
+    err_code!(E2BIG, 7);
+    err_code!(ENOEXEC, 8);
+    err_code!(EBADF, 9);
+    err_code!(ECHILD, 10);
+    err_code!(EAGAIN, 11);
+    err_code!(ENOMEM, 12);
+    err_code!(EACCES, 13);
+    err_code!(EFAULT, 14);
+    err_code!(ENOTBLK, 15);
+    err_code!(EBUSY, 16);
+    err_code!(EEXIST, 17);
+    err_code!(EXDEV, 18);
+    err_code!(ENODEV, 19);
+    err_code!(ENOTDIR, 20);
+    err_code!(EISDIR, 21);
+    err_code!(EINVAL, 22);
+    err_code!(ENFILE, 23);
+    err_code!(EMFILE, 24);
+    err_code!(ENOTTY, 25);
+    err_code!(ETXTBSY, 26);
+    err_code!(EFBIG, 27);
+    err_code!(ENOSPC, 28);
+    err_code!(ESPIPE, 29);
+    err_code!(EROFS, 30);
+    err_code!(EMLINK, 31);
+    err_code!(EPIPE, 32);
+    err_code!(EDOM, 33);
+    err_code!(ERANGE, 34);
+    err_code!(EDEADLK, 35);
+    err_code!(ENAMETOOLONG, 36);
+    err_code!(ENOLCK, 37);
+    err_code!(ENOSYS, 38);
+    err_code!(ENOTEMPTY, 39);
+    err_code!(ELOOP, 40);
+    err_code!(ENODATA, 61);
+    err_code!(EOVERFLOW, 75);
+    err_code!(ENOTSOCK, 88);
+    err_code!(ENOPROTOOPT, 92);
+    err_code!(EPROTONOSUPPORT, 93);
+    err_code!(EOPNOTSUPP, 95);
+    err_code!(EAFNOSUPPORT, 97);
+    err_code!(EADDRINUSE, 98);
+    err_code!(EADDRNOTAVAIL, 99);
+    err_code!(ECONNRESET, 104);
+    err_code!(EISCONN, 106);
+    err_code!(ENOTCONN, 107);
+    err_code!(ETIMEDOUT, 110);
+    err_code!(ECONNREFUSED, 111);
+    err_code!(EINPROGRESS, 115);
+    err_code!(ESTALE, 116);
+    err_code!(ECANCELED, 125);
 
     err_code!(
         E_SPECIAL_RESTART_SYSCALL,

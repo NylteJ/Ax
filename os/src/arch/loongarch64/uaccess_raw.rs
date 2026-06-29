@@ -14,6 +14,8 @@ unsafe impl interfaces::UAccessRaw for UAccessRaw {
             #[rustfmt::skip]
             naked_asm!(
                 // vvv 下列代码衍生自 Rust 工具链自带的 compiler_builtins::mem::memcpy 汇编，有略微改写 vvv
+                // Usage is allowed under the MIT License and the Apache License, Version 2.0 with the LLVM exception.
+                // （许可证原文见仓库根目录下的 LICENSE 文件）
                 "addi.d  $sp, $sp, -16",
                 "ori     $a3, $zero, 16",
                 "bltu    $a2, $a3, .CPY_L0",
@@ -212,6 +214,8 @@ unsafe impl interfaces::UAccessRaw for UAccessRaw {
             #[rustfmt::skip]
             naked_asm!(
                 // vvv 下列代码衍生自 Rust 工具链自带的 memset 汇编，有略微改写 vvv
+                // Usage is allowed under the MIT License and the Apache License, Version 2.0 with the LLVM exception.
+                // （许可证原文见仓库根目录下的 LICENSE 文件）
                 "ori     $a3, $zero, 16",
                 "bltu    $a2, $a3, .MST_L1",
                 "sub.d   $a6, $zero, $a0",

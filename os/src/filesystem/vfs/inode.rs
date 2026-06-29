@@ -418,3 +418,93 @@ unsafe impl CachedValue for INode {
         unsafe { FileSystem::remove_icache_entry(cache, self.id) }
     }
 }
+
+/// 不实现任何 INode 应有功能的 INode 实现体，内存引用计数为 0 时即刻被驱逐，get_kstat 返回占位值
+#[macro_export]
+macro_rules! dummy_inode_body {
+    () => {
+        fn create(
+            &mut self,
+            _mode: crate::filesystem::vfs::INodeMode,
+            _dentry: crate::filesystem::vfs::DEntryArc,
+        ) -> crate::filesystem::vfs::VfsResult<crate::filesystem::vfs::INodeArc> {
+            unimplemented!()
+        }
+
+        fn lookup(
+            &self,
+            _name: &crate::basic::bstr::ByteStr,
+            _dentry: crate::filesystem::vfs::DEntryArc,
+        ) -> crate::filesystem::vfs::VfsResult<crate::filesystem::vfs::DEntryArc> {
+            unimplemented!()
+        }
+
+        fn link(
+            &mut self,
+            _dentry: crate::filesystem::vfs::DEntryArc,
+            _target: &crate::filesystem::vfs::INodeArc,
+        ) -> crate::filesystem::vfs::VfsResult<()> {
+            unimplemented!()
+        }
+
+        fn unlink(
+            &mut self,
+            _dentry: &crate::filesystem::vfs::DEntryArc,
+        ) -> crate::filesystem::vfs::VfsResult<()> {
+            unimplemented!()
+        }
+
+        fn mkdir(
+            &mut self,
+            _dentry: crate::filesystem::vfs::DEntryArc,
+            _mode: crate::filesystem::vfs::INodeMode,
+        ) -> crate::filesystem::vfs::VfsResult<crate::filesystem::vfs::INodeArc> {
+            unimplemented!()
+        }
+
+        fn rmdir(
+            &mut self,
+            _dentry: &crate::filesystem::vfs::DEntryArc,
+        ) -> crate::filesystem::vfs::VfsResult<()> {
+            unimplemented!()
+        }
+
+        fn rename(
+            &mut self,
+            _new_node: Option<&mut crate::filesystem::vfs::INodeData>,
+            _old_name: &crate::basic::bstr::ByteStr,
+            _new_name: crate::basic::bstr::ByteString,
+            _flags: crate::filesystem::vfs::INodeRenameFlags,
+        ) -> crate::filesystem::vfs::VfsResult<()> {
+            unimplemented!()
+        }
+
+        fn symlink(
+            &mut self,
+            _target: crate::basic::bstr::ByteString,
+            _dentry: crate::filesystem::vfs::DEntryArc,
+        ) -> crate::filesystem::vfs::VfsResult<crate::filesystem::vfs::INodeArc> {
+            unimplemented!()
+        }
+
+        fn read_symlink(
+            &self,
+        ) -> crate::filesystem::vfs::VfsResult<crate::basic::bstr::ByteString> {
+            unimplemented!()
+        }
+
+        fn get_kstat(
+            &self,
+        ) -> crate::filesystem::vfs::VfsResult<crate::syscall::filesystem::KstatInner> {
+            // FIXME: 这是正确的行为吗？
+            Ok(crate::syscall::filesystem::KstatInner {
+                st_blksize: crate::memory::PAGE_BYTES as u32,
+                ..Default::default()
+            })
+        }
+
+        fn evictable_when_mem_ref_zero(&mut self) -> bool {
+            true
+        }
+    };
+}

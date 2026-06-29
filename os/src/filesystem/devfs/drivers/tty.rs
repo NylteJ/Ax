@@ -65,40 +65,15 @@ pub struct Termios {
 
 impl Default for Termios {
     fn default() -> Self {
-        // vvv 以下代码修改自 NoAxiom 的 Termios::new vvv
         Self {
-            // IMAXBEL | IUTF8 | IXON | IXANY | ICRNL | BRKINT
-            c_iflag: 0o66402,
-            // OPOST | ONLCR
-            c_oflag: 0o5,
-            // HUPCL | CREAD | CSIZE | EXTB
-            c_cflag: 0o2277,
-            // IEXTEN | ECHOTCL | ECHOKE ECHO | ECHOE | ECHOK | ISIG | ICANON
-            c_lflag: 0o105073,
+            c_iflag: 27906,
+            c_oflag: 5,
+            c_cflag: 1215,
+            c_lflag: 35387,
             c_cc: [
-                0,   //
-                3,   // VINTR Ctrl-C
-                28,  // VQUIT
-                127, // VERASE
-                21,  // VKILL
-                4,   // VEOF Ctrl-D
-                0,   // VTIME
-                1,   // VMIN
-                0,   // VSWTC
-                17,  // VSTART
-                19,  // VSTOP
-                26,  // VSUSP Ctrl-Z
-                255, // VEOL
-                18,  // VREPAINT
-                15,  // VDISCARD
-                23,  // VWERASE
-                22,  // VLNEXT
-                255, // VEOL2
-                0,   //
-                0,
+                0, 3, 28, 127, 21, 4, 0, 1, 0, 17, 19, 26, 255, 18, 15, 23, 22, 255, 0, 0,
             ],
         }
-        // ^^^ 以上代码修改自 NoAxiom 的 Termios::new ^^^
     }
 }
 

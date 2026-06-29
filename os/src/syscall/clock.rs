@@ -1,4 +1,4 @@
-use core::sync::atomic::{AtomicIsize, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicIsize, Ordering};
 
 use num_enum::TryFromPrimitive;
 
