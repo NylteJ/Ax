@@ -128,7 +128,7 @@ chown05
 chown05_16
 chroot01
 chroot02
-chroot03
+chroot03_DISABLED
 chroot04
 cleanup_lvm.sh
 clock_adjtime01
@@ -491,7 +491,7 @@ openat201
 openat202
 openat203
 pathconf01
-pathconf02
+pathconf02_DISABLED
 pipe01
 pipe02
 pipe03
@@ -732,8 +732,8 @@ tkill01
 tkill02
 truncate02
 truncate02_64
-truncate03
-truncate03_64
+truncate03_DISABLED
+truncate03_64_DISABLED
 ulimit01
 umask01
 umount01

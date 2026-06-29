@@ -385,7 +385,7 @@ pub extern "C" fn futex(
 
 pub fn get_futex_key(uaddr: *mut u32, private: bool) -> Result<FutexKey, SyscallResult> {
     let cur_task = unsafe { current_task().as_ref_unchecked() };
-    let cur_addr_space = &cur_task.address_space;
+    let cur_addr_space = cur_task.address_space.read();
 
     if !uaddr.is_aligned_to(4) {
         return Err(EINVAL); // futex 强制要求地址按 4 字节对齐

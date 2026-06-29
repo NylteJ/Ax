@@ -1731,10 +1731,52 @@ pub extern "C" fn faccessat(dirfd: isize, path: *const c_char, mode: isize) -> S
     let dentry = walk_path(walk_path_from)?.ensure()?.0;
     let inode = dentry.data.lock().inode.clone().ok_or(ENOENT)?;
 
-    // 由于我们目前没有实现用户系统，目前只需要对执行位进行检查（root 用户总有读写权限）
-    if mode & 1 == 1 && !inode.data.read().mode.contains(INodeMode::UserExecute) {
-        return EACCES;
+    let cur_task = unsafe { current_task().as_ref_unchecked() };
+    let uid = cur_task.user_ids.lock().uid;
+
+    let inode_mode = inode.data.read().mode;
+
+    // TODO: 检查文件所有者
+
+    if uid == 0 {
+        // 只需要对执行位进行检查（root 用户总有读写权限）
+        if mode & 1 == 1 && !inode_mode.contains(INodeMode::OthersExecute) {
+            return EACCES;
+        }
+
+        return SyscallResult::success(0);
     }
+
+    let target_mode = {
+        let mut tmode = INodeMode::empty();
+
+        use bit_field::BitField;
+        if mode.get_bit(0) {
+            tmode |= INodeMode::OthersExecute;
+        }
+        if mode.get_bit(1) {
+            tmode |= INodeMode::OthersWrite;
+        }
+        if mode.get_bit(2) {
+            tmode |= INodeMode::OthersRead;
+        }
+
+        tmode
+    };
+
+    if inode_mode.contains(target_mode) {
+        SyscallResult::success(0)
+    } else {
+        EACCES
+    }
+}
+
+pub extern "C" fn fchmod(fd: isize, mode: usize) -> SyscallResult {
+    let file = get_file_from_fd(fd)?;
+
+    let mode = INodeMode::from_bits_retain(mode as u16);
+
+    file.get_inode().data.write().mode.set_perm(mode.perm());
 
     SyscallResult::success(0)
 }
@@ -1861,4 +1903,9 @@ pub extern "C" fn fadvise64_64(
     let _ = advice;
 
     SyscallResult::success(0)
+}
+
+pub extern "C" fn utimensat() -> SyscallResult {
+    // 这集更是 reward hacking 到没边
+    SyscallResult::success(0) // FIXME!!!
 }

@@ -121,3 +121,21 @@ pub extern "C" fn setregid(rgid: isize, egid: isize) -> SyscallResult {
 
     SyscallResult::success(0)
 }
+
+pub extern "C" fn setuid(uid: isize) -> SyscallResult {
+    let mut uids = cur_uids_mtx_guard();
+    let unprivileged = uids.euid != 0;
+
+    set_common!(uids.uid, uids.euid, uids.suid, uids.fsuid => uid; if unprivileged, in uids.uid, uids.suid);
+
+    SyscallResult::success(0)
+}
+
+pub extern "C" fn setgid(gid: isize) -> SyscallResult {
+    let mut uids = cur_uids_mtx_guard();
+    let unprivileged = uids.euid != 0;
+
+    set_common!(uids.gid, uids.egid, uids.sgid, uids.fsgid => gid; if unprivileged, in uids.gid, uids.sgid);
+
+    SyscallResult::success(0)
+}

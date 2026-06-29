@@ -64,7 +64,7 @@ pub struct Task {
     pub policy: SchedulePolicy,
     pub priority: TaskPriority,
 
-    pub address_space: Arc<RwLock<AddressSpace>>,
+    pub address_space: RwLock<Arc<RwLock<AddressSpace>>>,
 
     pub files: Arc<RwLock<FileDescriptorTable>>,
     pub fs_data: Arc<RwLock<FilesystemData>>,
@@ -241,7 +241,7 @@ impl Task {
             policy,
             priority,
 
-            address_space: Arc::new(RwLock::new(address_space)),
+            address_space: RwLock::new(Arc::new(RwLock::new(address_space))),
             files: Arc::new(RwLock::new(FileDescriptorTable::new())),
 
             // FIXME: 后面应该要改
@@ -312,7 +312,7 @@ impl Task {
 
         // 注意这里不能改为传入 &mut AddressSpace，因为内部它可能触发缺页异常，缺页异常处理时要获取 AddressSpace 的写权限，
         // 因此传入大粒度的可变引用会导致死锁或违反别名规则。
-        let entry = Self::load_elf(&file, &task.address_space).unwrap().0;
+        let entry = Self::load_elf(&file, &task.address_space.read()).unwrap().0;
 
         register_task(&task);
         unsafe { UnsafeInited::init_unsafe(&INIT_TASK, task) };
@@ -414,12 +414,13 @@ impl Task {
         let policy = self.policy.clone();
         let priority = self.priority;
 
+        let my_address_space = self.address_space.read();
         let address_space = if flags.contains(CloneFlags::VM) {
             // 浅拷贝一份 Arc 即可
-            self.address_space.clone()
+            my_address_space.clone()
         } else {
             // 地址空间需要复制一份，并将所有页设为写时复制
-            let address_space = Arc::new(RwLock::new(self.address_space.write().clone_cow()));
+            let address_space = Arc::new(RwLock::new(my_address_space.write().clone_cow()));
             // 由于所有页被设为了写时复制，本进程的页表很可能也已经改变，因此需要刷新 TLB
             arch::NativeBasic::tlb_invalidate_all();
             address_space
@@ -481,7 +482,7 @@ impl Task {
             policy,
             priority,
 
-            address_space,
+            address_space: RwLock::new(address_space),
             files,
             fs_data,
 
@@ -544,16 +545,27 @@ impl Task {
     pub fn replace_execute(&self, file: FileArc) -> Result<AuxiliaryVec, LoadElfError> {
         // 创建新的地址空间，并替换当前地址空间
 
-        let old_addr_space = replace(&mut *self.address_space.write(), Self::new_addr_space());
-        self.address_space.read().get_page_table().activitate();
+        let new_addr_space = Arc::new(RwLock::new(Self::new_addr_space()));
+
+        let mut my_addr_space = self.address_space.write();
+
+        // 注意这里只替换当前 Task 的地址空间，其它共享地址空间的进程不受影响
+        // TODO：按 Linux 语义，其它线程应当终止
+        let old_addr_space = replace(&mut *my_addr_space, new_addr_space);
+
+        let my_addr_space = my_addr_space.downgrade();
+
+        my_addr_space.read().get_page_table().activitate();
 
         let guard = DropGuard::new(|| {
-            old_addr_space.get_page_table().activitate();
+            old_addr_space.read().get_page_table().activitate();
             *self.address_space.write() = old_addr_space;
         });
 
         // 加载 ELF 文件并获取入口地址
-        let (entry, auxv) = Self::load_elf(&file, &self.address_space)?;
+        let load_elf_result = Self::load_elf(&file, &my_addr_space);
+        drop(my_addr_space); // 避免和 DropGuard 中的写锁产生死锁
+        let (entry, auxv) = load_elf_result?;
 
         // 将入口地址和栈指针写入到 TrapContext 中
         // 特别注意，和前面几个函数不同，我们并没有更换内核栈，因此不需要伪造任何东西，只要修改 ret_pc 和 sp 即可
@@ -763,9 +775,12 @@ impl Task {
             let head = unsafe { File::get_page_cache(file.get_inode(), 0) }.unwrap();
 
             let elf = ElfBytes::<NativeEndian>::minimal_parse_no_section_headers(head).map_err(
-                |err| match err {
-                    err @ elf::ParseError::SliceReadError(..) => todo!("超大 ELF 头({err:?})"),
-                    _ => LoadElfError::BadElfHead,
+                |err| {
+                    if let elf::ParseError::SliceReadError((_from, to)) = err {
+                        debug_assert!(to <= PAGE_BYTES, "超大 ELF 头的解析尚未实现");
+                    }
+
+                    LoadElfError::BadElfHead
                 },
             )?;
 

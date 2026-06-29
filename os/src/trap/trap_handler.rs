@@ -212,6 +212,7 @@ fn try_handle_user_page_fault(fault: Exception) -> Result<(), ()> {
 
     current_task
         .address_space
+        .read()
         .write()
         .handle_page_fault(VirtAddr(bad_address), fault_type)
 }

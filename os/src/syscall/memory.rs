@@ -29,12 +29,13 @@ use crate::syscall::err_codes::*;
 // 依旧，这里的文档与 Linux 语义冲突，我们选用 Linux 语义，总是返回地址（成功时返回新地址，失败时返回旧地址）
 pub extern "C" fn brk(brk: usize) -> usize {
     let task = unsafe { current_task().as_ref_unchecked() };
+    let addr_space = task.address_space.read();
 
     if brk == 0 {
-        return task.address_space.read().brk.0;
+        return addr_space.read().brk.0;
     }
 
-    task.address_space.write().set_brk(VirtAddr(brk)).0
+    addr_space.write().set_brk(VirtAddr(brk)).0
 }
 
 /// * 功能：将文件或设备映射到内存中；
@@ -121,6 +122,7 @@ pub extern "C" fn mmap(
 
     let result = cur_task
         .address_space
+        .read()
         .write()
         .mmap(
             VirtualMemoryArea {
@@ -192,7 +194,8 @@ pub extern "C" fn munmap(start: *mut c_void, len: usize) -> SyscallResult {
     let end = VirtAddr(start.0 + len).ceil_to_page();
 
     let cur_task = unsafe { current_task().as_ref_unchecked() };
-    let mut address_space = cur_task.address_space.write();
+    let address_space = cur_task.address_space.read();
+    let mut address_space = address_space.write();
     address_space.remove_vmas_between(start, end);
     address_space
         .get_page_table_mut()
@@ -231,7 +234,8 @@ pub extern "C" fn mprotect(addr: *mut c_void, len: usize, prot: isize) -> Syscal
     let end = VirtAddr(addr + len).ceil_to_page();
 
     let cur_task = unsafe { current_task().as_ref_unchecked() };
-    let mut address_space = cur_task.address_space.write();
+    let address_space = cur_task.address_space.read();
+    let mut address_space = address_space.write();
     address_space.modify_vma_flags_between(start, end, |mut flags| {
         flags.set(VMAFlags::Read, r);
         flags.set(VMAFlags::Write, w);

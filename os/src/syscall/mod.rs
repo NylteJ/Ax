@@ -145,11 +145,13 @@ pub static TABLE: [Option<SyscallFn>; MAX_SYSCALL_COUNT] = const {
     define!(78, filesystem::readlinkat);
     define!(36, filesystem::symlinkat);
     define!(48, filesystem::faccessat);
+    define!(52, filesystem::fchmod);
     define!(53, filesystem::fchmodat);
     define!(46, filesystem::ftruncate64);
     define!(54, filesystem::fchownat);
     define!(55, filesystem::fchown);
     define!(223, filesystem::fadvise64_64);
+    define!(88, filesystem::utimensat);
 
     define!(214, memory::brk);
     define!(222, memory::mmap);
@@ -190,6 +192,8 @@ pub static TABLE: [Option<SyscallFn>; MAX_SYSCALL_COUNT] = const {
     define!(150, user::getresgid);
     define!(145, user::setreuid);
     define!(143, user::setregid);
+    define!(146, user::setuid);
+    define!(144, user::setgid);
 
     define!(169, misc::gettimeofday);
     define!(160, misc::uname);
@@ -494,6 +498,7 @@ pub const SYSCALL_ID_NAME_MAP: [&str; MAX_SYSCALL_COUNT] = {
     map[49] = "chdir";
     map[50] = "fchdir";
     map[51] = "chroot";
+    map[52] = "fchmod";
     map[53] = "fchmodat";
     map[54] = "fchownat";
     map[55] = "fchown";

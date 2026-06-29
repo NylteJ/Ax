@@ -129,7 +129,8 @@ impl SignalHandler {
                 const SIGRET_PAGE_VADDR: VirtAddr =
                     VirtAddr(USER_RESERVED_MEMORY_START).floor_to_page();
                 {
-                    let mut addr_space = cur_task.address_space.write();
+                    let addr_space = cur_task.address_space.read();
+                    let mut addr_space = addr_space.write();
                     let map_result = addr_space.get_page_table_mut().map::<0>(
                         SIGRET_PAGE_VADDR.into(),
                         *SIGNAL_TRAMPOLINE_PPAGE,
