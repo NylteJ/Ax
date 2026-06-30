@@ -12,10 +12,13 @@ use bitflags::bitflags;
 use rand::Rng;
 
 use crate::{
-    basic::timer::{get_cpu_tick, us_to_cpu_tick},
+    basic::{
+        bstr::ByteStr,
+        timer::{get_cpu_tick, us_to_cpu_tick},
+    },
     filesystem::{
         devfs::drivers::URANDOM_DRIVER,
-        vfs::{FileFlags, PathToWalk, walk_path},
+        vfs::{File, FileFlags, PathToWalk, walk_path},
     },
     memory::{
         PAGE_BYTES, STACK_ALIGN,
@@ -260,11 +263,70 @@ pub extern "C" fn execve(
         .ops
         .open(file_path.1, FileFlags::Read)?;
 
+    // 注意我们不支持嵌套 shebang
+    let (file, shebang_info): (_, Option<(&[u8], &[u8])>) = {
+        // 只读一页，我想不出有什么办法把 shebang 写得那么长
+        let first_page = unsafe { File::get_page_cache(file.get_inode(), 0) }?;
+
+        if let Some(shebang) = first_page
+            .strip_prefix(b"#!")
+            .and_then(|rest| rest.split_once(|&chr| chr == b'\n' || chr == b'\r'))
+            .map(|(line, _)| line.trim_ascii_start())
+        {
+            if shebang.is_empty() {
+                return ENOEXEC;
+            }
+
+            let (interp_path, args) = shebang
+                .split_once(|&chr| chr == b' ')
+                .unwrap_or((shebang, b""));
+
+            let interp_ptw = PathToWalk::auto(ByteStr::new(interp_path), || {
+                task.fs_data.read().current_work_dir.clone()
+            })?;
+            let path = walk_path(interp_ptw)?.ensure()?;
+            let interp_file = path.0.data.lock().ops.open(path.1, FileFlags::Read)?;
+
+            (interp_file, Some((interp_path, args)))
+        } else {
+            (file, None)
+        }
+    };
+
     // 接下来从用户侧读取 argv 和 envp
     // TODO: 这里其实也能优化，提前把新的栈内存分配好，然后直接拷贝到栈内存，以减少一次复制并完全避免 Vec 扩容
     let mut data = Vec::new();
     let envp_idxs = read_str_arr_from_user(envp, 32, 2048, &mut data)?;
-    let argv_idxs = read_str_arr_from_user(argv, 16, 1024, &mut data)?;
+
+    let mut argv_idxs = read_str_arr_from_user(argv, 16, 1024, &mut data)?;
+
+    // FIXME: 这个是临时的，虽然不用移动 data 但开销还是有一点的，未来或许可以优化
+    if let Some((interp_path, args)) = shebang_info {
+        let interp_idx = data.len();
+        data.extend_from_slice(interp_path);
+        data.push(b'\0');
+
+        let opt_idx = if !args.is_empty() {
+            let idx = data.len();
+            data.extend_from_slice(args);
+            data.push(b'\0');
+            Some(idx)
+        } else {
+            None
+        };
+
+        let script_idx = data.len();
+        data.extend_from_slice(&path);
+        data.push(b'\0');
+
+        // [arg0, arg1, ...] => [interp, (opt,) arg0, arg1, ...]
+        argv_idxs.insert(0, interp_idx);
+        if let Some(idx) = opt_idx {
+            argv_idxs.insert(1, idx);
+        }
+    }
+
+    let argv_idxs = argv_idxs;
 
     let argc = argv_idxs.len();
 

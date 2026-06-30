@@ -300,6 +300,8 @@ pub extern "C" fn main(_: usize, dtb: PhysAddr) -> ! {
 
         let _ = get_or_create_path(&root_fs, "/usr");
 
+        let _ = get_or_create_path(&root_fs, "/var");
+
         let _ = get_or_create_path(&root_fs, "/bin"); // 对其内容的填充在 init 中完成
 
         let lib = get_or_create_path(&root_fs, "/lib");
