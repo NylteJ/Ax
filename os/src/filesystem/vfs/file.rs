@@ -297,12 +297,20 @@ impl<T: ?Sized + FileOps> FileData<T> {
     ///
     /// 返回成功读取的字节数，若用户提供的缓冲区无效则返回 Err（即便已经读取了部分字节）。
     pub fn read(&mut self, user_buf: *mut u8, len: u64) -> VfsResult<u64> {
+        if !self.flags.contains(FileFlags::Read) {
+            return Err(VfsError::BadFileOpenFlags);
+        }
+
         self.ops.read(user_buf, len)
     }
     /// 从文件的当前位置开始写入 `len` 字节的来自用户的数据。
     ///
     /// 返回成功写入的字节数，若用户提供的缓冲区无效则返回 Err（即便已经写入了部分字节）。
     pub fn write(&mut self, user_data: *const u8, len: u64) -> VfsResult<u64> {
+        if !self.flags.contains(FileFlags::Write) {
+            return Err(VfsError::BadFileOpenFlags);
+        }
+
         let ret = self.ops.write(user_data, len)?;
         self.mark_inode_dirty();
         Ok(ret)

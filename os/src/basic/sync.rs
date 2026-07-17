@@ -182,6 +182,38 @@ impl<'a, T: ?Sized> RwLockWriteGuard<'a, T> {
     }
 }
 
+impl<'a, T: ?Sized> RwLockReadGuard<'a, T> {
+    #[must_use]
+    pub fn try_upgrade(self) -> Option<RwLockWriteGuard<'a, T>> {
+        self.state
+            .compare_exchange(
+                1,
+                RwLock::<T>::WRITER_BIT,
+                Ordering::Acquire,
+                Ordering::Relaxed,
+            )
+            .ok()?;
+
+        let this = ManuallyDrop::new(self);
+        Some(RwLockWriteGuard {
+            value: this.value,
+            state: this.state,
+        })
+    }
+
+    #[must_use]
+    pub fn upgrade(self) -> RwLockWriteGuard<'a, T> {
+        loop {
+            if let Some(guard) = self.try_upgrade() {
+                break guard;
+            }
+
+            panic!("我们现在还不支持并行，因此一定是发生了死锁");
+            hint::spin_loop();
+        }
+    }
+}
+
 unsafe impl<T: ?Sized + Send + Sync> Sync for RwLock<T> {}
 unsafe impl<T: ?Sized + Send> Send for RwLock<T> {}
 
@@ -350,10 +382,7 @@ impl<T> Deref for OnceInited<T> {
     type Target = T;
 
     fn deref(&self) -> &Self::Target {
-        if self.inited.load(Ordering::Acquire) != 2 {
-            panic!("OnceInited 还未被初始化");
-        }
-
+        assert!(Self::is_inited(self), "OnceInited 还未被初始化");
         self.value.deref()
     }
 }
@@ -374,6 +403,10 @@ impl<T> OnceInited<T> {
         unsafe { UnsafeInited::init_unsafe(&this.value, value) };
 
         this.inited.store(2, Ordering::Release);
+    }
+
+    pub fn is_inited(this: &Self) -> bool {
+        this.inited.load(Ordering::Acquire) == 2
     }
 }
 

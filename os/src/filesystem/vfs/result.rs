@@ -36,6 +36,8 @@ pub enum VfsError {
     TooManyLinks,
     /// 发生算数溢出
     ArithmeticOverflow,
+    /// File 的打开标志与待执行的操作不匹配
+    BadFileOpenFlags,
     /// 用户态程序输入了错误的指针
     InvalidUserPointer(uaccess::CopyError),
     /// 目标对象支持该操作，但输入参数无效（如果其它更具体的类型能满足要求，请使用其他类型）

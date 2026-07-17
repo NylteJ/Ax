@@ -1,12 +1,17 @@
 use alloc::{boxed::Box, vec::Vec};
 
-use crate::basic::UnsafeInited;
+use crate::basic::{
+    UnsafeInited,
+    sync::Mutex,
+    timer::{cpu_tick_to_us, get_cpu_tick},
+};
 
 pub mod block_device;
 pub mod pci;
 pub mod virtio;
 
 mod hal;
+mod net_loopback;
 
 use block_device::BlockDevice;
 
@@ -27,11 +32,29 @@ impl From<virtio_drivers::Error> for DeviceError {
 
 pub struct Devices {
     pub block: Vec<Box<dyn BlockDevice>>,
+    pub network_lo: Mutex<net_loopback::NetLoopbackDevice>, // FIXME
+    pub network_lo_iface: Mutex<smoltcp::iface::Interface>,
 }
 
 impl Devices {
     pub fn new() -> Self {
-        Self { block: Vec::new() }
+        let mut network_lo = net_loopback::NetLoopbackDevice::new();
+        let config = {
+            let mut config = smoltcp::iface::Config::new(smoltcp::wire::HardwareAddress::Ip);
+            config.random_seed = get_cpu_tick() as u64; // 按文档的说法，这个值只要在不同启动间不同即可
+            config
+        };
+
+        let now = smoltcp::time::Instant::from_micros(cpu_tick_to_us(get_cpu_tick()) as i64 / 1000);
+        let mut network_lo_iface = smoltcp::iface::Interface::new(config, &mut network_lo, now);
+
+        network_lo_iface.set_any_ip(true);
+
+        Self {
+            block: Vec::new(),
+            network_lo: Mutex::new(network_lo),
+            network_lo_iface: Mutex::new(network_lo_iface),
+        }
     }
 
     /// 添加一个块设备，内部会执行去重

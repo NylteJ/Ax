@@ -5,9 +5,10 @@ use hashbrown::HashMap;
 
 use crate::{
     basic::{UnsafeInited, bstr::ByteStr},
-    dummy_inode_body,
+    dummy_filesystem_body,
     filesystem::{
         get_new_anon_block_device_id,
+        other::{DummyDEntryOps, DummyINodeOps},
         vfs::{self, FileOps, VfsError, VfsResult},
     },
     syscall::epoll::EPollEvent,
@@ -84,35 +85,7 @@ impl EPollFile {
 
 struct EPollFs;
 impl vfs::FileSystemOps for EPollFs {
-    fn writeback_page(
-        &self,
-        _inode: &vfs::INode,
-        _page_index: u64,
-        _page_data: &[u8; 4096],
-    ) -> VfsResult<()> {
-        unimplemented!()
-    }
-
-    fn read_to_page(
-        &self,
-        _inode: &vfs::INode,
-        _page_index: u64,
-        _buffer: &mut [MaybeUninit<u8>; 4096],
-    ) -> VfsResult<usize> {
-        unimplemented!()
-    }
-}
-
-struct EPollINode;
-impl vfs::INodeOps for EPollINode {
-    dummy_inode_body!();
-}
-
-struct EPollDEntry;
-impl vfs::DEntryOps for EPollDEntry {
-    fn open(&self, _mount: Arc<vfs::Mount>, _flags: vfs::FileFlags) -> VfsResult<vfs::FileArc> {
-        unimplemented!()
-    }
+    dummy_filesystem_body!();
 }
 
 static EPOLL_FS: UnsafeInited<Pin<Arc<vfs::FileSystem<EPollFs>>>> =
@@ -128,10 +101,14 @@ pub(in super::super) fn init() {
                 hard_links: 1,
                 mode: vfs::INodeMode::all_permitted(),
                 page_cache: None,
-                ops: EPollINode,
+                ops: DummyINodeOps,
             });
-            let dentry =
-                vfs::DEntry::new_root(ByteStr::new(b"").to_owned(), inode.clone(), fs, EPollDEntry);
+            let dentry = vfs::DEntry::new_root(
+                ByteStr::new(b"/(epolls)/").to_owned(),
+                inode.clone(),
+                fs,
+                DummyDEntryOps,
+            );
 
             unsafe { UnsafeInited::init_unsafe(&EPOLL_INODE, inode.clone()) };
 

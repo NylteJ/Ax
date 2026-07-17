@@ -2,13 +2,11 @@ use core::{ptr::null, sync::atomic::Ordering};
 
 use crate::{
     basic::{
+        id_allocator::IdAllocator,
         shared_with_asm::SharedWithAsm,
         sync::{Mutex, RwLock},
     },
-    multitask::{
-        id_allocator::IdAllocator,
-        task::{Task, TaskArc},
-    },
+    multitask::task::{Task, TaskArc},
 };
 
 pub const PID_COUNT: usize = 8192;

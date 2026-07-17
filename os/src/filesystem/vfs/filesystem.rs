@@ -739,3 +739,29 @@ impl Equivalent<DCacheKey> for DCacheKeyRef<'_> {
         addr_eq(self.parent.as_ptr(), key.parent.as_ptr()) && self.name == key.name
     }
 }
+
+/// 不支持回写或底层读取的文件系统实现
+///
+/// 多用于伪文件系统，注意内存文件系统通常不应使用此实现（而应将回写实现为无操作）
+#[macro_export]
+macro_rules! dummy_filesystem_body {
+    () => {
+        fn writeback_page(
+            &self,
+            _inode: &crate::filesystem::vfs::INode,
+            _page_index: u64,
+            _page_data: &[u8; 4096],
+        ) -> crate::filesystem::vfs::VfsResult<()> {
+            unimplemented!()
+        }
+
+        fn read_to_page(
+            &self,
+            _inode: &crate::filesystem::vfs::INode,
+            _page_index: u64,
+            _buffer: &mut [core::mem::MaybeUninit<u8>; 4096],
+        ) -> crate::filesystem::vfs::VfsResult<usize> {
+            unimplemented!()
+        }
+    };
+}

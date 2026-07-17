@@ -11,6 +11,7 @@ mod utils;
 
 pub use other::epoll::EPollFile;
 pub use other::pipe::new_anonymous_pipes;
+pub use other::socket::SocketFile;
 
 pub fn init() {
     tmpfs::register();
@@ -20,6 +21,7 @@ pub fn init() {
 
     other::pipe::init();
     other::epoll::init();
+    other::socket::init();
 }
 
 pub fn init_root(

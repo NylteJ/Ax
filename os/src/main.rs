@@ -49,6 +49,8 @@
 #![feature(macro_metavar_expr)]
 #![feature(vec_push_within_capacity)]
 #![feature(layout_for_ptr)]
+#![feature(ip_from)]
+#![feature(unwrap_infallible)]
 //
 #![deny(unused_must_use)]
 
@@ -85,6 +87,7 @@ mod devices;
 mod filesystem;
 mod memory;
 mod multitask;
+mod network;
 mod syscall;
 mod trap;
 
@@ -202,6 +205,7 @@ pub extern "C" fn main(_: usize, dtb: PhysAddr) -> ! {
     }
 
     filesystem::devfs::drivers::init();
+    network::namespace::init();
 
     println!("Hello, world!");
     println!("中文也可以！");

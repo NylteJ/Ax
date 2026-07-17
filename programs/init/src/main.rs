@@ -216,7 +216,7 @@ fn main() -> isize {
                 group!(b"libctest-musl" at b"musl" shell b"run-static.sh", b"run-dynamic.sh"),
                 // group!(b"libctest-glibc" at b"glibc" shell b"run-static.sh", b"run-dynamic.sh"),
                 // ===================================================
-                b"/sdcd/musl/busybox sh /ltp.sh;",
+                // b"/sdcd/musl/busybox sh /ltp.sh;",
                 // ===================================================
                 b'\0',
             )

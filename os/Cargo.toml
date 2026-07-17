@@ -28,10 +28,23 @@ bit_field = "0.10.3"
 bytemuck = { version = "1.25.0", features = ["derive"] }
 ringbuf = { version = "0.4.8", default-features = false, features = ["alloc"] }
 rand = { version = "0.10.1", default-features = false, features = ["alloc", "chacha"] }
+zerocopy = "0.8.48"
+crossbeam = { version = "0.8.4", default-features = false, features = ["alloc"] }
 
 # 这两个依赖用于 Debug 构建
 addr2line = { version = "0.25.1", default-features = false }
 allocator-api2 = { version = "0.2.21", default-features = false }
+
+# smoltcp，用于网络模块，features 太多所以分开写
+[dependencies.smoltcp]
+path = "../edited_lib/smoltcp"
+default-features = false
+features = [
+    "alloc",
+    "proto-ipv4", "proto-ipv6",
+    "medium-ethernet", "medium-ip",
+    "socket-raw", "socket-icmp", "socket-udp", "socket-tcp", "socket-dns",
+]
 
 [features]
 framepointer = []

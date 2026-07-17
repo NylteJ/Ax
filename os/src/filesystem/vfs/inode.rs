@@ -87,6 +87,7 @@ bitflags! {
         const Directory = 0x4000;
         const RegularFile = 0x8000;
         const SymbolLink = 0xA000;
+        const Socket = 0xC000;
     }
 }
 

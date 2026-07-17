@@ -19,9 +19,10 @@ use crate::{
         extend_lifetime,
         sync::{Mutex, MutexGuard},
     },
-    dummy_inode_body,
+    dummy_filesystem_body, dummy_inode_body,
     filesystem::{
         get_new_anon_block_device_id,
+        other::{DummyDEntryOps, DummyINodeOps},
         vfs::{self, VfsError, VfsResult},
     },
     multitask::{current_task, signal::SignalId},
@@ -303,7 +304,7 @@ pub fn new_anonymous_pipes() -> (vfs::FileArc, vfs::FileArc) {
         ByteStr::new("(anonymous pipe)").to_owned(),
         inode,
         fs,
-        PipeDEntry,
+        DummyDEntryOps,
     );
     let path = vfs::Path(dentry, PIPE_FS_MOUNT.clone());
 
@@ -318,23 +319,7 @@ struct PipeFs {
 }
 
 impl vfs::FileSystemOps for PipeFs {
-    fn writeback_page(
-        &self,
-        _inode: &vfs::INode,
-        _page_index: u64,
-        _page_data: &[u8; 4096],
-    ) -> VfsResult<()> {
-        unimplemented!()
-    }
-
-    fn read_to_page(
-        &self,
-        _inode: &vfs::INode,
-        _page_index: u64,
-        _buffer: &mut [core::mem::MaybeUninit<u8>; 4096],
-    ) -> VfsResult<usize> {
-        unimplemented!()
-    }
+    dummy_filesystem_body!();
 }
 
 static PIPE_FS: UnsafeInited<Pin<Arc<vfs::FileSystem<PipeFs>>>> = unsafe { UnsafeInited::uninit() };
@@ -348,14 +333,14 @@ pub(in super::super) fn init() {
                 hard_links: 2,
                 mode: vfs::INodeMode::all_permitted(),
                 page_cache: None,
-                ops: PipeINode::default(),
+                ops: DummyINodeOps,
             });
 
             let root_dentry = vfs::DEntry::new_root(
                 ByteStr::new("/(anon pipes)/").to_owned(),
                 root_inode.clone(),
                 fs,
-                PipeDEntry,
+                DummyDEntryOps,
             );
 
             (root_inode, root_dentry)
@@ -372,7 +357,6 @@ pub(in super::super) fn init() {
     unsafe { UnsafeInited::init_unsafe(&PIPE_FS_MOUNT, mount) };
 }
 
-// dummy 根节点和普通管道（无论具名还是匿名）共用，因为 dummy 根节点只有一个，浪费并不大 (FIXME?)
 #[derive(Default)]
 struct PipeINode {
     buffer: Mutex<RingBuffer>,
@@ -396,13 +380,5 @@ impl PipeINode {
                 .cast::<Self>()
                 .as_ref_unchecked()
         }
-    }
-}
-
-struct PipeDEntry;
-
-impl vfs::DEntryOps for PipeDEntry {
-    fn open(&self, _mount: Arc<vfs::Mount>, _flags: vfs::FileFlags) -> VfsResult<vfs::FileArc> {
-        unimplemented!()
     }
 }

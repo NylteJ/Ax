@@ -98,6 +98,8 @@ extern "C" fn trap_handler(context: &mut NativeTrapContext) {
                 );
             }
 
+            debug_assert!(ret_value != crate::syscall::err_codes::E_SPECIAL_NET_RETRY.raw());
+
             if ret_value == ERRORCODE_SPECIAL_RESTART_SYSCALL {
                 log::trace!(
                     "系统调用 {id} ({}) 请求重启",

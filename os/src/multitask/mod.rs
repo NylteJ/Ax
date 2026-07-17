@@ -9,7 +9,6 @@ pub mod wait;
 
 mod fdtable;
 mod fs_data;
-mod id_allocator;
 mod process_data;
 mod schedulers;
 
@@ -50,6 +49,8 @@ impl Clone for SchedulePolicy {
 /// 获取指向当前 Task 结构体的指针。如果上下文不正确，返回值不能被安全使用。
 ///
 /// 顺带一提，不设计成返回引用的形式是因为很难说清它的生命周期（'static 显然会带来数不尽的安全隐患）。
+//
+// FIXME: 我受够这无穷无尽的 `unsafe { current_task().as_ref_unchecked() }` 了
 #[inline]
 pub fn current_task() -> *const task::Task {
     use crate::arch::{self, interfaces::Regs};

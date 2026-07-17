@@ -307,3 +307,7 @@ pub extern "C" fn getrlimit(resource: usize, rlimit: *mut RLimit) -> SyscallResu
 
     SyscallResult::success(0)
 }
+
+pub extern "C" fn setitimer() -> SyscallResult {
+    ENOSYS
+}

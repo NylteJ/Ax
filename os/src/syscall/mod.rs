@@ -5,7 +5,7 @@ use core::{
     ptr::NonNull,
 };
 
-use alloc::collections::TryReserveError;
+use alloc::{alloc::AllocError, collections::TryReserveError};
 
 use crate::{
     filesystem::vfs::VfsError,
@@ -16,6 +16,7 @@ use crate::{
         task::{ForkError, LoadElfError},
         wait::SleepError,
     },
+    network::{sock::BindPart1Error, socket::NewSocketError},
 };
 
 pub mod common;
@@ -26,6 +27,7 @@ pub mod epoll;
 pub mod filesystem;
 pub mod memory;
 pub mod misc;
+pub mod net;
 pub mod process;
 pub mod signal;
 pub mod sync;
@@ -105,6 +107,7 @@ pub static TABLE: [Option<SyscallFn>; MAX_SYSCALL_COUNT] = const {
     define!(153, basic::times);
     define!(261, basic::prlimit64);
     define!(163, basic::getrlimit);
+    define!(103, basic::setitimer);
 
     define!(114, clock::clock_getres);
     define!(113, clock::clock_gettime);
@@ -160,6 +163,15 @@ pub static TABLE: [Option<SyscallFn>; MAX_SYSCALL_COUNT] = const {
     define!(226, memory::mprotect);
     define!(233, memory::madvise);
 
+    define!(198, net::socket);
+    define!(200, net::bind);
+    define!(204, net::getsockname);
+    define!(201, net::listen);
+    define!(202, net::accept);
+    define!(205, net::getpeername);
+    define!(206, net::sendto);
+    define!(207, net::recvfrom);
+
     define!(172, process::getpid);
     define!(173, process::getppid);
     define!(178, process::gettid);
@@ -205,7 +217,8 @@ pub static TABLE: [Option<SyscallFn>; MAX_SYSCALL_COUNT] = const {
     table
 };
 
-#[repr(C)]
+#[repr(transparent)]
+#[derive(PartialEq, Eq)]
 #[must_use]
 pub struct SyscallResult {
     value: usize,
@@ -238,15 +251,26 @@ impl FromResidual<Result<Infallible, isize>> for SyscallResult {
     }
 }
 
-impl FromResidual<Result<Infallible, CopyError>> for SyscallResult {
-    fn from_residual(residual: Result<Infallible, CopyError>) -> Self {
-        match residual.unwrap_err() {
-            CopyError::UserPointerNotInUserSpace | CopyError::BadAccess => err_codes::EFAULT,
-            CopyError::TooLong => err_codes::ENAMETOOLONG,
-            CopyError::CapacityOverflow => err_codes::EINVAL,
-            CopyError::OutOfMemory => err_codes::ENOMEM,
+macro_rules! cast_error {
+    ($err_type:ty: $error:ident => { $($tokens:tt)* }) => {
+        impl FromResidual<Result<Infallible, $err_type>> for SyscallResult {
+            fn from_residual(residual: Result<Infallible, $err_type>) -> Self {
+                let $error = residual.unwrap_err();
+                use err_codes::*;
+                $($tokens)*
+            }
         }
-    }
+    };
+
+    ($err_type:ty: match { $($pat:pat => $expr:expr),* $(,)? }) => {
+        cast_error! {
+            $err_type: error => {
+                match error {
+                    $($pat => $expr),*
+                }
+            }
+        }
+    };
 }
 
 impl FromResidual<Result<Infallible, SyscallResult>> for SyscallResult {
@@ -255,94 +279,105 @@ impl FromResidual<Result<Infallible, SyscallResult>> for SyscallResult {
     }
 }
 
-impl FromResidual<Result<Infallible, VfsError>> for SyscallResult {
-    fn from_residual(residual: Result<Infallible, VfsError>) -> Self {
-        use err_codes::*;
-        match residual.unwrap_err() {
-            VfsError::NotYetImplemented => EOPNOTSUPP,
-            VfsError::FileAlreadyExists => EEXIST,
-            VfsError::FileNotFound => ENOENT,
-            VfsError::NotADirectory => ENOTDIR,
-            VfsError::IsADirectory => EISDIR,
-            VfsError::DirectoryNotEmpty => ENOTEMPTY,
-            VfsError::FilesystemMismatch => EINVAL,
-            VfsError::OperationNotSupported => EOPNOTSUPP,
-            VfsError::OutOfRange => ERANGE,
-            VfsError::DeviceNotFound => ENXIO,
-            VfsError::IsPipeOrSocket => ESPIPE,
-            VfsError::BadPipeEnd | VfsError::BrokenPipe => EPIPE,
-            VfsError::BadIoctl => EINVAL,
-            VfsError::TooManyLinks => ELOOP,
-            VfsError::ArithmeticOverflow => EOVERFLOW,
-            VfsError::InvalidUserPointer(copy_error) => Self::from_residual(Err(copy_error)),
-            VfsError::InvalidArguments(_) => EINVAL,
-            VfsError::IoError => EIO,
-            VfsError::Other(_) => EINVAL,
-        }
+cast_error! {
+    CopyError: match {
+        CopyError::UserPointerNotInUserSpace | CopyError::BadAccess => EFAULT,
+        CopyError::TooLong => ENAMETOOLONG,
+        CopyError::CapacityOverflow => EINVAL,
+        CopyError::OutOfMemory => ENOMEM,
     }
 }
 
-impl FromResidual<Result<Infallible, LoadElfError>> for SyscallResult {
-    fn from_residual(residual: Result<Infallible, LoadElfError>) -> Self {
-        use err_codes::*;
-        match residual.unwrap_err() {
-            LoadElfError::ArchMismatch => ENOEXEC,
-            LoadElfError::BadAlignment => ENOEXEC,
-            LoadElfError::NoLoadSegment => ENOEXEC,
-            LoadElfError::BadElfHead => ENOEXEC,
-            LoadElfError::NotEnoughMemory => ENOMEM,
-            LoadElfError::BadInterpreter => ENOEXEC,
-        }
+cast_error! {
+    VfsError: match {
+        VfsError::NotYetImplemented => EOPNOTSUPP,
+        VfsError::FileAlreadyExists => EEXIST,
+        VfsError::FileNotFound => ENOENT,
+        VfsError::NotADirectory => ENOTDIR,
+        VfsError::IsADirectory => EISDIR,
+        VfsError::DirectoryNotEmpty => ENOTEMPTY,
+        VfsError::FilesystemMismatch => EINVAL,
+        VfsError::OperationNotSupported => EOPNOTSUPP,
+        VfsError::OutOfRange => ERANGE,
+        VfsError::DeviceNotFound => ENXIO,
+        VfsError::IsPipeOrSocket => ESPIPE,
+        VfsError::BadPipeEnd | VfsError::BrokenPipe => EPIPE,
+        VfsError::BadIoctl => EINVAL,
+        VfsError::TooManyLinks => ELOOP,
+        VfsError::ArithmeticOverflow => EOVERFLOW,
+        VfsError::BadFileOpenFlags => EBADF,
+        VfsError::InvalidUserPointer(copy_error) => Err(copy_error)?,
+        VfsError::InvalidArguments(_) => EINVAL,
+        VfsError::IoError => EIO,
+        VfsError::Other(_) => EINVAL,
     }
 }
 
-impl FromResidual<Result<Infallible, TryReserveError>> for SyscallResult {
-    fn from_residual(residual: Result<Infallible, TryReserveError>) -> Self {
+cast_error! {
+    LoadElfError: match {
+        LoadElfError::ArchMismatch => ENOEXEC,
+        LoadElfError::BadAlignment => ENOEXEC,
+        LoadElfError::NoLoadSegment => ENOEXEC,
+        LoadElfError::BadElfHead => ENOEXEC,
+        LoadElfError::NotEnoughMemory => ENOMEM,
+        LoadElfError::BadInterpreter => ENOEXEC,
+    }
+}
+
+cast_error! {
+    TryReserveError: error => {
         use alloc::collections::TryReserveErrorKind::*;
-        use err_codes::*;
-        match residual.unwrap_err().kind() {
+        match error.kind() {
             CapacityOverflow => EINVAL,
             AllocError { .. } => ENOMEM,
         }
     }
 }
 
-impl FromResidual<Result<Infallible, InsertFDError>> for SyscallResult {
-    fn from_residual(residual: Result<Infallible, InsertFDError>) -> Self {
-        use err_codes::*;
-        match residual.unwrap_err() {
-            InsertFDError::ExceedRLimit => EMFILE,
-        }
+cast_error! {
+    InsertFDError: match {
+        InsertFDError::ExceedRLimit => EMFILE,
     }
 }
 
-impl FromResidual<Result<Infallible, FutexWaitError>> for SyscallResult {
-    fn from_residual(residual: Result<Infallible, FutexWaitError>) -> Self {
-        use err_codes::*;
-        match residual.unwrap_err() {
-            FutexWaitError::Timeout => ETIMEDOUT,
-            FutexWaitError::Signal => EINTR,
-        }
+cast_error! {
+    FutexWaitError: match {
+        FutexWaitError::Timeout => ETIMEDOUT,
+        FutexWaitError::Signal => EINTR,
     }
 }
 
-impl FromResidual<Result<Infallible, ForkError>> for SyscallResult {
-    fn from_residual(residual: Result<Infallible, ForkError>) -> Self {
-        use err_codes::*;
-        match residual.unwrap_err() {
-            ForkError::NotEnoughTid => EAGAIN,
-            ForkError::NotEnoughMemory => ENOMEM,
-            ForkError::CopyError(copy_error) => Err(copy_error)?,
-        }
+cast_error! {
+    ForkError: match {
+        ForkError::NotEnoughTid => EAGAIN,
+        ForkError::NotEnoughMemory => ENOMEM,
+        ForkError::CopyError(copy_error) => Err(copy_error)?,
     }
 }
 
-impl FromResidual<Result<Infallible, SleepError>> for SyscallResult {
-    fn from_residual(residual: Result<Infallible, SleepError>) -> Self {
-        use err_codes::*;
-        match residual.unwrap_err() {
-            SleepError::Interrupted(_) => EINTR,
-        }
+cast_error! {
+    SleepError: match {
+        SleepError::Interrupted(_) => EINTR,
+    }
+}
+
+cast_error! {
+    NewSocketError: match {
+        NewSocketError::InvalidProtocol => EPROTONOSUPPORT,
+    }
+}
+
+cast_error! {
+    AllocError: match {
+        AllocError => ENOMEM,
+    }
+}
+
+cast_error! {
+    BindPart1Error: match {
+        BindPart1Error::AlreadyBound => EINVAL,
+        BindPart1Error::AddressTypeMismatch => EINVAL,
+        BindPart1Error::AddressAlreadyInUse => EADDRINUSE,
     }
 }
 
@@ -355,9 +390,22 @@ impl SyscallResult {
     pub const fn raw(self) -> usize {
         self.value
     }
+
+    pub fn unwrap(self) -> usize {
+        #[cold]
+        #[inline(never)]
+        fn unwrap_failed(e: isize) -> ! {
+            panic!("SyscallResult unwrap failed: {e}");
+        }
+
+        match self.branch() {
+            ControlFlow::Continue(x) => x,
+            ControlFlow::Break(Err(e)) => unwrap_failed(e),
+        }
+    }
 }
 
-mod err_codes {
+pub mod err_codes {
     macro_rules! err_code {
         ($name:ident, $val:expr) => {
             #[allow(unused)]
@@ -439,6 +487,17 @@ mod err_codes {
         E_SPECIAL_RESTART_SYSCALL,
         7777,
         "用于指定了 SA_RESTART 的信号处理程序"
+    );
+    err_code!(
+        E_SPECIAL_NET_RETRY,
+        8888,
+        "用于网络操作，以和其它返回 EAGAIN 的非重试场景区分"
+    );
+
+    err_code!(
+        ESUCCESS,
+        0,
+        "表示调用成功，等价于 `SyscallResult::success(0)`"
     );
 }
 

@@ -4,6 +4,7 @@ pub mod bstr;
 pub mod console;
 pub mod debugger;
 pub mod global_allocator;
+pub mod id_allocator;
 pub mod logger;
 pub mod lru;
 pub mod shared_with_asm;
