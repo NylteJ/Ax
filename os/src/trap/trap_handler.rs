@@ -11,7 +11,7 @@ use crate::{
         DropGuard, abort_and_shutdown,
         debugger::debugbreak,
         stack::TaskKernelStackPtr,
-        timer::{check_timers, reset_timer_interrupt},
+        timer::{check_all_timers, reset_timer_interrupt},
     },
     memory::address::VirtAddr,
     multitask::{
@@ -115,7 +115,7 @@ extern "C" fn trap_handler(context: &mut NativeTrapContext) {
         Trap::Interrupt(Interrupt::TimerInterrupt) => {
             reset_timer_interrupt();
 
-            check_timers();
+            check_all_timers();
 
             let mut brw = TASK_SCHEDULER.lock();
             if let Some(next_task) = brw.on_time_interrupt(cur_task()) {

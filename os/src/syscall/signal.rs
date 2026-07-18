@@ -3,6 +3,7 @@ use core::ffi::c_void;
 use core::mem::offset_of;
 use core::mem::replace;
 use core::ptr::NonNull;
+use core::sync::atomic::Ordering;
 
 use bitflags::Flags;
 use bitflags::bitflags;
@@ -223,7 +224,7 @@ pub extern "C" fn kill(pid: isize, sig: isize) -> SyscallResult {
     let target = match pid {
         ..-1 => Target::Pgid((-pid).cast_unsigned()),
         -1 => Target::All,
-        0 => Target::Pgid(cur_task().process.pgid),
+        0 => Target::Pgid(cur_task().process.pgid.load(Ordering::Relaxed)),
         1.. => Target::Pid(pid.cast_unsigned()),
     };
 
@@ -242,7 +243,7 @@ pub extern "C" fn kill(pid: isize, sig: isize) -> SyscallResult {
             let mut any = false;
 
             foreach_task(|task| {
-                if task.process.pgid == pgid {
+                if task.process.pgid.load(Ordering::Relaxed) == pgid {
                     task.process.send_signal(signal);
                     any = true;
                 }

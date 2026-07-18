@@ -24,6 +24,19 @@ pub struct TimeVal {
     pub usec: usize,
 }
 
+impl TimeVal {
+    pub fn from_us(us: usize) -> Self {
+        Self {
+            sec: us / 1_000_000,
+            usec: us % 1_000_000,
+        }
+    }
+
+    pub fn to_us(&self) -> usize {
+        self.sec * 1_000_000 + self.usec
+    }
+}
+
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct TimeZone {
@@ -47,10 +60,7 @@ pub extern "C" fn gettimeofday(tv: *mut TimeVal, tz: *mut TimeZone) -> SyscallRe
 
     if !tv.is_null() {
         let us = cpu_tick_to_us(get_cpu_tick());
-        let time_val = TimeVal {
-            sec: us / 1_000_000,
-            usec: us % 1_000_000,
-        };
+        let time_val = TimeVal::from_us(us);
 
         copy_one_to_user(tv, &time_val)?;
     }

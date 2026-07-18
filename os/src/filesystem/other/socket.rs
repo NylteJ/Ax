@@ -13,7 +13,7 @@ use crate::{
     filesystem::{
         get_new_anon_block_device_id,
         other::{DummyDEntryOps, DummyINodeOps},
-        vfs::{self, VfsResult},
+        vfs::{self, VfsError, VfsResult},
     },
     network::socket::Socket,
 };
@@ -47,15 +47,17 @@ impl vfs::FileOps for SocketFile {
     }
 
     fn fseek(&mut self, seek_from: vfs::SeekFrom) -> VfsResult<u64> {
-        todo!()
+        Err(VfsError::IsPipeOrSocket)
     }
 
     fn fsync(&mut self) -> VfsResult<()> {
-        todo!()
+        Err(VfsError::InvalidArguments(
+            "对 Socket 调用 fsync 是无意义的（系统调用应当返回 EINVAL）",
+        ))
     }
 
     fn get_dir(&self, pos: u64) -> VfsResult<Option<vfs::IterateDirData>> {
-        todo!()
+        Err(VfsError::NotADirectory)
     }
 
     fn poll(&self) -> VfsResult<vfs::PollStatus> {

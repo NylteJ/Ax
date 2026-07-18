@@ -1,4 +1,4 @@
-use core::mem::replace;
+use core::{mem::replace, num::NonZero};
 
 use num_enum::TryFromPrimitive;
 
@@ -6,7 +6,10 @@ use crate::{
     basic::{
         cleanup_and_shutdown,
         shared_with_asm::SharedWithAsm,
-        timer::{check_timers, get_cpu_tick},
+        timer::{
+            check_all_timers, cpu_tick_to_us, get_cpu_tick, get_itimer_real, set_itimer_real,
+            us_to_cpu_tick,
+        },
     },
     memory::uaccess::{copy_one_from_user, copy_one_to_user},
     multitask::{
@@ -17,7 +20,7 @@ use crate::{
         task_scheduler::TASK_SCHEDULER,
     },
     println,
-    syscall::SyscallResult,
+    syscall::{SyscallResult, misc::TimeVal},
 };
 
 use crate::syscall::err_codes::*;
@@ -89,7 +92,7 @@ pub extern "C" fn yield_() -> isize {
 
     // FIXME: 这实际上是目前用 yield 模拟 sleep 所需要的变通方案
     //        正统 sleep 会检查这一点
-    check_timers();
+    check_all_timers();
 
     let mut scheduler = TASK_SCHEDULER.lock();
     scheduler.add_task(unsafe { TaskArc::from_asm(current_task()) });
@@ -296,6 +299,90 @@ pub extern "C" fn getrlimit(resource: usize, rlimit: *mut RLimit) -> SyscallResu
     SyscallResult::success(0)
 }
 
-pub extern "C" fn setitimer() -> SyscallResult {
-    ENOSYS
+#[derive(Clone, Copy)]
+#[repr(C)]
+pub struct ITimerVal {
+    pub interval: TimeVal,
+    pub value: TimeVal,
+}
+
+impl ITimerVal {
+    pub fn from_pair(pair: Option<(usize, Option<NonZero<usize>>)>) -> Self {
+        if let Some((value, interval)) = pair {
+            // FIXME: 这里其实有一个竞态
+            let rest = value.saturating_sub(get_cpu_tick());
+            let rest_us = cpu_tick_to_us(rest);
+            let interval_us = cpu_tick_to_us(interval.map_or(0, |x| x.get()));
+
+            Self {
+                interval: TimeVal::from_us(interval_us),
+                value: TimeVal::from_us(rest_us),
+            }
+        } else {
+            Self {
+                interval: TimeVal::from_us(0),
+                value: TimeVal::from_us(0),
+            }
+        }
+    }
+}
+
+#[repr(u8)]
+#[derive(TryFromPrimitive, Debug, Clone, Copy)]
+#[allow(non_camel_case_types)]
+enum ITimerWhich {
+    ITIMER_REAL = 0,
+    ITIMER_VIRTUAL = 1,
+    ITIMER_PROF = 2,
+}
+
+pub extern "C" fn setitimer(
+    which: isize,
+    new_value: *const ITimerVal,
+    old_value: *mut ITimerVal,
+) -> SyscallResult {
+    let which: u8 = which.try_into().map_err(|_| EINVAL)?;
+    let which: ITimerWhich = which.try_into().map_err(|_| EINVAL)?;
+
+    let new_value = copy_one_from_user(new_value)?;
+
+    let interval_us = new_value.interval.to_us();
+    let value_us = new_value.value.to_us();
+
+    let old = match which {
+        ITimerWhich::ITIMER_REAL => {
+            let new_value = if value_us == 0 {
+                None
+            } else {
+                let interval_tick = us_to_cpu_tick(interval_us);
+                let value_tick = us_to_cpu_tick(value_us) + get_cpu_tick();
+
+                Some((value_tick, NonZero::new(interval_tick)))
+            };
+
+            unsafe { set_itimer_real(cur_task(), new_value) }
+        }
+
+        other => {
+            log::error!("TODO: setitimer({other:?})");
+            return EOPNOTSUPP;
+        }
+    };
+
+    if !old_value.is_null() {
+        copy_one_to_user(old_value, &ITimerVal::from_pair(old))?;
+    }
+
+    SyscallResult::success(0)
+}
+
+pub extern "C" fn getitimer(which: isize, curr_value: *mut ITimerVal) -> SyscallResult {
+    let which: u8 = which.try_into().map_err(|_| EINVAL)?;
+    let which: ITimerWhich = which.try_into().map_err(|_| EINVAL)?;
+
+    copy_one_to_user(
+        curr_value,
+        &ITimerVal::from_pair(get_itimer_real(cur_task())),
+    )?;
+    SyscallResult::success(0)
 }

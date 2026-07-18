@@ -470,7 +470,7 @@ pub extern "C" fn wait4(pid: isize, status: *mut c_int, options: usize) -> Sysca
     let options = WaitOptions::from_bits(options.try_into().map_err(|_| EINVAL)?).ok_or(EINVAL)?;
 
     let target_pgid = match pid {
-        0 => cur_task().process.pgid,
+        0 => cur_task().process.pgid.load(Ordering::Relaxed),
         ..-1 => pid.unsigned_abs(),
         -1 => return wait4_pred(|_| true, status, options, cur_task()),
         1.. => {
@@ -513,7 +513,7 @@ pub extern "C" fn wait4(pid: isize, status: *mut c_int, options: usize) -> Sysca
     };
 
     wait4_pred(
-        |task| task.process.pgid == target_pgid,
+        |task| task.process.pgid.load(Ordering::Relaxed) == target_pgid,
         status,
         options,
         cur_task(),
@@ -711,20 +711,25 @@ pub extern "C" fn exit_group(code: isize) -> ! {
     exit_group_kernel(code, SignalId::SIGINVAL);
 }
 
-pub extern "C" fn setpgid(pid: usize, pgid: usize) -> SyscallResult {
+pub extern "C" fn setpgid(pid: usize, mut pgid: usize) -> SyscallResult {
     let task = if pid == 0 {
         cur_task()
     } else {
         &get_task_by_tid(pid).ok_or(ESRCH)?
     };
 
-    if get_task_by_tid(pgid).is_none() {
+    if pgid == 0 {
+        pgid = task.process.pid;
+    }
+
+    if pgid != task.process.pid
+        && get_task_by_tid(pgid)
+            .is_none_or(|task| task.process.pgid.load(Ordering::Relaxed) != pgid)
+    {
         return EPERM;
     }
 
-    if task.process.pgid != pgid {
-        todo!()
-    }
+    task.process.pgid.store(pgid, Ordering::Relaxed);
 
     SyscallResult::success(0)
 }
@@ -740,5 +745,5 @@ pub extern "C" fn getpgid(pid: usize) -> SyscallResult {
         return ESRCH;
     }
 
-    SyscallResult::success(task.process.pgid)
+    SyscallResult::success(task.process.pgid.load(Ordering::Relaxed))
 }

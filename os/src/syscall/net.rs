@@ -9,7 +9,6 @@ use bitflags::bitflags;
 use num_enum::TryFromPrimitive;
 use zerocopy::network_endian;
 
-use crate::memory::uaccess::copy_from_user_uninit;
 use crate::multitask::FDTableEntry;
 use crate::network::namespace::GLOBAL_NET_NAMESPACE;
 use crate::network::socket::{Socket, SocketAddress};
@@ -19,6 +18,7 @@ use crate::{
     filesystem::{SocketFile, vfs::File},
     multitask::cur_task,
 };
+use crate::{memory::uaccess::copy_from_user_uninit, multitask::wait::Waiting};
 
 use crate::syscall::err_codes::*;
 
@@ -283,23 +283,32 @@ pub extern "C" fn listen(sockfd: isize, backlog: isize) -> SyscallResult {
     }
 }
 
-fn autoretry(nonblocking: bool, mut func: impl FnMut() -> SyscallResult) -> SyscallResult {
+fn autoretry_advanced<R>(
+    nonblocking: bool,
+    mut func: impl FnMut() -> R,
+    mut need_retry: impl FnMut(&R) -> bool,
+) -> Result<R, SyscallResult> {
     loop {
         let result = func();
 
-        if result == E_SPECIAL_NET_RETRY {
+        if need_retry(&result) {
             if nonblocking {
-                return EAGAIN;
+                return Err(EAGAIN);
             } else {
-                crate::syscall::basic::yield_(); // FIXME
-
-                if cur_task().find_signal_to_consume().is_some() {
-                    return EINTR;
-                }
+                let mut waiting = Waiting::new();
+                waiting.wait(&GLOBAL_NET_NAMESPACE.wait_queue);
+                waiting.sleep()?;
             }
         } else {
-            break result;
+            break Ok(result);
         }
+    }
+}
+
+fn autoretry(nonblocking: bool, func: impl FnMut() -> SyscallResult) -> SyscallResult {
+    match autoretry_advanced(nonblocking, func, |result| *result == E_SPECIAL_NET_RETRY) {
+        Ok(x) => x,
+        Err(x) => x,
     }
 }
 
@@ -309,26 +318,11 @@ pub extern "C" fn accept(sockfd: isize, addr: *mut u8, addrlen: *mut u32) -> Sys
     let sock = &socket.sock;
 
     let new_sock = match socket.socket_type {
-        SocketType::STREAM | SocketType::SEQPACKET => {
-            let nonblock = sock.nonblocking.load(Ordering::Relaxed);
-            loop {
-                let result = sock.ops.accept(&socket.sock);
-
-                if matches!(&result, Err(E_SPECIAL_NET_RETRY)) {
-                    if nonblock {
-                        return EAGAIN;
-                    } else {
-                        crate::syscall::basic::yield_(); // FIXME
-
-                        if cur_task().find_signal_to_consume().is_some() {
-                            return EINTR;
-                        }
-                    }
-                } else {
-                    break result?;
-                }
-            }
-        }
+        SocketType::STREAM | SocketType::SEQPACKET => autoretry_advanced(
+            sock.nonblocking.load(Ordering::Relaxed),
+            || sock.ops.accept(&socket.sock),
+            |result| matches!(result, Err(E_SPECIAL_NET_RETRY)),
+        )??,
         _ => return EOPNOTSUPP,
     };
 

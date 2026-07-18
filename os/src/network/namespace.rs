@@ -12,6 +12,7 @@ use crate::{
         id_allocator::IdAllocator,
         sync::{Mutex, RwLock},
     },
+    multitask::wait::WaitQueue,
     network::{is_addr_unspecified, sock::Sock},
 };
 
@@ -32,6 +33,8 @@ pub struct NetworkNamespace {
     specified_counts: RwLock<HashMap<u16, NonZero<u32>>>,
 
     ephemeral_port_allocator_raw: Mutex<IdAllocator<EPHEMERAL_PORT_COUNT>>,
+
+    pub wait_queue: WaitQueue, // FIXME: 这是临时的
 }
 
 unsafe impl Send for NetworkNamespace {}
@@ -43,6 +46,8 @@ impl NetworkNamespace {
             bindings: RwLock::new(HashMap::new()),
             specified_counts: RwLock::new(HashMap::new()),
             ephemeral_port_allocator_raw: Mutex::new(IdAllocator::new()),
+
+            wait_queue: WaitQueue::new(),
         }
     }
 

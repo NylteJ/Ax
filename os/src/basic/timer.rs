@@ -1,3 +1,5 @@
+use core::{mem::replace, num::NonZero};
+
 use intrusive_collections::{
     Bound, KeyAdapter, RBTree as IntrusiveRBTree, RBTreeLink, UnsafeRef, intrusive_adapter,
 };
@@ -54,6 +56,15 @@ impl<'a> KeyAdapter<'a> for TaskTimerAdapter {
     }
 }
 
+intrusive_adapter!(TaskIItimerRealAdapter = UnsafeRef<Task>: Task { itimer_real_rbtree_link => RBTreeLink });
+
+impl<'a> KeyAdapter<'a> for TaskIItimerRealAdapter {
+    type Key = usize;
+    fn get_key(&self, s: &'a Task) -> usize {
+        unsafe { s.itimer_real.get().as_ref_unchecked().unwrap_unchecked() }.0
+    }
+}
+
 static TIMERS: UnsafeInited<Mutex<IntrusiveRBTree<TaskTimerAdapter>>> =
     unsafe { UnsafeInited::uninit() };
 
@@ -78,11 +89,21 @@ impl<'a> Drop for RemoveTimerGuard<'a> {
     }
 }
 
+static ITIMERS_REAL: UnsafeInited<Mutex<IntrusiveRBTree<TaskIItimerRealAdapter>>> =
+    unsafe { UnsafeInited::uninit() };
+
 pub fn init() {
     unsafe {
         UnsafeInited::init_unsafe(
             &TIMERS,
             Mutex::new(IntrusiveRBTree::new(TaskTimerAdapter::new())),
+        )
+    };
+
+    unsafe {
+        UnsafeInited::init_unsafe(
+            &ITIMERS_REAL,
+            Mutex::new(IntrusiveRBTree::new(TaskIItimerRealAdapter::new())),
         )
     };
 }
@@ -137,4 +158,81 @@ pub fn check_timers() {
     while cursor.get().is_some_and(|task| timeout_tick(task) <= tick) {
         cursor.remove().unwrap().try_wake();
     }
+}
+
+/// # Safety
+/// `new_value` 为 [`None`]，或者调用方必须保证 `task` 在定时器到期或主动取消（通过 [`None`] 调用）前保持有效
+pub unsafe fn set_itimer_real(
+    task: &Task,
+    new_value: Option<(usize, Option<NonZero<usize>>)>,
+) -> Option<(usize, Option<NonZero<usize>>)> {
+    let mut itimers_real = ITIMERS_REAL.lock();
+
+    let old_value = replace(
+        unsafe { task.itimer_real.get().as_mut_unchecked() },
+        new_value,
+    );
+
+    if old_value.is_some() {
+        unsafe {
+            itimers_real
+                .cursor_mut_from_ptr(task)
+                .remove()
+                .unwrap_unchecked()
+        };
+    }
+
+    if new_value.is_some() {
+        itimers_real.insert(unsafe { UnsafeRef::from_raw(task) });
+    }
+
+    old_value
+}
+
+pub fn get_itimer_real(task: &Task) -> Option<(usize, Option<NonZero<usize>>)> {
+    let _guard = ITIMERS_REAL.lock();
+    unsafe { *task.itimer_real.get() }
+}
+
+pub fn check_itimers_real() {
+    let mut itimers_real = ITIMERS_REAL.lock();
+    let tick = get_cpu_tick();
+
+    let mut reinsert_list =
+        intrusive_collections::SinglyLinkedList::new(TaskIItimerRealAdapter::new());
+
+    let mut cursor = itimers_real.front_mut();
+    loop {
+        let Some(task) = cursor.get() else {
+            break;
+        };
+
+        let itimer_real = unsafe { task.itimer_real.get().as_mut_unchecked() };
+        let (expired_tick, interval) = unsafe { itimer_real.as_mut().unwrap_unchecked() };
+
+        if *expired_tick > tick {
+            break;
+        }
+
+        task.process
+            .send_signal(crate::multitask::signal::SignalId::SIGALRM);
+
+        let task = unsafe { cursor.remove().unwrap_unchecked() };
+
+        if let Some(interval) = interval {
+            *expired_tick += interval.get();
+            reinsert_list.push_front(task);
+        } else {
+            *itimer_real = None;
+        }
+    }
+
+    for task in reinsert_list {
+        itimers_real.insert(task);
+    }
+}
+
+pub fn check_all_timers() {
+    check_timers();
+    check_itimers_real();
 }

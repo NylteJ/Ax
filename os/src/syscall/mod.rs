@@ -108,6 +108,7 @@ pub static TABLE: [Option<SyscallFn>; MAX_SYSCALL_COUNT] = const {
     define!(261, basic::prlimit64);
     define!(163, basic::getrlimit);
     define!(103, basic::setitimer);
+    define!(102, basic::getitimer);
 
     define!(114, clock::clock_getres);
     define!(113, clock::clock_gettime);
@@ -258,6 +259,12 @@ macro_rules! cast_error {
                 let $error = residual.unwrap_err();
                 use err_codes::*;
                 $($tokens)*
+            }
+        }
+
+        impl From<$err_type> for SyscallResult {
+            fn from(error: $err_type) -> Self {
+                Err(error)?
             }
         }
     };

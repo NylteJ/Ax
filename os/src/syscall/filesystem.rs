@@ -1760,7 +1760,12 @@ pub extern "C" fn fchmodat(dirfd: isize, path: *const c_char, mode: usize) -> Sy
     SyscallResult::success(0)
 }
 
-pub extern "C" fn ftruncate64(fd: isize, length: u64) -> SyscallResult {
+pub extern "C" fn ftruncate64(fd: isize, length: i64) -> SyscallResult {
+    if length < 0 {
+        return EINVAL;
+    }
+    let length = length.cast_unsigned();
+
     let file = get_file_from_fd(fd)?;
 
     let inode = file.get_inode();

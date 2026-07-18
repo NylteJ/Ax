@@ -24,7 +24,7 @@ use crate::{
         shared_with_asm::SharedWithAsm,
         stack::TaskKernelStackPtr,
         sync::{Mutex, RwLock},
-        timer::{check_timers, get_cpu_tick},
+        timer::{check_all_timers, get_cpu_tick, set_itimer_real},
     },
     filesystem::vfs::{self, File, FileArc, Path},
     memory::{
@@ -104,6 +104,11 @@ pub struct Task {
     pub timer_rbtree_key: UnsafeCell<usize>,
     /// 受 `TIMERS` 锁保护
     pub timer_rbtree_link: RBTreeLink,
+
+    /// (下次到期时间, 间隔时间)，单位为 CPU tick，受 `ITIMERS_REAL` 锁保护
+    pub itimer_real: UnsafeCell<Option<(usize, Option<NonZero<usize>>)>>,
+    /// 受 `ITIMERS_REAL` 锁保护
+    pub itimer_real_rbtree_link: RBTreeLink,
 
     pub user_ids: Mutex<TaskUserIds>,
 
@@ -275,6 +280,9 @@ impl Task {
 
             timer_rbtree_key: UnsafeCell::new(0),
             timer_rbtree_link: RBTreeLink::new(),
+
+            itimer_real: UnsafeCell::new(None),
+            itimer_real_rbtree_link: RBTreeLink::new(),
 
             // root
             user_ids: Mutex::new(TaskUserIds {
@@ -456,7 +464,11 @@ impl Task {
         } else {
             // 进程，直接新建一个进程（线程组），注意仍在同一个进程组中，以及新进程默认继承旧进程的限制
             let rlimits = self.process.rlimits.read().clone();
-            Arc::new(ProcessData::new(tid, self.process.pgid, rlimits))
+            Arc::new(ProcessData::new(
+                tid,
+                self.process.pgid.load(Ordering::Relaxed),
+                rlimits,
+            ))
         };
 
         let signal_handler = if flags.contains(CloneFlags::SIGHAND) {
@@ -509,6 +521,9 @@ impl Task {
 
             timer_rbtree_key: UnsafeCell::new(0),
             timer_rbtree_link: RBTreeLink::new(),
+
+            itimer_real: UnsafeCell::new(None), // 不继承
+            itimer_real_rbtree_link: RBTreeLink::new(),
 
             user_ids: Mutex::new(*self.user_ids.lock()),
 
@@ -1128,7 +1143,7 @@ impl Task {
             // 检查定时器即可
 
             arch::NativeBasic::halt();
-            check_timers(); // 如果唤醒了任务，下次循环前面的 if 条件将成真
+            check_all_timers(); // 如果唤醒了任务，下次循环前面的 if 条件将成真
         }
     }
 
@@ -1184,6 +1199,8 @@ impl Drop for Task {
             debug_assert!(tasks.iter().any(|task| addr_eq(task, self)));
             unsafe { tasks.cursor_mut_from_ptr(self) }.remove();
         }
+
+        unsafe { set_itimer_real(self, None) };
 
         if !self.robust_list_head.get_mut().is_null() {
             log::error!("TODO: 处理 robust_list_head");

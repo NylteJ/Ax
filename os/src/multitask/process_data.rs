@@ -1,6 +1,6 @@
 use core::{
     ops::{Index, IndexMut},
-    sync::atomic::AtomicBool,
+    sync::atomic::{AtomicBool, AtomicUsize},
 };
 
 use intrusive_collections::{LinkedListLink, UnsafeRef, intrusive_adapter};
@@ -21,7 +21,7 @@ pub struct ProcessData {
     /// 主线程的 TID，也是进程（线程组）的 PID
     pub pid: usize,
     /// 进程组 ID
-    pub pgid: usize,
+    pub pgid: AtomicUsize,
 
     pub tasks: RwLock<intrusive_collections::LinkedList<TaskOfProcessAdapter>>,
 
@@ -42,7 +42,7 @@ impl ProcessData {
     pub fn new(pid: usize, pgid: usize, rlimits: ProcessRLimits) -> Self {
         Self {
             pid,
-            pgid,
+            pgid: AtomicUsize::new(pgid),
             tasks: RwLock::new(intrusive_collections::LinkedList::new(
                 TaskOfProcessAdapter::new(),
             )),
@@ -62,7 +62,7 @@ impl ProcessData {
         self.signals_wl.lock().add(signal);
 
         for task in self.tasks.read().iter() {
-            // FIXME: 这里其实会有 TOUTOU，先跑着看看
+            // FIXME: 这里其实会有 TOCTOU，先跑着看看
             if !task.signals_wl.lock().mask.contains(signal.as_mask()) {
                 task.try_interrupt_sleep();
                 break;
