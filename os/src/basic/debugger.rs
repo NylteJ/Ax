@@ -92,7 +92,7 @@ pub fn print_pc_info_if_debug(pc: usize) {
 
 #[cfg(feature = "has-debug-info")]
 pub struct DebugContext(
-    super::sync::OnceInited<
+    crate::basic::sync::OnceInited<
         addr2line::Context<addr2line::gimli::EndianSlice<'static, addr2line::gimli::LittleEndian>>,
     >,
 );
@@ -104,7 +104,7 @@ unsafe impl Send for DebugContext {}
 unsafe impl Sync for DebugContext {}
 
 #[cfg(feature = "has-debug-info")]
-pub static DEBUG_CONTEXT: DebugContext = DebugContext(super::sync::OnceInited::new());
+pub static DEBUG_CONTEXT: DebugContext = DebugContext(crate::basic::sync::OnceInited::new());
 
 #[cfg(feature = "has-debug-info")]
 impl DebugContext {
@@ -140,7 +140,7 @@ impl DebugContext {
         )
         .unwrap();
 
-        super::sync::OnceInited::init(&self.0, addr2line::Context::from_dwarf(file).unwrap())
+        crate::basic::sync::OnceInited::init(&self.0, addr2line::Context::from_dwarf(file).unwrap())
     }
 }
 
