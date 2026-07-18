@@ -82,7 +82,7 @@ impl Scheduler for RealtimeScheduler {
 }
 
 impl RealtimeScheduler {
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             tasks: [const { VecDeque::new() }; REALTIME_PRIORITY_COUNT],
             has_tasks: BitArray::ZERO,

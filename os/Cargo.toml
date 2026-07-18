@@ -30,6 +30,7 @@ ringbuf = { version = "0.4.8", default-features = false, features = ["alloc"] }
 rand = { version = "0.10.1", default-features = false, features = ["alloc", "chacha"] }
 zerocopy = "0.8.48"
 crossbeam = { version = "0.8.4", default-features = false, features = ["alloc"] }
+tuple_for_each = "0.1.0"
 
 # 这两个依赖用于 Debug 构建
 addr2line = { version = "0.25.1", default-features = false }

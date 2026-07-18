@@ -419,6 +419,7 @@ dependencies = [
  "seq-macro",
  "smoltcp",
  "static_assertions",
+ "tuple_for_each",
  "uninit",
  "virtio-drivers",
  "xarray",
@@ -635,6 +636,17 @@ name = "thiserror-impl"
 version = "2.0.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ebc4ee7f67670e9b64d05fa4253e753e016c6c95ff35b89b7941d6b856dec1d5"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
+name = "tuple_for_each"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "00260719228bfc0ba8fe41371d061ff5a8801084b5d59a17a28b2a4a20582a0a"
 dependencies = [
  "proc-macro2",
  "quote",

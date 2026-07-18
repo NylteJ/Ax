@@ -1,6 +1,5 @@
 use crate::multitask::task::{Task, TaskArc};
 
-pub mod idle;
 pub mod realtime;
 
 pub trait Scheduler: Send + Sync {
