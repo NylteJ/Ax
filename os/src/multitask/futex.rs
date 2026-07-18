@@ -21,7 +21,7 @@ use crate::{
         address_space::AddressSpace,
         uaccess::{CopyError, copy_one_from_user, copy_one_to_user},
     },
-    multitask::{current_task, task::Task},
+    multitask::{cur_task, task::Task},
 };
 
 // 我们不会真正用它访问任何东西，它永远只用于比较，因此它只要能唯一确定一个 Futex 就行了
@@ -176,11 +176,9 @@ impl FutexGuard<'_> {
     /// 此函数执行期间会暂时释放针对 futex 字的锁，因此不会阻碍并发。
     /// 然而，其还会试图重新获取锁，因此最好将其视作一直持有锁，以避免死锁。
     pub fn wait(mut self, ddl_tick: Option<usize>, mask: FutexMask) -> Result<(), FutexWaitError> {
-        let cur_task = unsafe { current_task().as_ref_unchecked() };
-
         let ftx_q = Box::new(FutexQ {
             key: self.key.clone(),
-            task: cur_task,
+            task: cur_task(),
             link: LinkedListLink::new(),
             mask,
         });
@@ -191,7 +189,7 @@ impl FutexGuard<'_> {
 
         let _timeout_guard;
         if let Some(ddl_tick) = ddl_tick {
-            _timeout_guard = wake_task_when(cur_task, ddl_tick);
+            _timeout_guard = wake_task_when(cur_task(), ddl_tick);
         }
 
         Task::sleep_current();
@@ -205,7 +203,7 @@ impl FutexGuard<'_> {
 
         if ddl_tick.is_some_and(|ddl| get_cpu_tick() >= ddl) {
             Err(FutexWaitError::Timeout)
-        } else if cur_task.find_signal_to_consume().is_some() {
+        } else if cur_task().find_signal_to_consume().is_some() {
             Err(FutexWaitError::Signal)
         } else {
             Ok(())

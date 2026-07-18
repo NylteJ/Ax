@@ -28,7 +28,7 @@ use crate::{
         },
     },
     multitask::{
-        current_task,
+        cur_task,
         signal::SignalId,
         task::{AuxId, AuxiliaryEntry, Task, USER_STACK_BYTES},
         task_manager::get_task_by_tid,
@@ -76,15 +76,13 @@ pub extern "C" fn clone(
         stack.map_or(0, |s| s.get())
     );
 
-    let task = unsafe { current_task().as_ref_unchecked() };
-
     // 非常神奇的，在 LoongArch 64 上，tls 和 ctid 参数是反着来的
     #[cfg(target_arch = "loongarch64")]
     let (tls, ctid) = (ctid, tls);
 
     let ctid = ctid as *mut c_int;
 
-    let child_tid = task.fork(flags, stack, ptid, tls, ctid, signal)?;
+    let child_tid = cur_task().fork(flags, stack, ptid, tls, ctid, signal)?;
 
     SyscallResult::success(child_tid)
 }
@@ -225,9 +223,7 @@ pub extern "C" fn clone3(cl_args: *mut CloneArgs, size: usize) -> SyscallResult 
         return EOPNOTSUPP;
     }
 
-    let task = unsafe { current_task().as_ref_unchecked() };
-
-    let child_tid = task.fork(flags, ustack, ptid, tls, ctid, exit_signal)?;
+    let child_tid = cur_task().fork(flags, ustack, ptid, tls, ctid, exit_signal)?;
 
     SyscallResult::success(child_tid)
 }
@@ -248,10 +244,8 @@ pub extern "C" fn execve(
     envp: *const *const c_char,
 ) -> SyscallResult {
     let path = copy_str_from_user(path, PATH_LEN_HINT, PATH_LEN_MAX)?;
-
-    let task = unsafe { current_task().as_ref_unchecked() };
     let path_to_walk = PathToWalk::auto(path.as_ref(), || {
-        task.fs_data.read().current_work_dir.clone()
+        cur_task().fs_data.read().current_work_dir.clone()
     })?;
 
     let file_path = walk_path(path_to_walk)?.ensure()?;
@@ -282,7 +276,7 @@ pub extern "C" fn execve(
                 .unwrap_or((shebang, b""));
 
             let interp_ptw = PathToWalk::auto(ByteStr::new(interp_path), || {
-                task.fs_data.read().current_work_dir.clone()
+                cur_task().fs_data.read().current_work_dir.clone()
             })?;
             let path = walk_path(interp_ptw)?.ensure()?;
             let interp_file = path.0.data.lock().ops.open(path.1, FileFlags::Read)?;
@@ -356,7 +350,7 @@ pub extern "C" fn execve(
     }
 
     // 半成品 auxv（缺少 AT_RANDOM 和 AT_NULL）
-    let auxv = task.replace_execute(file)?;
+    let auxv = cur_task().replace_execute(file)?;
     debug_assert!(auxv.iter().all(|entry| entry.0 != AuxId::AT_NULL));
 
     let auxv_bytes = (auxv.len() + 2) * size_of::<AuxiliaryEntry>();
@@ -366,7 +360,7 @@ pub extern "C" fn execve(
 
     debug_assert!(data_bytes <= USER_STACK_BYTES);
 
-    let current_sp = &mut unsafe { task.get_trap_context().cast_mut().as_mut_unchecked() }
+    let current_sp = &mut unsafe { cur_task().get_trap_context().cast_mut().as_mut_unchecked() }
         .regs
         .sp;
     debug_assert_eq!(*current_sp % STACK_ALIGN, 0);
@@ -475,17 +469,15 @@ fn push_indexes(mut indexes: Vec<usize>, data_begin: usize, current_sp: &mut usi
 pub extern "C" fn wait4(pid: isize, status: *mut c_int, options: usize) -> SyscallResult {
     let options = WaitOptions::from_bits(options.try_into().map_err(|_| EINVAL)?).ok_or(EINVAL)?;
 
-    let task = unsafe { current_task().as_ref_unchecked() };
-
     let target_pgid = match pid {
-        0 => task.process.pgid,
+        0 => cur_task().process.pgid,
         ..-1 => pid.unsigned_abs(),
-        -1 => return wait4_pred(|_| true, status, options, task),
+        -1 => return wait4_pred(|_| true, status, options, cur_task()),
         1.. => {
             let pid = pid.cast_unsigned();
             let target = get_task_by_tid(pid).ok_or(ECHILD)?;
 
-            if !addr_eq(target.parent_task(), task) {
+            if !addr_eq(target.parent_task(), cur_task()) {
                 return ECHILD;
             }
 
@@ -494,7 +486,13 @@ pub extern "C" fn wait4(pid: isize, status: *mut c_int, options: usize) -> Sysca
 
             loop {
                 if let Some((signal, ret_value)) = target.wait_state.lock().status {
-                    unsafe { task.children.lock().cursor_mut_from_ptr(&*target).remove() };
+                    unsafe {
+                        cur_task()
+                            .children
+                            .lock()
+                            .cursor_mut_from_ptr(&*target)
+                            .remove()
+                    };
                     report_status(status, signal, ret_value)?;
                     return SyscallResult::success(pid);
                 }
@@ -508,7 +506,7 @@ pub extern "C" fn wait4(pid: isize, status: *mut c_int, options: usize) -> Sysca
                 }
 
                 let mut waiting = Waiting::new();
-                waiting.wait(&task.process.waiting_for_child);
+                waiting.wait(&cur_task().process.waiting_for_child);
                 sleep_err = waiting.sleep().err();
             }
         }
@@ -518,7 +516,7 @@ pub extern "C" fn wait4(pid: isize, status: *mut c_int, options: usize) -> Sysca
         |task| task.process.pgid == target_pgid,
         status,
         options,
-        task,
+        cur_task(),
     )
 }
 
@@ -562,7 +560,7 @@ fn wait4_pred(
                     let child = cur_child.remove().unwrap();
                     report_status(status, signal, ret_value)?;
 
-                    unsafe { current_task().as_ref_unchecked() }
+                    cur_task()
                         .time_stats
                         .lock()
                         .update_children_times(&child.time_stats.lock());
@@ -612,8 +610,7 @@ fn report_status(status: *mut c_int, signal: SignalId, ret_value: u8) -> Result<
 /// pid_t ret = syscall(SYS_getppid);
 /// ```
 pub extern "C" fn getppid() -> usize {
-    let task = unsafe { current_task().as_ref_unchecked() };
-    task.parent_task().process.pid
+    cur_task().parent_task().process.pid
 }
 
 /// * 功能：获取进程ID；
@@ -623,8 +620,7 @@ pub extern "C" fn getppid() -> usize {
 /// pid_t ret = syscall(SYS_getpid);
 /// ```
 pub extern "C" fn getpid() -> usize {
-    let task = unsafe { current_task().as_ref_unchecked() };
-    task.process.pid
+    cur_task().process.pid
 }
 
 /// * 功能：获取线程ID；
@@ -634,8 +630,7 @@ pub extern "C" fn getpid() -> usize {
 /// pid_t ret = syscall(SYS_gettid);
 /// ```
 pub extern "C" fn gettid() -> usize {
-    let task = unsafe { current_task().as_ref_unchecked() };
-    task.tid
+    cur_task().tid
 }
 
 /// * 功能：执行线程睡眠，sleep()库函数基于此系统调用；
@@ -696,17 +691,14 @@ pub extern "C" fn nanosleep(req: *const TimeSpec, rem: *mut TimeSpec) -> Syscall
 }
 
 pub extern "C" fn set_tid_address(tidptr: *mut c_int) -> usize {
-    let cur_task = unsafe { current_task().as_ref_unchecked() };
-    cur_task.tid_address.store(tidptr, Ordering::Relaxed);
-    cur_task.tid
+    cur_task().tid_address.store(tidptr, Ordering::Relaxed);
+    cur_task().tid
 }
 
 pub fn exit_group_kernel(code: isize, signal: SignalId) -> ! {
-    let cur_task = unsafe { current_task().as_ref_unchecked() };
-
-    let is_already_exiting = cur_task.process.is_exiting.swap(true, Ordering::Relaxed);
+    let is_already_exiting = cur_task().process.is_exiting.swap(true, Ordering::Relaxed);
     if !is_already_exiting {
-        for task in &*cur_task.process.tasks.read() {
+        for task in &*cur_task().process.tasks.read() {
             // 注意这里也会遍历到自己，但没什么关系，因为我们再也不会回用户态了
             task.send_signal(SignalId::SIGKILL);
         }
@@ -721,7 +713,7 @@ pub extern "C" fn exit_group(code: isize) -> ! {
 
 pub extern "C" fn setpgid(pid: usize, pgid: usize) -> SyscallResult {
     let task = if pid == 0 {
-        unsafe { current_task().as_ref_unchecked() }
+        cur_task()
     } else {
         &get_task_by_tid(pid).ok_or(ESRCH)?
     };
@@ -739,7 +731,7 @@ pub extern "C" fn setpgid(pid: usize, pgid: usize) -> SyscallResult {
 
 pub extern "C" fn getpgid(pid: usize) -> SyscallResult {
     let task = if pid == 0 {
-        unsafe { current_task().as_ref_unchecked() }
+        cur_task()
     } else {
         &get_task_by_tid(pid).ok_or(ESRCH)?
     };

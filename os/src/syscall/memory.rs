@@ -14,7 +14,7 @@ use crate::memory::virtual_memory_area::VMAFlags;
 use crate::memory::virtual_memory_area::VMAGrowth;
 use crate::memory::virtual_memory_area::VMAType;
 use crate::memory::virtual_memory_area::VirtualMemoryArea;
-use crate::multitask::current_task;
+use crate::multitask::cur_task;
 use crate::syscall::SyscallResult;
 
 use crate::syscall::err_codes::*;
@@ -28,8 +28,7 @@ use crate::syscall::err_codes::*;
 /// ```
 // 依旧，这里的文档与 Linux 语义冲突，我们选用 Linux 语义，总是返回地址（成功时返回新地址，失败时返回旧地址）
 pub extern "C" fn brk(brk: usize) -> usize {
-    let task = unsafe { current_task().as_ref_unchecked() };
-    let addr_space = task.address_space.read();
+    let addr_space = cur_task().address_space.read();
 
     if brk == 0 {
         return addr_space.read().brk.0;
@@ -89,8 +88,6 @@ pub extern "C" fn mmap(
     let flags = (flags >> 2).try_into().map_err(|_| EINVAL)?;
     let flags = MMapFlags::from_bits(flags).ok_or(EINVAL)?;
 
-    let cur_task = unsafe { current_task().as_ref_unchecked() };
-
     let vma_type = if flags.contains(MMapFlags::MAP_ANONYMOUS) {
         VMAType::Anonymous
     } else {
@@ -104,7 +101,7 @@ pub extern "C" fn mmap(
         }
         let fd = fd.cast_unsigned();
 
-        let file = cur_task.files.read().get(fd).ok_or(EBADF)?.0.clone();
+        let file = cur_task().files.read().get(fd).ok_or(EBADF)?.0.clone();
 
         VMAType::File { file, page_index }
     };
@@ -120,7 +117,7 @@ pub extern "C" fn mmap(
     let start = VirtAddr(start).floor_to_page();
     let end = VirtAddr(start.0.checked_add(len).ok_or(EINVAL)?).ceil_to_page();
 
-    let result = cur_task
+    let result = cur_task()
         .address_space
         .read()
         .write()
@@ -193,8 +190,7 @@ pub extern "C" fn munmap(start: *mut c_void, len: usize) -> SyscallResult {
     let start = VirtAddr(start);
     let end = VirtAddr(start.0 + len).ceil_to_page();
 
-    let cur_task = unsafe { current_task().as_ref_unchecked() };
-    let address_space = cur_task.address_space.read();
+    let address_space = cur_task().address_space.read();
     let mut address_space = address_space.write();
     address_space.remove_vmas_between(start, end);
     address_space
@@ -233,8 +229,7 @@ pub extern "C" fn mprotect(addr: *mut c_void, len: usize, prot: isize) -> Syscal
     let start = VirtAddr(addr);
     let end = VirtAddr(addr + len).ceil_to_page();
 
-    let cur_task = unsafe { current_task().as_ref_unchecked() };
-    let address_space = cur_task.address_space.read();
+    let address_space = cur_task().address_space.read();
     let mut address_space = address_space.write();
     address_space.modify_vma_flags_between(start, end, |mut flags| {
         flags.set(VMAFlags::Read, r);

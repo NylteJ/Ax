@@ -5,7 +5,7 @@ use num_enum::TryFromPrimitive;
 use crate::filesystem::EPollFile;
 use crate::memory::uaccess::copy_one_from_user;
 use crate::multitask::FDTableEntry;
-use crate::multitask::current_task;
+use crate::multitask::cur_task;
 use crate::syscall::SyscallResult;
 
 use crate::syscall::err_codes::*;
@@ -22,8 +22,6 @@ pub extern "C" fn epoll_create1(flags: usize) -> SyscallResult {
     let flags: u32 = flags.try_into().map_err(|_| EINVAL)?;
     let flags = EPollFlags::from_bits(flags).ok_or(EINVAL)?;
 
-    let cur_task = unsafe { current_task().as_ref_unchecked() };
-
     let epoll_file = EPollFile::new();
 
     let fd_entry = if flags.contains(EPollFlags::CLOEXEC) {
@@ -32,7 +30,7 @@ pub extern "C" fn epoll_create1(flags: usize) -> SyscallResult {
         FDTableEntry::no_flags(epoll_file)
     };
 
-    let fd = cur_task.files.write().insert(fd_entry, cur_fd_rlimit())?;
+    let fd = cur_task().files.write().insert(fd_entry, cur_fd_rlimit())?;
 
     SyscallResult::success(fd)
 }

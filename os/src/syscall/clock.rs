@@ -5,7 +5,7 @@ use num_enum::TryFromPrimitive;
 use crate::{
     basic::timer::{CLOCK_FREQ, cpu_tick_to_us, get_cpu_tick, us_to_cpu_tick},
     memory::uaccess::{copy_one_from_user, copy_one_to_user},
-    multitask::current_task,
+    multitask::cur_task,
     syscall::{SyscallResult, common::TimeSpec},
 };
 
@@ -68,8 +68,7 @@ pub extern "C" fn clock_gettime(clockid: usize, tp: *mut TimeSpec) -> SyscallRes
 
         ClockId::THREAD_CPUTIME_ID => {
             let ticks = {
-                let cur_task = unsafe { current_task().as_ref_unchecked() };
-                let time_stats = cur_task.time_stats.lock();
+                let time_stats = cur_task().time_stats.lock();
 
                 time_stats.kernel_time + time_stats.user_time
             };

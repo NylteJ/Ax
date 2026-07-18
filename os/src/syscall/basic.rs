@@ -10,7 +10,7 @@ use crate::{
     },
     memory::uaccess::{copy_one_from_user, copy_one_to_user},
     multitask::{
-        current_task,
+        cur_task, current_task,
         signal::SignalId,
         task::{INIT_PID, Task, TaskArc},
         task_manager::get_task_by_tid,
@@ -23,11 +23,7 @@ use crate::{
 use crate::syscall::err_codes::*;
 
 pub fn exit_kernel(ec: isize, signal: SignalId) -> ! {
-    log::trace!(
-        "Task {} exited with code {1} ({1:#x}).",
-        unsafe { current_task().as_ref_unchecked() }.tid,
-        ec
-    );
+    log::trace!("Task {} exited with code {1} ({1:#x}).", cur_task().tid, ec);
 
     let cur = unsafe { TaskArc::from_asm(current_task()) };
 
@@ -89,18 +85,14 @@ pub extern "C" fn exit(ec: isize) -> ! {
 }
 
 pub extern "C" fn yield_() -> isize {
-    // log::trace!(
-    //     "Task {} yielded.",
-    //     unsafe { current_task().as_ref_unchecked() }.tid
-    // );
+    // log::trace!("Task {} yielded.", cur_task().tid);
 
     // FIXME: 这实际上是目前用 yield 模拟 sleep 所需要的变通方案
     //        正统 sleep 会检查这一点
     check_timers();
 
     let mut scheduler = TASK_SCHEDULER.lock();
-    let cur = current_task();
-    scheduler.add_task(unsafe { TaskArc::from_asm(cur) });
+    scheduler.add_task(unsafe { TaskArc::from_asm(current_task()) });
     let next_task = scheduler.pick_next().unwrap();
     drop(scheduler);
 
@@ -127,10 +119,8 @@ pub struct Tms {
 /// ```
 pub extern "C" fn times(tms: *mut Tms) -> SyscallResult {
     if !tms.is_null() {
-        let cur_task = unsafe { current_task().as_ref_unchecked() };
-
         let tms_data = {
-            let time_stats = cur_task.time_stats.lock();
+            let time_stats = cur_task().time_stats.lock();
             Tms {
                 tms_utime: time_stats.user_time,
                 tms_stime: time_stats.kernel_time,
@@ -267,7 +257,7 @@ pub extern "C" fn prlimit64(
     let resource: RLimitResource = resource.try_into().map_err(|_| EINVAL)?;
 
     let task = if pid == 0 {
-        unsafe { current_task().as_ref_unchecked() }
+        cur_task()
     } else {
         &get_task_by_tid(pid).ok_or(ESRCH)?
     };
@@ -301,9 +291,7 @@ pub extern "C" fn getrlimit(resource: usize, rlimit: *mut RLimit) -> SyscallResu
     let resource: u8 = resource.try_into().map_err(|_| EINVAL)?;
     let resource: RLimitResource = resource.try_into().map_err(|_| EINVAL)?;
 
-    let cur_task = unsafe { current_task().as_ref_unchecked() };
-
-    copy_one_to_user(rlimit, &cur_task.process.rlimits.read()[resource])?;
+    copy_one_to_user(rlimit, &cur_task().process.rlimits.read()[resource])?;
 
     SyscallResult::success(0)
 }

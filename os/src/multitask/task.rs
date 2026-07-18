@@ -35,7 +35,7 @@ use crate::{
         virtual_memory_area::{VMAFlags, VMAGrowth, VMAType, VirtualMemoryArea},
     },
     multitask::{
-        SchedulePolicy, TaskPriority, current_task,
+        SchedulePolicy, TaskPriority, cur_task, current_task,
         fdtable::FileDescriptorTable,
         fs_data::FilesystemData,
         futex::futex_lock,
@@ -610,8 +610,7 @@ impl Task {
         // 现在我们被重新调度了
 
         // 重新设置 last_update_stamp
-        let cur_task = unsafe { current_task().as_ref_unchecked() };
-        cur_task.time_stats.lock().last_update_stamp = get_cpu_tick();
+        cur_task().time_stats.lock().last_update_stamp = get_cpu_tick();
     }
 
     /// 和 [`Self::switch_to`] 类似，但允许 `target` 为当前任务
@@ -1097,12 +1096,10 @@ impl Task {
 
 impl Task {
     pub fn sleep_current() {
-        let cur_task = unsafe { current_task().as_ref_unchecked() };
-        cur_task.do_sleep(TaskState::Sleeping);
+        cur_task().do_sleep(TaskState::Sleeping);
     }
     pub fn sleep_current_uninterruptible() {
-        let cur_task = unsafe { current_task().as_ref_unchecked() };
-        cur_task.do_sleep(TaskState::SleepingUninterruptible);
+        cur_task().do_sleep(TaskState::SleepingUninterruptible);
     }
 
     fn do_sleep(&self, new_state: TaskState) {

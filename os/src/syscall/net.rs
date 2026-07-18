@@ -9,13 +9,16 @@ use bitflags::bitflags;
 use num_enum::TryFromPrimitive;
 use zerocopy::network_endian;
 
-use crate::filesystem::{SocketFile, vfs::File};
 use crate::memory::uaccess::copy_from_user_uninit;
-use crate::multitask::{FDTableEntry, current_task};
+use crate::multitask::FDTableEntry;
 use crate::network::namespace::GLOBAL_NET_NAMESPACE;
 use crate::network::socket::{Socket, SocketAddress};
 use crate::syscall::filesystem::get_file_from_fd;
 use crate::syscall::{SyscallResult, filesystem::cur_fd_rlimit};
+use crate::{
+    filesystem::{SocketFile, vfs::File},
+    multitask::cur_task,
+};
 
 use crate::syscall::err_codes::*;
 
@@ -94,8 +97,7 @@ pub extern "C" fn socket(domain: isize, type_: isize, protocol: isize) -> Syscal
         FDTableEntry::no_flags(file)
     };
 
-    let cur_task = unsafe { current_task().as_ref_unchecked() };
-    let fd = cur_task.files.write().insert(fd_entry, cur_fd_rlimit())?;
+    let fd = cur_task().files.write().insert(fd_entry, cur_fd_rlimit())?;
 
     SyscallResult::success(fd)
 }
@@ -211,8 +213,7 @@ pub extern "C" fn bind(sockfd: isize, addr: *const u8, addrlen: usize) -> Syscal
         } else {
             if port < 1024 {
                 // 保留端口，要求特权
-                let cur_task = unsafe { current_task().as_ref_unchecked() };
-                let cur_uids = *cur_task.user_ids.lock();
+                let cur_uids = *cur_task().user_ids.lock();
 
                 if cur_uids.egid != 0 || cur_uids.euid != 0 {
                     return EACCES;
@@ -283,7 +284,6 @@ pub extern "C" fn listen(sockfd: isize, backlog: isize) -> SyscallResult {
 }
 
 fn autoretry(nonblocking: bool, mut func: impl FnMut() -> SyscallResult) -> SyscallResult {
-    let cur_task = unsafe { current_task().as_ref_unchecked() };
     loop {
         let result = func();
 
@@ -293,7 +293,7 @@ fn autoretry(nonblocking: bool, mut func: impl FnMut() -> SyscallResult) -> Sysc
             } else {
                 crate::syscall::basic::yield_(); // FIXME
 
-                if cur_task.find_signal_to_consume().is_some() {
+                if cur_task().find_signal_to_consume().is_some() {
                     return EINTR;
                 }
             }
@@ -311,8 +311,6 @@ pub extern "C" fn accept(sockfd: isize, addr: *mut u8, addrlen: *mut u32) -> Sys
     let new_sock = match socket.socket_type {
         SocketType::STREAM | SocketType::SEQPACKET => {
             let nonblock = sock.nonblocking.load(Ordering::Relaxed);
-            let cur_task = unsafe { current_task().as_ref_unchecked() };
-
             loop {
                 let result = sock.ops.accept(&socket.sock);
 
@@ -322,7 +320,7 @@ pub extern "C" fn accept(sockfd: isize, addr: *mut u8, addrlen: *mut u32) -> Sys
                     } else {
                         crate::syscall::basic::yield_(); // FIXME
 
-                        if cur_task.find_signal_to_consume().is_some() {
+                        if cur_task().find_signal_to_consume().is_some() {
                             return EINTR;
                         }
                     }
@@ -343,8 +341,7 @@ pub extern "C" fn accept(sockfd: isize, addr: *mut u8, addrlen: *mut u32) -> Sys
 
     let fd_entry = FDTableEntry::no_flags(SocketFile::new(new_socket));
 
-    let cur_task = unsafe { current_task().as_ref_unchecked() };
-    let fd = cur_task.files.write().insert(fd_entry, cur_fd_rlimit())?;
+    let fd = cur_task().files.write().insert(fd_entry, cur_fd_rlimit())?;
 
     SyscallResult::success(fd)
 }

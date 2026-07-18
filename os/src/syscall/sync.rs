@@ -11,7 +11,7 @@ use crate::memory::address::PhysAddr;
 use crate::memory::address::PhysPageNum;
 use crate::memory::address::VirtAddr;
 use crate::memory::virtual_memory_area::VMAType;
-use crate::multitask::current_task;
+use crate::multitask::cur_task;
 use crate::multitask::futex::FutexKey;
 use crate::multitask::futex::FutexMask;
 use crate::multitask::futex::futex_lock;
@@ -379,8 +379,7 @@ pub extern "C" fn futex(
 }
 
 pub fn get_futex_key(uaddr: *mut u32, private: bool) -> Result<FutexKey, SyscallResult> {
-    let cur_task = unsafe { current_task().as_ref_unchecked() };
-    let cur_addr_space = cur_task.address_space.read();
+    let cur_addr_space = cur_task().address_space.read();
 
     if !uaddr.is_aligned_to(4) {
         return Err(EINVAL); // futex 强制要求地址按 4 字节对齐

@@ -1,7 +1,7 @@
 use crate::{
     basic::sync::MutexGuard,
     memory::uaccess::copy_one_to_user,
-    multitask::{current_task, task::TaskUserIds},
+    multitask::{cur_task, task::TaskUserIds},
     syscall::SyscallResult,
 };
 
@@ -9,7 +9,7 @@ use crate::syscall::err_codes::*;
 
 // 它其实不安全，但只在内部使用所以也没什么所谓
 fn cur_uids_mtx_guard<'a>() -> MutexGuard<'a, TaskUserIds> {
-    unsafe { current_task().as_ref_unchecked() }.user_ids.lock()
+    cur_task().user_ids.lock()
 }
 
 fn cur_uids() -> TaskUserIds {

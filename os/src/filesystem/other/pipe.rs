@@ -25,7 +25,7 @@ use crate::{
         other::{DummyDEntryOps, DummyINodeOps},
         vfs::{self, VfsError, VfsResult},
     },
-    multitask::{current_task, signal::SignalId},
+    multitask::{cur_task, signal::SignalId},
 };
 
 // ltp pipe11 要求缓冲区至少有 4096 字节
@@ -164,8 +164,7 @@ impl vfs::FileOps for PipeWriteFile {
         fn check_pipe_alive(pipe: &PipeINode) -> VfsResult<()> {
             if pipe.writer_count.load(Ordering::Acquire) == 0 {
                 // 此时还需要发送 SIGPIPE
-                let cur_task = unsafe { current_task().as_ref_unchecked() };
-                cur_task.send_signal(SignalId::SIGPIPE);
+                cur_task().send_signal(SignalId::SIGPIPE);
 
                 Err(VfsError::BrokenPipe)
             } else {

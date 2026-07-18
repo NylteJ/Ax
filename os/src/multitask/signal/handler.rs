@@ -19,7 +19,7 @@ use crate::{
         uaccess::{CopyError, copy_one_from_user, copy_one_to_user},
     },
     multitask::{
-        current_task,
+        cur_task,
         signal::{RtSignalData, SignalBehavior, SignalId},
     },
     syscall::signal::{SignalAction, SignalActionFlags, SignalInfo, UContext},
@@ -55,8 +55,8 @@ impl SignalHandler {
             // 调用用户自定义的处理函数
             // 这部分通常是冷路径中的冷路径，因此性能非常无所谓
 
-            let cur_task = unsafe { current_task().as_ref_unchecked() };
-            let trap_context = unsafe { cur_task.get_trap_context().cast_mut().as_mut_unchecked() };
+            let trap_context =
+                unsafe { cur_task().get_trap_context().cast_mut().as_mut_unchecked() };
 
             let mcontext = trap_context.get_mcontext();
 
@@ -65,7 +65,7 @@ impl SignalHandler {
 
             // 原子替换 mask，并保存旧 mask
             let old_signal_mask = {
-                let mut wl = cur_task.signals_wl.lock();
+                let mut wl = cur_task().signals_wl.lock();
                 replace(&mut wl.mask, action.sa_mask | signal.as_mask())
             };
 
@@ -129,7 +129,7 @@ impl SignalHandler {
                 const SIGRET_PAGE_VADDR: VirtAddr =
                     VirtAddr(USER_RESERVED_MEMORY_START).floor_to_page();
                 {
-                    let addr_space = cur_task.address_space.read();
+                    let addr_space = cur_task().address_space.read();
                     let mut addr_space = addr_space.write();
                     let map_result = addr_space.get_page_table_mut().map::<0>(
                         SIGRET_PAGE_VADDR.into(),
@@ -214,19 +214,17 @@ lazy_static! {
 }
 
 pub fn sigreturn() -> usize {
-    let cur_task = unsafe { current_task().as_ref_unchecked() };
-
     // 注意，此时内核栈顶的那个 TrapContext 是用户主程序的 TrapContext，信号处理程序的上下文在用户栈上
     // 以及，用户程序可以修改上下文，因此我们必须将用户栈上的上下文恢复到主程序的 TrapContext 中
     // 只恢复寄存器（31 个普通寄存器 + 返回 pc）即可，其它值用户不会修改，我们也没有改动
-    let main_trap_context = unsafe { cur_task.get_trap_context().cast_mut().as_mut_unchecked() };
+    let main_trap_context = unsafe { cur_task().get_trap_context().cast_mut().as_mut_unchecked() };
     let ucontext_ptr = main_trap_context.regs.sp as *const UContext;
     let ucontext = copy_one_from_user(ucontext_ptr).expect("写入时没出现故障，则读取时也不该出现");
 
     main_trap_context.with_mcontext(&ucontext.mcontext);
 
     // 除此之外，还要还原原来的信号掩码
-    cur_task.signals_wl.lock().mask = ucontext.mask;
+    cur_task().signals_wl.lock().mask = ucontext.mask;
 
     main_trap_context.ret_reg()
 }

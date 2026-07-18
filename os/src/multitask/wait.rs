@@ -8,7 +8,7 @@ use crate::{
         sync::Mutex,
         timer::{get_cpu_tick, us_to_cpu_tick, wake_task_when},
     },
-    multitask::{current_task, signal::SignalId, task::Task},
+    multitask::{cur_task, current_task, signal::SignalId, task::Task},
 };
 
 #[derive(Debug)]
@@ -121,8 +121,7 @@ impl Waiting {
         Task::sleep_current();
 
         // 和 Linux 一样，我们使用这种间接方式判断
-        let cur_task = unsafe { current_task().as_ref_unchecked() };
-        if let Some(signal) = cur_task.find_signal_to_consume() {
+        if let Some(signal) = cur_task().find_signal_to_consume() {
             return Err(SleepError::Interrupted(signal));
         }
 
@@ -134,12 +133,10 @@ impl Waiting {
     }
 
     pub fn sleep_with_timeout(&mut self, timeout_us: usize) -> SleepWithTimeoutResult {
-        let cur_task = unsafe { current_task().as_ref_unchecked() };
-
         let deadline_tick = get_cpu_tick() + us_to_cpu_tick(timeout_us);
 
         // 这里不需要担心竞态或者其它问题，因为计时器只会在处理时钟中断时触发，且我们不支持内核态抢占
-        let _timeout_guard = wake_task_when(cur_task, deadline_tick);
+        let _timeout_guard = wake_task_when(cur_task(), deadline_tick);
 
         Task::sleep_current();
 
@@ -148,7 +145,7 @@ impl Waiting {
             return SleepWithTimeoutResult::Timeout;
         };
 
-        let result = if let Some(signal) = cur_task.find_signal_to_consume() {
+        let result = if let Some(signal) = cur_task().find_signal_to_consume() {
             Err(SleepError::Interrupted(signal))
         } else {
             Ok(())

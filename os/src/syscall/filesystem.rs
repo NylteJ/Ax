@@ -30,7 +30,7 @@ use crate::{
             copy_to_user, copy_vec_from_user,
         },
     },
-    multitask::{FDTableEntry, FileDescriptorFlags, current_task, signal::SignalMask},
+    multitask::{FDTableEntry, FileDescriptorFlags, cur_task, signal::SignalMask},
     syscall::{
         SyscallResult,
         basic::RLimitResource::RLIMIT_NOFILE,
@@ -50,15 +50,13 @@ pub(super) fn get_file_from_fd(fd: isize) -> Result<FileArc, SyscallResult> {
     }
     let fd = fd.cast_unsigned();
 
-    let cur_task = unsafe { current_task().as_ref_unchecked() };
-    let file = cur_task.files.read().get(fd).ok_or(EBADF)?.0.clone();
+    let file = cur_task().files.read().get(fd).ok_or(EBADF)?.0.clone();
 
     Ok(file)
 }
 
 pub(super) fn cur_fd_rlimit() -> usize {
-    let cur_task = unsafe { current_task().as_ref_unchecked() };
-    cur_task.process.rlimits.read()[RLIMIT_NOFILE].rlim_cur
+    cur_task().process.rlimits.read()[RLIMIT_NOFILE].rlim_cur
 }
 
 /// 功能：获取当前工作目录；
@@ -84,11 +82,9 @@ pub extern "C" fn getcwd(buf: *mut c_char, size: usize) -> SyscallResult {
         return EINVAL;
     }
 
-    let cur_task = unsafe { current_task().as_ref_unchecked() };
-
     let mut str = VecDeque::<u8>::new();
 
-    let mut cwd = cur_task.fs_data.read().current_work_dir.clone();
+    let mut cwd = cur_task().fs_data.read().current_work_dir.clone();
     while let Some(parent) = cwd.walk_step_back_until_root() {
         // TODO: 优化（可读性和性能两方面都要）
         let prt;
@@ -155,11 +151,9 @@ pub extern "C" fn pipe2(fd: *mut c_int, flags: usize) -> SyscallResult {
     let reader = func(reader);
     let writer = func(writer);
 
-    let cur_task = unsafe { current_task().as_ref_unchecked() };
-
     let out: [c_int; 2] = {
-        let reader = cur_task.files.write().insert(reader, cur_fd_rlimit())? as _;
-        let writer = cur_task.files.write().insert(writer, cur_fd_rlimit())? as _;
+        let reader = cur_task().files.write().insert(reader, cur_fd_rlimit())? as _;
+        let writer = cur_task().files.write().insert(writer, cur_fd_rlimit())? as _;
         [reader, writer]
     };
 
@@ -186,9 +180,7 @@ pub extern "C" fn dup(fd: isize) -> SyscallResult {
     }
     let fd = fd as usize;
 
-    let cur_task = unsafe { current_task().as_ref_unchecked() };
-
-    let mut files_guard = cur_task.files.write();
+    let mut files_guard = cur_task().files.write();
 
     let file = files_guard.get(fd).ok_or(EBADF)?.0.clone();
     let entry = FDTableEntry::no_flags(file); // dup 不保留标志
@@ -227,9 +219,7 @@ pub extern "C" fn dup3(old: isize, new: isize, flags: usize) -> SyscallResult {
     let old = old as usize;
     let new = new as usize;
 
-    let cur_task = unsafe { current_task().as_ref_unchecked() };
-
-    let mut files_guard = cur_task.files.write();
+    let mut files_guard = cur_task().files.write();
 
     let file = files_guard.get(old).ok_or(EBADF)?.0.clone();
 
@@ -260,15 +250,13 @@ pub extern "C" fn dup3(old: isize, new: isize, flags: usize) -> SyscallResult {
 pub extern "C" fn chdir(path: *const c_char) -> SyscallResult {
     let path = copy_str_from_user(path, PATH_LEN_HINT, PATH_LEN_MAX)?;
 
-    let cur_task = unsafe { current_task().as_ref_unchecked() };
-
     let path_to_walk = PathToWalk::auto(path.as_ref(), || {
-        cur_task.fs_data.read().current_work_dir.clone()
+        cur_task().fs_data.read().current_work_dir.clone()
     })?;
 
     let new_cwd = walk_path(path_to_walk)?.ensure()?;
 
-    cur_task.fs_data.write().current_work_dir = new_cwd;
+    cur_task().fs_data.write().current_work_dir = new_cwd;
 
     SyscallResult::success(0)
 }
@@ -298,8 +286,6 @@ pub extern "C" fn openat(
     mode: usize,
 ) -> SyscallResult {
     let (file_open_flags, file_flags) = parse_file_open_flag(flags)?;
-
-    let cur_task = unsafe { current_task().as_ref_unchecked() };
 
     let path = copy_str_from_user(filename, FILENAME_LEN_HINT, PATH_LEN_MAX)?;
     let walk_path_from = parse_walk_path_from(fd, path.as_ref())?;
@@ -358,7 +344,7 @@ pub extern "C" fn openat(
         FDTableEntry::no_flags(file)
     };
 
-    let fd = cur_task.files.write().insert(fd_entry, cur_fd_rlimit())?;
+    let fd = cur_task().files.write().insert(fd_entry, cur_fd_rlimit())?;
     log::trace!("openat success, fd: {fd}");
     SyscallResult::success(fd)
 }
@@ -455,13 +441,11 @@ fn parse_walk_path_from(fd: isize, path: &ByteStr) -> Result<PathToWalk<'_>, Sys
     }
     let is_abs_path = path[0] == b'/';
 
-    let cur_task = unsafe { current_task().as_ref_unchecked() };
-
     Ok(if !is_abs_path {
         let dentry = match fd {
-            AT_FDCWD => cur_task.fs_data.read().current_work_dir.clone(),
+            AT_FDCWD => cur_task().fs_data.read().current_work_dir.clone(),
             ..0 => return Err(EBADF),
-            0.. => cur_task
+            0.. => cur_task()
                 .files
                 .read()
                 .get(fd.cast_unsigned())
@@ -495,9 +479,7 @@ pub extern "C" fn close(fd: isize) -> SyscallResult {
         return EBADF;
     }
 
-    let cur_task = unsafe { current_task().as_ref_unchecked() };
-
-    cur_task
+    cur_task()
         .files
         .write()
         .remove(fd.cast_unsigned())
@@ -769,8 +751,6 @@ pub extern "C" fn linkat(
     newpath: *const c_char,
     flags: usize,
 ) -> SyscallResult {
-    let cur_task = unsafe { current_task().as_ref_unchecked() };
-
     let oldpath = copy_str_from_user(oldpath, FILENAME_LEN_HINT, PATH_LEN_MAX)?;
     let old_wpf = parse_walk_path_from(olddirfd, oldpath.as_ref())?;
     let old_dentry = walk_path(old_wpf)?.ensure()?.0;
@@ -808,8 +788,6 @@ const AT_REMOVEDIR: usize = 0x200;
 /// syscall(SYS_unlinkat, dirfd, path, flags);
 /// ```
 pub extern "C" fn unlinkat(dirfd: isize, path: *const c_char, flags: usize) -> SyscallResult {
-    let cur_task = unsafe { current_task().as_ref_unchecked() };
-
     let path = copy_str_from_user(path, FILENAME_LEN_HINT, PATH_LEN_MAX)?;
     let walk_path_from = parse_walk_path_from(dirfd, path.as_ref())?;
     let dentry = walk_path(walk_path_from)?.ensure()?.0;
@@ -851,8 +829,6 @@ pub extern "C" fn unlinkat(dirfd: isize, path: *const c_char, flags: usize) -> S
 /// int ret = syscall(SYS_mkdirat, dirfd, path, mode);
 /// ```
 pub extern "C" fn mkdirat(dirfd: isize, path: *const c_char, mode: usize) -> SyscallResult {
-    let cur_task = unsafe { current_task().as_ref_unchecked() };
-
     let path = copy_str_from_user(path, FILENAME_LEN_HINT, PATH_LEN_MAX)?;
     let walk_path_from = parse_walk_path_from(dirfd, path.as_ref())?;
     let dentry = walk_path(walk_path_from)?.ensure_neg()?;
@@ -1060,8 +1036,7 @@ pub extern "C" fn fstat(fd: isize, kst: *mut Kstat) -> SyscallResult {
     }
     let fd = fd.cast_unsigned();
 
-    let cur_task = unsafe { current_task().as_ref_unchecked() };
-    let path = cur_task
+    let path = cur_task()
         .files
         .read()
         .get(fd)
@@ -1089,8 +1064,7 @@ pub extern "C" fn fstatat(
 
     if flags.contains(FstatatFlags::AT_EMPTY_PATH) && pathname.is_empty() {
         if dirfd == AT_FDCWD {
-            let cur_task = unsafe { current_task().as_ref_unchecked() };
-            let path = cur_task.fs_data.read().current_work_dir.clone();
+            let path = cur_task().fs_data.read().current_work_dir.clone();
             return fstat_common(path, buf);
         } else {
             return fstat(dirfd, buf);
@@ -1142,8 +1116,7 @@ pub extern "C" fn fcntl(fd: isize, op: isize, arg: usize) -> SyscallResult {
     }
     let fd = fd.cast_unsigned();
 
-    let current_task = unsafe { current_task().as_ref_unchecked() };
-    let fd_entry = current_task.files.read().get(fd).cloned().ok_or(EBADF)?;
+    let fd_entry = cur_task().files.read().get(fd).cloned().ok_or(EBADF)?;
 
     const F_DUPFD: isize = 0;
     const F_DUPFD_CLOEXEC: isize = 1030;
@@ -1160,7 +1133,7 @@ pub extern "C" fn fcntl(fd: isize, op: isize, arg: usize) -> SyscallResult {
                 fd_entry
             };
 
-            current_task
+            cur_task()
                 .files
                 .write()
                 .insert_at_least(arg, entry, cur_fd_rlimit())?
@@ -1169,7 +1142,7 @@ pub extern "C" fn fcntl(fd: isize, op: isize, arg: usize) -> SyscallResult {
         F_GETFD => fd_entry.1.into_raw(),
         F_SETFD => {
             let new_flags = FileDescriptorFlags::from_raw(arg);
-            current_task.files.write().get_mut(fd).ok_or(EBADF)?.1 = new_flags; // 由于竞态，可能失败
+            cur_task().files.write().get_mut(fd).ok_or(EBADF)?.1 = new_flags; // 由于竞态，可能失败
             0
         }
 
@@ -1263,7 +1236,7 @@ pub extern "C" fn statx(
     let flags = StatxFlags::from_bits(flags.try_into().map_err(|_| EINVAL)?).ok_or(EINVAL)?;
 
     let Path(dentry, mount) = if flags.contains(StatxFlags::AT_EMPTY_PATH) {
-        unsafe { current_task().as_ref_unchecked() }
+        cur_task()
             .files
             .read()
             .get(dirfd.cast_unsigned())
@@ -1533,14 +1506,13 @@ pub extern "C" fn ppoll(
         fd.revents = 0;
     }
 
-    let cur_task = unsafe { current_task().as_ref_unchecked() };
-
     // 修改和随后恢复信号掩码
     // 内核态不会被信号打断，因此直接写即可
     let restore_sigmask_guard;
     if let Some(mask) = sigmask {
-        let old_mask = replace(&mut cur_task.signals_wl.lock().mask, mask);
-        restore_sigmask_guard = DropGuard::new(move || cur_task.signals_wl.lock().mask = old_mask);
+        let old_mask = replace(&mut cur_task().signals_wl.lock().mask, mask);
+        restore_sigmask_guard =
+            DropGuard::new(move || cur_task().signals_wl.lock().mask = old_mask);
     }
 
     let count = loop {
@@ -1557,7 +1529,7 @@ pub extern "C" fn ppoll(
 
             // 注意这里需要每次轮询都查一次文件描述符表（Linux 也是这么做的）
             // 未来引入睡眠后效率其实并不会很差（本身查文件描述符表也就只是一次下标索引）
-            let Some(fdt_entry) = cur_task.files.read().get(fd).cloned() else {
+            let Some(fdt_entry) = cur_task().files.read().get(fd).cloned() else {
                 count += 1; // 没错，这也是一个事件
                 *revents = PollStatus::POLLNVAL.bits();
                 continue;
@@ -1588,7 +1560,7 @@ pub extern "C" fn ppoll(
         }
 
         // 假装我们还设定了信号唤醒
-        if cur_task.find_signal_to_consume().is_some() {
+        if cur_task().find_signal_to_consume().is_some() {
             return EINTR;
         }
     };
@@ -1725,8 +1697,7 @@ pub extern "C" fn faccessat(dirfd: isize, path: *const c_char, mode: isize) -> S
     let dentry = walk_path(walk_path_from)?.ensure()?.0;
     let inode = dentry.data.lock().inode.clone().ok_or(ENOENT)?;
 
-    let cur_task = unsafe { current_task().as_ref_unchecked() };
-    let uid = cur_task.user_ids.lock().uid;
+    let uid = cur_task().user_ids.lock().uid;
 
     let inode_mode = inode.data.read().mode;
 

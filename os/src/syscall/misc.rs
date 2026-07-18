@@ -11,7 +11,7 @@ use crate::filesystem::vfs::FileOps;
 use crate::memory::uaccess::copy_one_from_user;
 use crate::memory::uaccess::copy_one_to_user;
 use crate::memory::uaccess::copy_slice_to_user;
-use crate::multitask::current_task;
+use crate::multitask::cur_task;
 use crate::multitask::task_manager::get_task_by_tid;
 use crate::syscall::SyscallResult;
 
@@ -118,9 +118,7 @@ pub extern "C" fn set_robust_list(head: *mut RobustListHead, len: usize) -> Sysc
         return EINVAL;
     }
 
-    let cur_task = unsafe { current_task().as_ref_unchecked() };
-
-    cur_task.robust_list_head.store(head, Ordering::Release);
+    cur_task().robust_list_head.store(head, Ordering::Release);
 
     SyscallResult::success(0)
 }
@@ -136,7 +134,7 @@ pub extern "C" fn get_robust_list(
     let pid = pid.cast_unsigned();
 
     let task = if pid == 0 {
-        unsafe { current_task().as_ref_unchecked() }
+        cur_task()
     } else {
         &get_task_by_tid(pid).ok_or(ESRCH)?
     };

@@ -14,7 +14,9 @@ use crate::{
         timer::{check_timers, reset_timer_interrupt},
     },
     memory::address::VirtAddr,
-    multitask::{current_task, signal::SignalId, task::Task, task_scheduler::TASK_SCHEDULER},
+    multitask::{
+        cur_task, current_task, signal::SignalId, task::Task, task_scheduler::TASK_SCHEDULER,
+    },
     syscall::{self, ERRORCODE_NOSYS, ERRORCODE_SPECIAL_RESTART_SYSCALL},
     trap::{
         page_fault_type::PageFaultType,
@@ -32,22 +34,20 @@ lazy_static! {
 extern "C" fn trap_handler(context: &mut NativeTrapContext) {
     let trap_is_from_kernel = context.is_trap_from_kernel();
 
-    let cur_task = unsafe { current_task().as_ref_unchecked() };
-
     let kernel_time_updater;
     let signal_handling_guard;
     if !trap_is_from_kernel {
-        cur_task.time_stats.lock().update_user_time();
-        kernel_time_updater = DropGuard::new(|| cur_task.time_stats.lock().update_kernel_time());
+        cur_task().time_stats.lock().update_user_time();
+        kernel_time_updater = DropGuard::new(|| cur_task().time_stats.lock().update_kernel_time());
 
         signal_handling_guard = DropGuard::new(|| {
-            while let Some((signal_id, rt_data)) = cur_task.try_consume_signal() {
+            while let Some((signal_id, rt_data)) = cur_task().try_consume_signal() {
                 log::debug!(
                     "正在处理 TID = {} 的 Task 的 {signal_id:?} 信号",
-                    cur_task.tid
+                    cur_task().tid
                 );
 
-                let behavior = cur_task.signal_handler.read().handle(signal_id, rt_data);
+                let behavior = cur_task().signal_handler.read().handle(signal_id, rt_data);
 
                 use crate::multitask::signal::SignalBehavior;
                 match behavior {
@@ -93,7 +93,7 @@ extern "C" fn trap_handler(context: &mut NativeTrapContext) {
             } else {
                 log::trace!(
                     "系统调用：TID = {}, id = {id} ({}), args = {args:x?} (HEX), return value = {ret_value:#x}",
-                    cur_task.tid,
+                    cur_task().tid,
                     syscall::SYSCALL_ID_NAME_MAP.get(id).unwrap_or(&"???")
                 );
             }
@@ -118,7 +118,7 @@ extern "C" fn trap_handler(context: &mut NativeTrapContext) {
             check_timers();
 
             let mut brw = TASK_SCHEDULER.lock();
-            if let Some(next_task) = brw.on_time_interrupt(cur_task) {
+            if let Some(next_task) = brw.on_time_interrupt(cur_task()) {
                 drop(brw);
                 Task::switch_to(next_task);
             }
@@ -170,7 +170,7 @@ extern "C" fn trap_handler(context: &mut NativeTrapContext) {
 
             log::info!(
                 "当前任务（TID = {}）使用了浮点指令！我们的内核不使用浮点寄存器，因此浮点寄存器只会在任务切换时被保存和恢复",
-                cur_task.tid
+                cur_task().tid
             );
 
             use bit_field::BitField;
@@ -184,7 +184,7 @@ extern "C" fn trap_handler(context: &mut NativeTrapContext) {
         #[cfg(target_arch = "loongarch64")]
         Trap::Exception(Exception::PagePrivilegeIllegal) => {
             log::error!("TODO：调查原因");
-            cur_task.send_signal(SignalId::SIGSEGV);
+            cur_task().send_signal(SignalId::SIGSEGV);
         }
 
         other => {
@@ -195,8 +195,6 @@ extern "C" fn trap_handler(context: &mut NativeTrapContext) {
 }
 
 fn try_handle_user_page_fault(fault: Exception) -> Result<(), ()> {
-    let current_task = unsafe { current_task().as_ref_unchecked() };
-
     let bad_address = arch::NativeTrap::get_bad_address();
 
     let fault_type = match fault {
@@ -212,7 +210,7 @@ fn try_handle_user_page_fault(fault: Exception) -> Result<(), ()> {
         _ => unreachable!(),
     };
 
-    current_task
+    cur_task()
         .address_space
         .read()
         .write()
@@ -305,12 +303,10 @@ fn kernel_fault(context: &NativeTrapContext) -> ! {
 }
 
 fn user_fault(context: &NativeTrapContext) {
-    let cur_task = unsafe { current_task().as_ref_unchecked() };
-
     log::error!(
         "=====================================☆\u{fe0f}喜报☆\u{fe0f}====================================="
     );
-    log::error!("用户态程序（PID = {}）发生 Fault", cur_task.tid,);
+    log::error!("用户态程序（PID = {}）发生 Fault", cur_task().tid);
     log::info!("其试图访问：{:#x}", arch::NativeTrap::get_bad_address());
     log::info!("对应代码所在地址：{:#x}", context.ret_pc);
     log::debug!("寄存器信息：\n{:#?}", context.regs);
@@ -318,7 +314,7 @@ fn user_fault(context: &NativeTrapContext) {
         "=================================================================================="
     );
 
-    let sigsegv_blocked = cur_task
+    let sigsegv_blocked = cur_task()
         .signals_wl
         .lock()
         .mask
@@ -326,8 +322,8 @@ fn user_fault(context: &NativeTrapContext) {
     if sigsegv_blocked {
         log::error!("然而，其屏蔽了 SIGSEGV");
         log::error!("为避免无限递归，内核将强行终止程序");
-        cur_task.send_signal(SignalId::SIGKILL);
+        cur_task().send_signal(SignalId::SIGKILL);
     } else {
-        cur_task.send_signal(SignalId::SIGSEGV);
+        cur_task().send_signal(SignalId::SIGSEGV);
     }
 }
