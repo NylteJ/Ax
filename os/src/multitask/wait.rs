@@ -5,7 +5,7 @@ use intrusive_collections::{LinkedListLink, SinglyLinkedListLink, UnsafeRef, int
 
 use crate::{
     basic::{
-        sync::Mutex,
+        sync::SpinMutex,
         timer::{get_cpu_tick, us_to_cpu_tick, wake_task_when},
     },
     multitask::{cur_task, current_task, signal::SignalId, task::Task},
@@ -13,13 +13,13 @@ use crate::{
 
 #[derive(Debug)]
 pub struct WaitQueue {
-    queue: Mutex<intrusive_collections::LinkedList<WaitEntryAdapter>>,
+    queue: SpinMutex<intrusive_collections::LinkedList<WaitEntryAdapter>>,
 }
 
 impl WaitQueue {
     pub fn new() -> Self {
         Self {
-            queue: Mutex::new(intrusive_collections::LinkedList::new(
+            queue: SpinMutex::new(intrusive_collections::LinkedList::new(
                 WaitEntryAdapter::new(),
             )),
         }

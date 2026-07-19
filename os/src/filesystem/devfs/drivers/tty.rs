@@ -7,7 +7,7 @@ use uninit::extension_traits::MaybeUninitExt;
 
 use crate::{
     arch::{self, interfaces::Basic},
-    basic::sync::Mutex,
+    basic::sync::SpinMutex,
     filesystem::{
         devfs::drivers::Driver,
         vfs::{VfsError, VfsResult},
@@ -18,7 +18,7 @@ use crate::{
 
 pub struct TtyDriver {
     win_size: AtomicU64,
-    termios: Mutex<Termios>,
+    termios: SpinMutex<Termios>,
 }
 
 #[repr(C)]
@@ -184,7 +184,7 @@ impl TtyDriver {
     pub fn new() -> Self {
         Self {
             win_size: AtomicU64::new(WinSize::standard_terminal().into_u64()),
-            termios: Mutex::new(Termios::default()),
+            termios: SpinMutex::new(Termios::default()),
         }
     }
 }

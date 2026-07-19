@@ -1,6 +1,6 @@
 use tuple_for_each::TupleForEach;
 
-use crate::basic::sync::Mutex;
+use crate::basic::sync::SpinMutex;
 use crate::multitask::schedulers::realtime::RealtimeScheduler;
 use crate::multitask::{
     schedulers::Scheduler,
@@ -58,4 +58,4 @@ impl TaskScheduler {
     }
 }
 
-pub static TASK_SCHEDULER: Mutex<TaskScheduler> = Mutex::new(TaskScheduler::new());
+pub static TASK_SCHEDULER: SpinMutex<TaskScheduler> = SpinMutex::new(TaskScheduler::new());

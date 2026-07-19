@@ -4,7 +4,7 @@ use intrusive_collections::{LinkedListLink, UnsafeRef, intrusive_adapter};
 use xarray::XArray;
 
 use crate::{
-    basic::{extend_lifetime, sync::RwLock},
+    basic::{extend_lifetime, sync::SpinRwLock},
     filesystem::vfs::INode,
     memory::{
         frame_allocator::FRAME_ALLOCATOR,
@@ -24,7 +24,7 @@ intrusive_adapter!(pub PageMetaAdapter = UnsafeRef<PageMeta>: PageMeta { page_ty
 pub struct PageCache {
     /// 对应 INode 指针，永远有效且不会改变
     pub inode: NonNull<INode>,
-    pub data: RwLock<PageCacheData>,
+    pub data: SpinRwLock<PageCacheData>,
 }
 
 impl PageCache {
@@ -36,7 +36,7 @@ impl PageCache {
 
         let old_page_cache = page_cache.replace(PageCache {
             inode: inode_ptr,
-            data: RwLock::new(PageCacheData {
+            data: SpinRwLock::new(PageCacheData {
                 pages: XArray::new(),
                 dirty_sent: intrusive_collections::LinkedList::new(PageMetaAdapter::new()),
             }),

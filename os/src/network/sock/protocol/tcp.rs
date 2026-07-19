@@ -1,10 +1,10 @@
 use alloc::vec::Vec;
 use smoltcp::socket::tcp::{self, Socket};
 
-use crate::{basic::sync::RwLock, network::sock::SockProtocol};
+use crate::{basic::sync::SpinRwLock, network::sock::SockProtocol};
 
 pub struct Tcp {
-    pub smol_socket: RwLock<Socket<'static>>,
+    pub smol_socket: SpinRwLock<Socket<'static>>,
 }
 
 impl SockProtocol for Tcp {}
@@ -27,7 +27,7 @@ impl Tcp {
 
     pub(in super::super) fn with_smol_socket(socket: Socket<'static>) -> Self {
         Self {
-            smol_socket: RwLock::new(socket),
+            smol_socket: SpinRwLock::new(socket),
         }
     }
 }

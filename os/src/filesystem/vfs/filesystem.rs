@@ -19,7 +19,7 @@ use crate::{
         UnsafeInited,
         bstr::{ByteStr, ByteString},
         lru::{LruNode, LruPtr},
-        sync::{Mutex, RwLock},
+        sync::{SpinMutex, SpinRwLock},
     },
     filesystem::{
         devfs::drivers::DeviceId,
@@ -42,18 +42,18 @@ use crate::{
 pub struct FileSystem<T: ?Sized + FileSystemOps = dyn FileSystemOps> {
     pub dev: DeviceId,
 
-    pub(super) dcache: RwLock<HashMap<DCacheKey, DCacheArc>>,
-    pub(super) icache: RwLock<HashMap<u32, ICacheArc>>,
+    pub(super) dcache: SpinRwLock<HashMap<DCacheKey, DCacheArc>>,
+    pub(super) icache: SpinRwLock<HashMap<u32, ICacheArc>>,
     pub root_inode: INodeArc,
     pub root_dentry: DEntryArc,
 
     #[debug(skip)]
-    pub dlru_sent: Mutex<LruNode<DEntry>>,
+    pub dlru_sent: SpinMutex<LruNode<DEntry>>,
     #[debug(skip)]
-    pub ilru_sent: Mutex<LruNode<INode>>,
+    pub ilru_sent: SpinMutex<LruNode<INode>>,
 
     #[debug(skip)]
-    pub dirty_sent: Mutex<LruNode<INode>>,
+    pub dirty_sent: SpinMutex<LruNode<INode>>,
 
     #[debug(skip)]
     _dummy: (),
@@ -75,13 +75,13 @@ impl<T: FileSystemOps + 'static> FileSystem<T> {
             debug_assert!(unsafe { *root_inode.in_icache.get() });
             FileSystem {
                 dev,
-                dcache: RwLock::new(HashMap::new()),
-                icache: RwLock::new(HashMap::new()),
+                dcache: SpinRwLock::new(HashMap::new()),
+                icache: SpinRwLock::new(HashMap::new()),
                 root_inode,
                 root_dentry: init_root_dentry,
-                dlru_sent: Mutex::new(LruNode::new_unlinked()),
-                ilru_sent: Mutex::new(LruNode::new_unlinked()),
-                dirty_sent: Mutex::new(LruNode::new_unlinked()),
+                dlru_sent: SpinMutex::new(LruNode::new_unlinked()),
+                ilru_sent: SpinMutex::new(LruNode::new_unlinked()),
+                dirty_sent: SpinMutex::new(LruNode::new_unlinked()),
                 _dummy: (),
                 ops,
             }

@@ -10,7 +10,7 @@ use crate::{
     basic::{
         UnsafeInited,
         id_allocator::IdAllocator,
-        sync::{Mutex, RwLock},
+        sync::{SpinMutex, SpinRwLock},
     },
     multitask::wait::WaitQueue,
     network::{is_addr_unspecified, sock::Sock},
@@ -29,10 +29,10 @@ pub const EPHEMERAL_PORT_END: u16 = 65535;
 const EPHEMERAL_PORT_COUNT: usize = (EPHEMERAL_PORT_END - EPHEMERAL_PORT_START + 1) as usize;
 
 pub struct NetworkNamespace {
-    bindings: RwLock<HashMap<BindingKey, NonNull<Sock>>>,
-    specified_counts: RwLock<HashMap<u16, NonZero<u32>>>,
+    bindings: SpinRwLock<HashMap<BindingKey, NonNull<Sock>>>,
+    specified_counts: SpinRwLock<HashMap<u16, NonZero<u32>>>,
 
-    ephemeral_port_allocator_raw: Mutex<IdAllocator<EPHEMERAL_PORT_COUNT>>,
+    ephemeral_port_allocator_raw: SpinMutex<IdAllocator<EPHEMERAL_PORT_COUNT>>,
 
     pub wait_queue: WaitQueue, // FIXME: 这是临时的
 }
@@ -43,9 +43,9 @@ unsafe impl Sync for NetworkNamespace {}
 impl NetworkNamespace {
     pub fn new() -> Self {
         Self {
-            bindings: RwLock::new(HashMap::new()),
-            specified_counts: RwLock::new(HashMap::new()),
-            ephemeral_port_allocator_raw: Mutex::new(IdAllocator::new()),
+            bindings: SpinRwLock::new(HashMap::new()),
+            specified_counts: SpinRwLock::new(HashMap::new()),
+            ephemeral_port_allocator_raw: SpinMutex::new(IdAllocator::new()),
 
             wait_queue: WaitQueue::new(),
         }

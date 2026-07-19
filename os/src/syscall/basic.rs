@@ -123,7 +123,7 @@ pub struct Tms {
 pub extern "C" fn times(tms: *mut Tms) -> SyscallResult {
     if !tms.is_null() {
         let tms_data = {
-            let time_stats = cur_task().time_stats.lock();
+            let time_stats = cur_task().time_stats.read();
             Tms {
                 tms_utime: time_stats.user_time,
                 tms_stime: time_stats.kernel_time,

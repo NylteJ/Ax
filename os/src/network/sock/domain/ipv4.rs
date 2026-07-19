@@ -1,5 +1,5 @@
 use crate::{
-    basic::sync::RwLock,
+    basic::sync::SpinRwLock,
     network::{
         namespace::GLOBAL_NET_NAMESPACE,
         sock::{BindPart1Error, Sock, SockDomain, SockProtocol, domain::copy_sockaddr_to_user},
@@ -13,8 +13,8 @@ use crate::{
 };
 
 pub struct IPv4<Proto: ?Sized + SockProtocol> {
-    pub address: RwLock<Option<IPv4SockAddr>>,
-    pub peer_address: RwLock<Option<IPv4SockAddr>>,
+    pub address: SpinRwLock<Option<IPv4SockAddr>>,
+    pub peer_address: SpinRwLock<Option<IPv4SockAddr>>,
 
     pub proto: Proto,
 }
@@ -66,8 +66,8 @@ impl<Proto: ?Sized + SockProtocol> SockDomain for IPv4<Proto> {
 impl<Proto: SockProtocol> IPv4<Proto> {
     pub fn new(proto: Proto) -> Self {
         Self {
-            address: RwLock::new(None),
-            peer_address: RwLock::new(None),
+            address: SpinRwLock::new(None),
+            peer_address: SpinRwLock::new(None),
             proto,
         }
     }

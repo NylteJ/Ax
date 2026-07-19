@@ -12,7 +12,7 @@ use intrusive_collections::{LinkedListLink, intrusive_adapter};
 use crate::{
     basic::{
         UnsafeInited,
-        sync::{Mutex, MutexGuard, RwLock},
+        sync::{SpinMutex, SpinMutexGuard, SpinRwLock},
         timer::{get_cpu_tick, wake_task_when},
     },
     filesystem::vfs::INodeArc,
@@ -29,7 +29,7 @@ use crate::{
 pub enum FutexKey {
     // 此处的 Arc 是为防止 ABA 问题所必须的
     Private {
-        addr_space: Arc<RwLock<AddressSpace>>,
+        addr_space: Arc<SpinRwLock<AddressSpace>>,
         uaddr: NonNull<AtomicU32>,
     },
     SharedFile {
@@ -135,20 +135,20 @@ type FutexQueue = intrusive_collections::LinkedList<FutexQAdapter>;
 
 const FUTEX_BUCKET_COUNT: usize = 256;
 
-static FUTEX_BUCKETS: UnsafeInited<[Mutex<FutexQueue>; FUTEX_BUCKET_COUNT]> =
+static FUTEX_BUCKETS: UnsafeInited<[SpinMutex<FutexQueue>; FUTEX_BUCKET_COUNT]> =
     unsafe { UnsafeInited::uninit() };
 
 pub fn init() {
     unsafe {
         UnsafeInited::init_unsafe(
             &FUTEX_BUCKETS,
-            array::from_fn(|_| Mutex::new(FutexQueue::new(FutexQAdapter::new()))),
+            array::from_fn(|_| SpinMutex::new(FutexQueue::new(FutexQAdapter::new()))),
         );
     }
 }
 
 pub struct FutexGuard<'a> {
-    queue: MutexGuard<'a, FutexQueue>,
+    queue: SpinMutexGuard<'a, FutexQueue>,
     key: &'a FutexKey,
 }
 

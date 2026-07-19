@@ -562,8 +562,8 @@ fn wait4_pred(
 
                     cur_task()
                         .time_stats
-                        .lock()
-                        .update_children_times(&child.time_stats.lock());
+                        .write()
+                        .update_children_times(&child.time_stats.read());
 
                     return SyscallResult::success(child.tid);
                 }

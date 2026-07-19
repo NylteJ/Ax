@@ -17,7 +17,7 @@ use crate::{
         UnsafeInited,
         bstr::ByteStr,
         extend_lifetime,
-        sync::{Mutex, MutexGuard},
+        sync::{SpinMutex, SpinMutexGuard},
     },
     dummy_filesystem_body, dummy_inode_body,
     filesystem::{
@@ -173,7 +173,7 @@ impl vfs::FileOps for PipeWriteFile {
         }
 
         fn atomic_read(
-            mut buffer: MutexGuard<RingBuffer>,
+            mut buffer: SpinMutexGuard<RingBuffer>,
             visitor: &mut dyn FnMut(&mut [MaybeUninit<u8>]) -> VfsResult<u64>,
             len: usize,
         ) -> VfsResult<(u64, bool)> {
@@ -291,7 +291,7 @@ pub fn new_anonymous_pipes() -> (vfs::FileArc, vfs::FileArc) {
             mode: vfs::INodeMode::all_permitted() | vfs::INodeMode::Pipe,
             page_cache: None,
             ops: PipeINode {
-                buffer: Mutex::default(),
+                buffer: SpinMutex::default(),
                 writer_count: AtomicU16::new(1),
                 reader_count: AtomicU16::new(1),
             },
@@ -358,7 +358,7 @@ pub(in super::super) fn init() {
 
 #[derive(Default)]
 struct PipeINode {
-    buffer: Mutex<RingBuffer>,
+    buffer: SpinMutex<RingBuffer>,
     writer_count: AtomicU16,
     reader_count: AtomicU16,
 }

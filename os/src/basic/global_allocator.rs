@@ -11,7 +11,7 @@ use buddy_system_allocator::Heap;
 #[cfg(debug_assertions)]
 use hashbrown::{DefaultHashBuilder, HashMap};
 
-use crate::{basic::sync::Mutex, filesystem::filesystems::foreach_filesystem};
+use crate::{basic::sync::SpinMutex, filesystem::filesystems::foreach_filesystem};
 
 const HEAP_SIZE_BYTES: usize = if cfg!(debug_assertions) {
     256 * 1024 * 1024 // 256 MB（因为此时的内核栈非常非常大）
@@ -90,11 +90,11 @@ mod debug {
     use allocator_api2::alloc::{AllocError, Allocator};
     use buddy_system_allocator::Heap;
 
-    use crate::basic::sync::Mutex;
+    use crate::basic::sync::SpinMutex;
 
     pub struct DebugAllocator {
         pub buffer: SyncUnsafeCell<MaybeUninit<[u8; 4 * 1024 * 1024]>>,
-        pub heap: Mutex<Heap<32>>,
+        pub heap: SpinMutex<Heap<32>>,
     }
 
     unsafe impl Allocator for &'static DebugAllocator {
@@ -115,7 +115,7 @@ mod debug {
         pub const fn new() -> Self {
             Self {
                 buffer: SyncUnsafeCell::new(MaybeUninit::uninit()),
-                heap: Mutex::new(Heap::empty()),
+                heap: SpinMutex::new(Heap::empty()),
             }
         }
     }
@@ -123,7 +123,7 @@ mod debug {
     pub static DEBUG_ALLOCATOR: DebugAllocator = DebugAllocator::new();
 }
 
-struct GlobalAllocator(Mutex<GlobalAllocatorInner>);
+struct GlobalAllocator(SpinMutex<GlobalAllocatorInner>);
 
 unsafe impl GlobalAlloc for GlobalAllocator {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
@@ -169,7 +169,8 @@ unsafe impl GlobalAlloc for GlobalAllocator {
 }
 
 #[global_allocator]
-static GLOBAL_ALLOCATOR: GlobalAllocator = GlobalAllocator(Mutex::new(GlobalAllocatorInner::new()));
+static GLOBAL_ALLOCATOR: GlobalAllocator =
+    GlobalAllocator(SpinMutex::new(GlobalAllocatorInner::new()));
 
 // 和启动栈数组一样，内核堆也不需要初始置零，因此我们用相同的方式定义，以避免置零开销。
 global_asm!(

@@ -13,7 +13,7 @@ use crate::{
     basic::{
         bstr::{ByteStr, ByteString},
         lru::LruNode,
-        sync::RwLock,
+        sync::SpinRwLock,
     },
     filesystem::{
         devfs::drivers::DeviceId,
@@ -66,7 +66,7 @@ pub struct INode<T: ?Sized + INodeOps = dyn INodeOps> {
 
     _dummy: (),
 
-    pub data: RwLock<INodeData<T>>,
+    pub data: SpinRwLock<INodeData<T>>,
 }
 
 bitflags! {
@@ -147,7 +147,7 @@ impl<T: INodeOps> INode<T> {
             dirty: LruNode::new_unlinked(),
             dirty_state: AtomicU8::new(0),
             _dummy: (),
-            data: RwLock::new(data),
+            data: SpinRwLock::new(data),
         })
     }
 
@@ -240,12 +240,12 @@ pub enum SpecialINodeType {
 
 impl<T: INodeOps> INode<T> {
     pub fn get_filesystem<FS: FileSystemOps>(this: &T) -> &FileSystem<FS> {
-        let data = RwLock::from_value(NonNull::from_ref(INodeData::get_data(this)));
+        let data = SpinRwLock::from_value(NonNull::from_ref(INodeData::get_data(this)));
         let inode = unsafe { data.byte_sub(offset_of!(INode<T>, data)).cast::<INode<T>>() };
         unsafe { inode.as_ref().fs.cast().as_ref() }
     }
     pub fn get_id(this: &T) -> u32 {
-        let data = RwLock::from_value(NonNull::from_ref(INodeData::get_data(this)));
+        let data = SpinRwLock::from_value(NonNull::from_ref(INodeData::get_data(this)));
         let inode = unsafe { data.byte_sub(offset_of!(INode<T>, data)).cast::<INode<T>>() };
         unsafe { inode.as_ref().id }
     }

@@ -213,7 +213,7 @@ pub extern "C" fn bind(sockfd: isize, addr: *const u8, addrlen: usize) -> Syscal
         } else {
             if port < 1024 {
                 // 保留端口，要求特权
-                let cur_uids = *cur_task().user_ids.lock();
+                let cur_uids = *cur_task().user_ids.read();
 
                 if cur_uids.egid != 0 || cur_uids.euid != 0 {
                     return EACCES;

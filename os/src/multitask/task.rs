@@ -23,7 +23,7 @@ use crate::{
         bstr::ByteString,
         shared_with_asm::SharedWithAsm,
         stack::TaskKernelStackPtr,
-        sync::{Mutex, RwLock},
+        sync::{SpinMutex, SpinRwLock},
         timer::{check_all_timers, get_cpu_tick, set_itimer_real},
     },
     filesystem::vfs::{self, File, FileArc, Path},
@@ -64,36 +64,36 @@ pub struct Task {
     pub policy: SchedulePolicy,
     pub priority: TaskPriority,
 
-    pub address_space: RwLock<Arc<RwLock<AddressSpace>>>,
+    pub address_space: SpinRwLock<Arc<SpinRwLock<AddressSpace>>>,
 
-    pub files: Arc<RwLock<FileDescriptorTable>>,
-    pub fs_data: Arc<RwLock<FilesystemData>>,
+    pub files: Arc<SpinRwLock<FileDescriptorTable>>,
+    pub fs_data: Arc<SpinRwLock<FilesystemData>>,
 
     pub process: Arc<ProcessData>,
     /// 进程的 Task 链表的侵入式节点，由于所有操作都须借助 ProcessData 中的锁，它本身无需额外同步
     pub(super) task_of_process_link: LinkedListLink,
 
-    pub signal_handler: Arc<RwLock<SignalHandler>>,
-    pub signals_wl: Mutex<SignalsWaitingList>,
+    pub signal_handler: Arc<SpinRwLock<SignalHandler>>,
+    pub signals_wl: SpinMutex<SignalsWaitingList>,
 
     pub robust_list_head: AtomicPtr<RobustListHead>,
 
     /// 子 Task 链表头
-    pub children: Mutex<intrusive_collections::LinkedList<TaskAdapter>>,
+    pub children: SpinMutex<intrusive_collections::LinkedList<TaskAdapter>>,
     /// 子 Task 链表的侵入式节点，由于所有操作都须借助 children 的锁，它本身无需额外同步
     pub(super) children_link: LinkedListLink,
     /// 父 Task 指针，通常不会变化
     ///
     /// 通过托孤机制保证总是有效（如果父节点提前死亡，则其改为指向 init）
-    pub parent: RwLock<NonNull<Task>>,
+    pub parent: SpinMutex<NonNull<Task>>,
 
-    pub wait_state: Mutex<ZombieWaitingState>,
+    pub wait_state: SpinMutex<ZombieWaitingState>,
     /// 退出时会向父进程发送的信号，无法被改变。[`SIGINVAL`][`SignalId::SIGINVAL`] 表示不发送。
     pub exit_signal: SignalId,
     /// 任务状态，具体值的含义见 [`TaskState`]
     state: AtomicU8,
 
-    pub time_stats: Mutex<TaskTimeStats>,
+    pub time_stats: SpinRwLock<TaskTimeStats>,
 
     /// CLONE_CHILD_CLEARTID 和 set_tid_address 设定的地址，在 Task 退出时会由内核清除其中的值并唤醒对应 futex。
     ///
@@ -110,7 +110,7 @@ pub struct Task {
     /// 受 `ITIMERS_REAL` 锁保护
     pub itimer_real_rbtree_link: RBTreeLink,
 
-    pub user_ids: Mutex<TaskUserIds>,
+    pub user_ids: SpinRwLock<TaskUserIds>,
 
     pub(super) refcount: AtomicU32,
 
@@ -246,11 +246,11 @@ impl Task {
             policy,
             priority,
 
-            address_space: RwLock::new(Arc::new(RwLock::new(address_space))),
-            files: Arc::new(RwLock::new(FileDescriptorTable::new())),
+            address_space: SpinRwLock::new(Arc::new(SpinRwLock::new(address_space))),
+            files: Arc::new(SpinRwLock::new(FileDescriptorTable::new())),
 
             // FIXME: 后面应该要改
-            fs_data: Arc::new(RwLock::new(FilesystemData {
+            fs_data: Arc::new(SpinRwLock::new(FilesystemData {
                 current_work_dir: work_dir,
             })),
 
@@ -263,18 +263,18 @@ impl Task {
 
             robust_list_head: AtomicPtr::new(null_mut()),
 
-            signal_handler: Arc::new(RwLock::new(SignalHandler::new())),
-            signals_wl: Mutex::new(SignalsWaitingList::new()),
+            signal_handler: Arc::new(SpinRwLock::new(SignalHandler::new())),
+            signals_wl: SpinMutex::new(SignalsWaitingList::new()),
 
-            children: Mutex::new(intrusive_collections::LinkedList::new(TaskAdapter::new())),
+            children: SpinMutex::new(intrusive_collections::LinkedList::new(TaskAdapter::new())),
             children_link: LinkedListLink::new(),
-            parent: RwLock::new(NonNull::dangling()), // init 进程没有父进程，先放一个悬空指针，后面改为指向自己
+            parent: SpinMutex::new(NonNull::dangling()), // init 进程没有父进程，先放一个悬空指针，后面改为指向自己
 
-            wait_state: Mutex::new(ZombieWaitingState { status: None }),
+            wait_state: SpinMutex::new(ZombieWaitingState { status: None }),
             exit_signal: SignalId::SIGINVAL,
             state: AtomicU8::new(TaskState::Normal as u8),
 
-            time_stats: Mutex::new(TaskTimeStats::new()),
+            time_stats: SpinRwLock::new(TaskTimeStats::new()),
 
             tid_address: AtomicPtr::new(null_mut()),
 
@@ -285,7 +285,7 @@ impl Task {
             itimer_real_rbtree_link: RBTreeLink::new(),
 
             // root
-            user_ids: Mutex::new(TaskUserIds {
+            user_ids: SpinRwLock::new(TaskUserIds {
                 uid: 0,
                 gid: 0,
                 fsuid: 0,
@@ -428,7 +428,7 @@ impl Task {
             my_address_space.clone()
         } else {
             // 地址空间需要复制一份，并将所有页设为写时复制
-            let address_space = Arc::new(RwLock::new(my_address_space.write().clone_cow()));
+            let address_space = Arc::new(SpinRwLock::new(my_address_space.write().clone_cow()));
             // 由于所有页被设为了写时复制，本进程的页表很可能也已经改变，因此需要刷新 TLB
             arch::NativeBasic::tlb_invalidate_all();
             address_space
@@ -447,7 +447,7 @@ impl Task {
             self.files.clone()
         } else {
             // 使用初始时相等的两个文件描述符表
-            Arc::new(RwLock::new(self.files.read().clone()))
+            Arc::new(SpinRwLock::new(self.files.read().clone()))
         };
 
         let fs_data = if flags.contains(CloneFlags::FS) {
@@ -455,7 +455,7 @@ impl Task {
             self.fs_data.clone()
         } else {
             // 使用初始时相等的两个文件系统信息
-            Arc::new(RwLock::new(self.fs_data.read().clone()))
+            Arc::new(SpinRwLock::new(self.fs_data.read().clone()))
         };
 
         let process = if flags.contains(CloneFlags::THREAD) {
@@ -476,7 +476,7 @@ impl Task {
             self.signal_handler.clone()
         } else {
             // 使用初始时相等的两个信号处理器
-            Arc::new(RwLock::new(self.signal_handler.read().clone()))
+            Arc::new(SpinRwLock::new(self.signal_handler.read().clone()))
         };
 
         let parent = if flags.intersects(CloneFlags::PARENT | CloneFlags::THREAD) {
@@ -494,7 +494,7 @@ impl Task {
             policy,
             priority,
 
-            address_space: RwLock::new(address_space),
+            address_space: SpinRwLock::new(address_space),
             files,
             fs_data,
 
@@ -504,18 +504,18 @@ impl Task {
             robust_list_head: AtomicPtr::new(null_mut()),
 
             signal_handler,
-            signals_wl: Mutex::new(self.signals_wl.lock().clone_for_fork()),
+            signals_wl: SpinMutex::new(self.signals_wl.lock().clone_for_fork()),
 
             // 这几个不应当复制
-            children: Mutex::new(intrusive_collections::LinkedList::new(TaskAdapter::new())),
+            children: SpinMutex::new(intrusive_collections::LinkedList::new(TaskAdapter::new())),
             children_link: LinkedListLink::new(),
-            parent: RwLock::new(NonNull::from_ref(parent)),
+            parent: SpinMutex::new(NonNull::from_ref(parent)),
 
-            wait_state: Mutex::new(ZombieWaitingState { status: None }),
+            wait_state: SpinMutex::new(ZombieWaitingState { status: None }),
             exit_signal,
             state: AtomicU8::new(TaskState::Normal as u8),
 
-            time_stats: Mutex::new(TaskTimeStats::new()),
+            time_stats: SpinRwLock::new(TaskTimeStats::new()),
 
             tid_address: AtomicPtr::new(ctid),
 
@@ -525,7 +525,7 @@ impl Task {
             itimer_real: UnsafeCell::new(None), // 不继承
             itimer_real_rbtree_link: RBTreeLink::new(),
 
-            user_ids: Mutex::new(*self.user_ids.lock()),
+            user_ids: SpinRwLock::new(*self.user_ids.read()),
 
             refcount: AtomicU32::new(1),
 
@@ -560,7 +560,7 @@ impl Task {
     pub fn replace_execute(&self, file: FileArc) -> Result<AuxiliaryVec, LoadElfError> {
         // 创建新的地址空间，并替换当前地址空间
 
-        let new_addr_space = Arc::new(RwLock::new(Self::new_addr_space()));
+        let new_addr_space = Arc::new(SpinRwLock::new(Self::new_addr_space()));
 
         let mut my_addr_space = self.address_space.write();
 
@@ -625,7 +625,7 @@ impl Task {
         // 现在我们被重新调度了
 
         // 重新设置 last_update_stamp
-        cur_task().time_stats.lock().last_update_stamp = get_cpu_tick();
+        cur_task().time_stats.write().last_update_stamp = get_cpu_tick();
     }
 
     /// 和 [`Self::switch_to`] 类似，但允许 `target` 为当前任务
@@ -639,7 +639,7 @@ impl Task {
 
     /// 获取父 Task 的引用
     pub fn parent_task(&self) -> &Task {
-        unsafe { self.parent.read().as_ref() }
+        unsafe { self.parent.lock().as_ref() }
     }
 
     /// 当此 Task 退出时调用，将子进程转移到 init 进程下并唤醒等待的父进程，并向父进程发送恰当的终止信号。
@@ -771,7 +771,7 @@ impl Task {
     /// （和 Linux 不同，我们初始时就有一个很短的堆区 VMA，因为反正虚拟地址多得用不完，这样只会掩盖少量用户态越界访问）
     fn load_elf(
         file: &FileArc,
-        address_space: &RwLock<AddressSpace>,
+        address_space: &SpinRwLock<AddressSpace>,
     ) -> Result<(usize, AuxiliaryVec), LoadElfError> {
         struct InnerReturn {
             load_seg_start: VirtAddr,
@@ -783,7 +783,7 @@ impl Task {
 
         fn inner(
             file: &FileArc,
-            address_space: &RwLock<AddressSpace>,
+            address_space: &SpinRwLock<AddressSpace>,
             loading_interp: bool,
         ) -> Result<InnerReturn, LoadElfError> {
             let head = unsafe { File::get_page_cache(file.get_inode(), 0) }.unwrap();
@@ -1076,7 +1076,7 @@ impl Task {
         let my_children = self.children.lock().take();
         if !my_children.is_empty() {
             for child in &my_children {
-                *child.parent.write() = NonNull::from_ref(&INIT_TASK);
+                *child.parent.lock() = NonNull::from_ref(&INIT_TASK);
             }
 
             INIT_TASK

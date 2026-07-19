@@ -1,5 +1,5 @@
 use crate::{
-    basic::sync::RwLock,
+    basic::sync::SpinRwLock,
     network::{
         namespace::GLOBAL_NET_NAMESPACE,
         sock::{BindPart1Error, Sock, SockDomain, SockProtocol, domain::copy_sockaddr_to_user},
@@ -13,8 +13,8 @@ use crate::{
 };
 
 pub struct IPv6<Proto: ?Sized + SockProtocol> {
-    pub address: RwLock<Option<IPv6SockAddr>>,
-    pub peer_address: RwLock<Option<IPv6SockAddr>>,
+    pub address: SpinRwLock<Option<IPv6SockAddr>>,
+    pub peer_address: SpinRwLock<Option<IPv6SockAddr>>,
 
     pub proto: Proto,
 }

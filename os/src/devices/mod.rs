@@ -2,7 +2,7 @@ use alloc::{boxed::Box, vec::Vec};
 
 use crate::basic::{
     UnsafeInited,
-    sync::Mutex,
+    sync::SpinMutex,
     timer::{cpu_tick_to_us, get_cpu_tick},
 };
 
@@ -32,8 +32,8 @@ impl From<virtio_drivers::Error> for DeviceError {
 
 pub struct Devices {
     pub block: Vec<Box<dyn BlockDevice>>,
-    pub network_lo: Mutex<net_loopback::NetLoopbackDevice>, // FIXME
-    pub network_lo_iface: Mutex<smoltcp::iface::Interface>,
+    pub network_lo: SpinMutex<net_loopback::NetLoopbackDevice>, // FIXME
+    pub network_lo_iface: SpinMutex<smoltcp::iface::Interface>,
 }
 
 impl Devices {
@@ -52,8 +52,8 @@ impl Devices {
 
         Self {
             block: Vec::new(),
-            network_lo: Mutex::new(network_lo),
-            network_lo_iface: Mutex::new(network_lo_iface),
+            network_lo: SpinMutex::new(network_lo),
+            network_lo_iface: SpinMutex::new(network_lo_iface),
         }
     }
 

@@ -1697,7 +1697,7 @@ pub extern "C" fn faccessat(dirfd: isize, path: *const c_char, mode: isize) -> S
     let dentry = walk_path(walk_path_from)?.ensure()?.0;
     let inode = dentry.data.lock().inode.clone().ok_or(ENOENT)?;
 
-    let uid = cur_task().user_ids.lock().uid;
+    let uid = cur_task().user_ids.read().uid;
 
     let inode_mode = inode.data.read().mode;
 

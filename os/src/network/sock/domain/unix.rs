@@ -1,5 +1,5 @@
 use crate::{
-    basic::sync::RwLock,
+    basic::sync::SpinRwLock,
     network::{
         sock::{BindPart1Error, Sock, SockDomain, SockProtocol, domain::copy_sockaddr_to_user},
         socket::SocketAddress,
@@ -12,8 +12,8 @@ use crate::{
 };
 
 pub struct Unix<Proto: ?Sized + SockProtocol> {
-    pub address: RwLock<Option<UnixSockAddr>>,
-    pub peer_address: RwLock<Option<UnixSockAddr>>,
+    pub address: SpinRwLock<Option<UnixSockAddr>>,
+    pub peer_address: SpinRwLock<Option<UnixSockAddr>>,
 
     pub proto: Proto,
 }

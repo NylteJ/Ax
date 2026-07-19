@@ -26,8 +26,8 @@ use crate::{
 
 #[cfg(debug_assertions)]
 lazy_static! {
-    pub static ref UNKNOWN_SYSCALLS: crate::basic::sync::Mutex<hashbrown::HashMap<usize, usize>> =
-        crate::basic::sync::Mutex::new(hashbrown::HashMap::new());
+    pub static ref UNKNOWN_SYSCALLS: crate::basic::sync::SpinMutex<hashbrown::HashMap<usize, usize>> =
+        crate::basic::sync::SpinMutex::new(hashbrown::HashMap::new());
 }
 
 #[unsafe(no_mangle)]
@@ -37,8 +37,8 @@ extern "C" fn trap_handler(context: &mut NativeTrapContext) {
     let kernel_time_updater;
     let signal_handling_guard;
     if !trap_is_from_kernel {
-        cur_task().time_stats.lock().update_user_time();
-        kernel_time_updater = DropGuard::new(|| cur_task().time_stats.lock().update_kernel_time());
+        cur_task().time_stats.write().update_user_time();
+        kernel_time_updater = DropGuard::new(|| cur_task().time_stats.write().update_kernel_time());
 
         signal_handling_guard = DropGuard::new(|| {
             while let Some((signal_id, rt_data)) = cur_task().try_consume_signal() {

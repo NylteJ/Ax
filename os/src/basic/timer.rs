@@ -6,7 +6,7 @@ use intrusive_collections::{
 
 use crate::{
     arch::{self, interfaces::Chrono},
-    basic::{UnsafeInited, sync::Mutex},
+    basic::{UnsafeInited, sync::SpinMutex},
     multitask::task::Task,
 };
 
@@ -65,7 +65,7 @@ impl<'a> KeyAdapter<'a> for TaskIItimerRealAdapter {
     }
 }
 
-static TIMERS: UnsafeInited<Mutex<IntrusiveRBTree<TaskTimerAdapter>>> =
+static TIMERS: UnsafeInited<SpinMutex<IntrusiveRBTree<TaskTimerAdapter>>> =
     unsafe { UnsafeInited::uninit() };
 
 struct RemoveTimerGuard<'a> {
@@ -89,21 +89,21 @@ impl<'a> Drop for RemoveTimerGuard<'a> {
     }
 }
 
-static ITIMERS_REAL: UnsafeInited<Mutex<IntrusiveRBTree<TaskIItimerRealAdapter>>> =
+static ITIMERS_REAL: UnsafeInited<SpinMutex<IntrusiveRBTree<TaskIItimerRealAdapter>>> =
     unsafe { UnsafeInited::uninit() };
 
 pub fn init() {
     unsafe {
         UnsafeInited::init_unsafe(
             &TIMERS,
-            Mutex::new(IntrusiveRBTree::new(TaskTimerAdapter::new())),
+            SpinMutex::new(IntrusiveRBTree::new(TaskTimerAdapter::new())),
         )
     };
 
     unsafe {
         UnsafeInited::init_unsafe(
             &ITIMERS_REAL,
-            Mutex::new(IntrusiveRBTree::new(TaskIItimerRealAdapter::new())),
+            SpinMutex::new(IntrusiveRBTree::new(TaskIItimerRealAdapter::new())),
         )
     };
 }

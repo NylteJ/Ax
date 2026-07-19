@@ -1,7 +1,7 @@
 use core::{intrinsics::likely, num::NonZeroUsize};
 
 use crate::{
-    basic::{UnsafeInited, sync::Mutex},
+    basic::{UnsafeInited, sync::SpinMutex},
     filesystem::filesystems::foreach_filesystem,
     memory::{
         MEMORY_END, PAGE_BYTES, PAGE_SHIFT,
@@ -13,7 +13,7 @@ use crate::{
 const ORDER: usize = 2;
 
 pub struct FrameAllocator {
-    allocator: Mutex<buddy_system_allocator::FrameAllocator<ORDER>>,
+    allocator: SpinMutex<buddy_system_allocator::FrameAllocator<ORDER>>,
 }
 
 impl FrameAllocator {
@@ -83,7 +83,7 @@ pub fn init() {
 
     unsafe {
         UnsafeInited::init_unsafe(&FRAME_ALLOCATOR, FrameAllocator {
-            allocator: Mutex::new(allocator),
+            allocator: SpinMutex::new(allocator),
         })
     };
 }

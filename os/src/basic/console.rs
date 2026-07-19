@@ -2,11 +2,11 @@ use core::fmt::Write;
 
 use crate::arch;
 use crate::arch::interfaces::Basic;
-use crate::basic::sync::Mutex;
+use crate::basic::sync::SpinMutex;
 
 pub struct ConsoleWriter;
 
-pub static CONSOLE_WRITER: Mutex<ConsoleWriter> = Mutex::new(ConsoleWriter);
+pub static CONSOLE_WRITER: SpinMutex<ConsoleWriter> = SpinMutex::new(ConsoleWriter);
 
 impl Write for ConsoleWriter {
     fn write_str(&mut self, s: &str) -> core::fmt::Result {

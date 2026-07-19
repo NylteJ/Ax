@@ -4,10 +4,10 @@ use smoltcp::{
     storage::PacketBuffer,
 };
 
-use crate::{basic::sync::RwLock, network::sock::SockProtocol};
+use crate::{basic::sync::SpinRwLock, network::sock::SockProtocol};
 
 pub struct Udp {
-    pub smol_socket: RwLock<Socket<'static>>,
+    pub smol_socket: SpinRwLock<Socket<'static>>,
 }
 
 impl SockProtocol for Udp {}
@@ -26,7 +26,7 @@ impl Udp {
         let tx_buffer = buffer!(64 packets, 4096 bytes);
 
         Self {
-            smol_socket: RwLock::new(Socket::new(rx_buffer, tx_buffer)),
+            smol_socket: SpinRwLock::new(Socket::new(rx_buffer, tx_buffer)),
         }
     }
 }

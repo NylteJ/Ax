@@ -7,7 +7,7 @@ use alloc::{
 };
 
 use crate::{
-    basic::{bstr::ByteStr, sync::RwLock},
+    basic::{bstr::ByteStr, sync::SpinRwLock},
     devices::block_device::BlockDevice,
     filesystem::vfs::FileSystem,
 };
@@ -22,7 +22,7 @@ pub trait FileSystemTypeOps: Send + Sync {
 }
 
 // (因为这里是相当冷的冷路径，我们选择方便但较为浪费资源的写法)
-static FILESYSTEMS: RwLock<Vec<Weak<FileSystem>>> = RwLock::new(Vec::new());
+static FILESYSTEMS: SpinRwLock<Vec<Weak<FileSystem>>> = SpinRwLock::new(Vec::new());
 
 impl<T: ?Sized + FileSystemTypeOps> FileSystemType<T> {
     pub fn new_fs(&self, block_device: Option<&'static dyn BlockDevice>) -> Pin<Arc<FileSystem>> {
@@ -44,7 +44,7 @@ pub fn foreach_filesystem(mut f: impl FnMut(&FileSystem)) {
         .for_each(|arc| f(&arc));
 }
 
-static FILE_SYSTEM_TYPES: RwLock<Vec<&'static FileSystemType>> = RwLock::new(Vec::new());
+static FILE_SYSTEM_TYPES: SpinRwLock<Vec<&'static FileSystemType>> = SpinRwLock::new(Vec::new());
 
 pub fn get_filesystem_type(name: &ByteStr) -> Option<&'static FileSystemType> {
     let types = FILE_SYSTEM_TYPES.read();

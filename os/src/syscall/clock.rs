@@ -68,7 +68,7 @@ pub extern "C" fn clock_gettime(clockid: usize, tp: *mut TimeSpec) -> SyscallRes
 
         ClockId::THREAD_CPUTIME_ID => {
             let ticks = {
-                let time_stats = cur_task().time_stats.lock();
+                let time_stats = cur_task().time_stats.read();
 
                 time_stats.kernel_time + time_stats.user_time
             };

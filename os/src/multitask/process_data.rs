@@ -6,7 +6,7 @@ use core::{
 use intrusive_collections::{LinkedListLink, UnsafeRef, intrusive_adapter};
 
 use crate::{
-    basic::sync::{Mutex, RwLock},
+    basic::sync::{SpinMutex, SpinRwLock},
     multitask::{
         signal::{SignalId, SignalsWaitingList},
         task::{INIT_PID, Task},
@@ -23,17 +23,17 @@ pub struct ProcessData {
     /// 进程组 ID
     pub pgid: AtomicUsize,
 
-    pub tasks: RwLock<intrusive_collections::LinkedList<TaskOfProcessAdapter>>,
+    pub tasks: SpinRwLock<intrusive_collections::LinkedList<TaskOfProcessAdapter>>,
 
     /// 是否正在退出（exit_group）
     pub is_exiting: AtomicBool,
 
-    pub rlimits: RwLock<ProcessRLimits>,
+    pub rlimits: SpinRwLock<ProcessRLimits>,
 
     pub waiting_for_child: WaitQueue,
 
     /// 线程组级别的信号等待队列，其掩码无作用，线程始终用自己的掩码从中取信号
-    pub signals_wl: Mutex<SignalsWaitingList>,
+    pub signals_wl: SpinMutex<SignalsWaitingList>,
 }
 
 intrusive_adapter!(pub TaskOfProcessAdapter = UnsafeRef<Task>: Task { task_of_process_link => LinkedListLink });
@@ -43,13 +43,13 @@ impl ProcessData {
         Self {
             pid,
             pgid: AtomicUsize::new(pgid),
-            tasks: RwLock::new(intrusive_collections::LinkedList::new(
+            tasks: SpinRwLock::new(intrusive_collections::LinkedList::new(
                 TaskOfProcessAdapter::new(),
             )),
             is_exiting: AtomicBool::new(false),
-            rlimits: RwLock::new(rlimits),
+            rlimits: SpinRwLock::new(rlimits),
             waiting_for_child: WaitQueue::new(),
-            signals_wl: Mutex::new(SignalsWaitingList::new()),
+            signals_wl: SpinMutex::new(SignalsWaitingList::new()),
         }
     }
 

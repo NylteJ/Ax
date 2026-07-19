@@ -9,14 +9,14 @@ use alloc::sync::Arc;
 use intrusive_collections::{LinkedList as IntrusiveLinkedList, LinkedListLink, intrusive_adapter};
 
 use crate::{
-    basic::{extend_lifetime, extend_lifetime_mut, sync::RwLock},
+    basic::{extend_lifetime, extend_lifetime_mut, sync::SpinRwLock},
     filesystem::vfs::{DEntryArc, FileSystem, Path},
 };
 
 #[derive(Debug)]
 pub struct MountPoint {
     parent: Path,
-    mounts: RwLock<IntrusiveLinkedList<MountAdapter>>,
+    mounts: SpinRwLock<IntrusiveLinkedList<MountAdapter>>,
 }
 
 #[derive(Debug)]
@@ -48,7 +48,7 @@ impl MountPoint {
             (
                 Arc::new(MountPoint {
                     parent,
-                    mounts: RwLock::new(IntrusiveLinkedList::new(MountAdapter::new())),
+                    mounts: SpinRwLock::new(IntrusiveLinkedList::new(MountAdapter::new())),
                 }),
                 true,
             )
@@ -84,7 +84,7 @@ impl MountPoint {
                 // SAFETY: 这实际上并不安全，但我不愿意在此花更多时间了
                 transmute(NonNull::<Mount>::dangling())
             }),
-            mounts: RwLock::new(IntrusiveLinkedList::new(MountAdapter::new())),
+            mounts: SpinRwLock::new(IntrusiveLinkedList::new(MountAdapter::new())),
         });
 
         let mp_ref = unsafe { extend_lifetime_mut(Arc::get_mut_unchecked(&mut mp)) };

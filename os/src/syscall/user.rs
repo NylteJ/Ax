@@ -1,5 +1,5 @@
 use crate::{
-    basic::sync::MutexGuard,
+    basic::sync::SpinRwLockWriteGuard,
     memory::uaccess::copy_one_to_user,
     multitask::{cur_task, task::TaskUserIds},
     syscall::SyscallResult,
@@ -8,12 +8,12 @@ use crate::{
 use crate::syscall::err_codes::*;
 
 // 它其实不安全，但只在内部使用所以也没什么所谓
-fn cur_uids_mtx_guard<'a>() -> MutexGuard<'a, TaskUserIds> {
-    cur_task().user_ids.lock()
+fn cur_uids() -> TaskUserIds {
+    *cur_task().user_ids.read()
 }
 
-fn cur_uids() -> TaskUserIds {
-    *cur_uids_mtx_guard()
+fn cur_uids_write<'a>() -> SpinRwLockWriteGuard<'a, TaskUserIds> {
+    cur_task().user_ids.write()
 }
 
 pub extern "C" fn getuid() -> usize {
@@ -67,7 +67,7 @@ macro_rules! set_common {
 }
 
 pub extern "C" fn setresuid(ruid: isize, euid: isize, suid: isize) -> SyscallResult {
-    let mut uids = cur_uids_mtx_guard();
+    let mut uids = cur_uids_write();
     let unprivileged = uids.euid != 0;
 
     set_common!(uids.uid              => ruid; if unprivileged, in uids.uid);
@@ -78,7 +78,7 @@ pub extern "C" fn setresuid(ruid: isize, euid: isize, suid: isize) -> SyscallRes
 }
 
 pub extern "C" fn setresgid(rgid: isize, egid: isize, sgid: isize) -> SyscallResult {
-    let mut uids = cur_uids_mtx_guard();
+    let mut uids = cur_uids_write();
     let unprivileged = uids.euid != 0;
 
     set_common!(uids.gid              => rgid; if unprivileged, in uids.gid);
@@ -89,7 +89,7 @@ pub extern "C" fn setresgid(rgid: isize, egid: isize, sgid: isize) -> SyscallRes
 }
 
 pub extern "C" fn setreuid(ruid: isize, euid: isize) -> SyscallResult {
-    let mut uids = cur_uids_mtx_guard();
+    let mut uids = cur_uids_write();
     let unprivileged = uids.euid != 0;
 
     let old_uid = uids.uid;
@@ -105,7 +105,7 @@ pub extern "C" fn setreuid(ruid: isize, euid: isize) -> SyscallResult {
 }
 
 pub extern "C" fn setregid(rgid: isize, egid: isize) -> SyscallResult {
-    let mut uids = cur_uids_mtx_guard();
+    let mut uids = cur_uids_write();
     let unprivileged = uids.euid != 0;
 
     let old_gid = uids.gid;
@@ -121,7 +121,7 @@ pub extern "C" fn setregid(rgid: isize, egid: isize) -> SyscallResult {
 }
 
 pub extern "C" fn setuid(uid: isize) -> SyscallResult {
-    let mut uids = cur_uids_mtx_guard();
+    let mut uids = cur_uids_write();
     let unprivileged = uids.euid != 0;
 
     set_common!(uids.uid, uids.euid, uids.suid, uids.fsuid => uid; if unprivileged, in uids.uid, uids.suid);
@@ -130,7 +130,7 @@ pub extern "C" fn setuid(uid: isize) -> SyscallResult {
 }
 
 pub extern "C" fn setgid(gid: isize) -> SyscallResult {
-    let mut uids = cur_uids_mtx_guard();
+    let mut uids = cur_uids_write();
     let unprivileged = uids.euid != 0;
 
     set_common!(uids.gid, uids.egid, uids.sgid, uids.fsgid => gid; if unprivileged, in uids.gid, uids.sgid);

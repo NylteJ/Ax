@@ -11,7 +11,7 @@ use core::{
 use alloc::sync::Arc;
 
 use crate::{
-    basic::{bstr::ByteString, lru::LruNode, sync::Mutex},
+    basic::{bstr::ByteString, lru::LruNode, sync::SpinMutex},
     filesystem::vfs::{
         DCacheKey, DEntryArc, FileArc, FileFlags, FileSystem, INodeArc, Mount, VfsResult,
         cache::CachedValue, dentry_arc::DCacheArc, mount::MountPoint,
@@ -116,7 +116,7 @@ pub struct DEntry<T: ?Sized + DEntryOps = dyn DEntryOps> {
     /// 实际数据
     ///
     /// 这部分才是真正属于当前 DEntry 的，`peer` 逻辑上属于其父节点
-    pub data: Mutex<DEntryData<T>>,
+    pub data: SpinMutex<DEntryData<T>>,
 }
 
 impl DEntry {
@@ -262,7 +262,7 @@ impl<T: DEntryOps + 'static> DEntry<T> {
             mem_refcount: AtomicU32::new(1),
             in_dcache: SyncUnsafeCell::new(true),
             filesystem: NonNull::from_ref(filesystem),
-            data: Mutex::new(DEntryData {
+            data: SpinMutex::new(DEntryData {
                 parent: Some(parent),
                 name,
                 inode: inode.clone(),
@@ -337,7 +337,7 @@ impl<T: DEntryOps + 'static> DEntry<T> {
             mem_refcount: AtomicU32::new(1),
             in_dcache: SyncUnsafeCell::new(false), // 根节点不在 dcache 中
             filesystem,
-            data: Mutex::new(DEntryData {
+            data: SpinMutex::new(DEntryData {
                 parent: None,
                 name,
                 inode: Some(inode),
@@ -417,7 +417,7 @@ impl<T: DEntryOps> DEntryData<T> {
 impl<T: DEntryOps> DEntry<T> {
     pub fn get_dentry(dynamic: &T) -> &DEntry<T> {
         unsafe {
-            Mutex::from_value(NonNull::from_ref(DEntryData::get_data(dynamic)))
+            SpinMutex::from_value(NonNull::from_ref(DEntryData::get_data(dynamic)))
                 .byte_sub(offset_of!(DEntry<T>, data))
                 .cast()
                 .as_ref()

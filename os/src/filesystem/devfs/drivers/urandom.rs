@@ -5,7 +5,7 @@ use uninit::extension_traits::MaybeUninitExt;
 
 use crate::{
     basic::{
-        sync::Mutex,
+        sync::SpinMutex,
         timer::{CLOCK_FREQ, get_cpu_tick},
     },
     filesystem::{
@@ -17,7 +17,7 @@ use crate::{
 
 /// 密码学安全的伪随机数发生器
 pub struct URandomDriver {
-    pub engine: Mutex<ChaCha8Rng>,
+    pub engine: SpinMutex<ChaCha8Rng>,
 }
 
 impl URandomDriver {
@@ -41,7 +41,7 @@ impl URandomDriver {
         }
 
         Self {
-            engine: Mutex::new(ChaCha8Rng::seed_from_u64(seed)),
+            engine: SpinMutex::new(ChaCha8Rng::seed_from_u64(seed)),
         }
     }
 }

@@ -4,13 +4,13 @@ use crate::{
     basic::{
         id_allocator::IdAllocator,
         shared_with_asm::SharedWithAsm,
-        sync::{Mutex, RwLock},
+        sync::{SpinMutex, SpinRwLock},
     },
     multitask::task::{Task, TaskArc},
 };
 
 pub const PID_COUNT: usize = 8192;
-pub static PID_ALLOCATOR: Mutex<IdAllocator<PID_COUNT>> = Mutex::new(IdAllocator::new());
+pub static PID_ALLOCATOR: SpinMutex<IdAllocator<PID_COUNT>> = SpinMutex::new(IdAllocator::new());
 
 #[derive(Clone, Copy)]
 struct TaskPtr(*const Task);
@@ -18,7 +18,8 @@ struct TaskPtr(*const Task);
 unsafe impl Send for TaskPtr {}
 unsafe impl Sync for TaskPtr {}
 
-static PID_TASK_MAP: RwLock<[TaskPtr; PID_COUNT]> = RwLock::new([TaskPtr(null()); PID_COUNT]);
+static PID_TASK_MAP: SpinRwLock<[TaskPtr; PID_COUNT]> =
+    SpinRwLock::new([TaskPtr(null()); PID_COUNT]);
 
 pub(super) fn register_task(task: &Task) {
     PID_TASK_MAP.write()[task.tid].0 = task;
