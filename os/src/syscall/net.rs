@@ -386,13 +386,13 @@ pub extern "C" fn sendto(
     dest_addr: *const u8,
     addrlen: usize,
 ) -> SyscallResult {
+    if dest_addr.is_null() && addrlen == 0 {
+        return send(sockfd, buf, size, flags);
+    }
+
     let file = get_file_from_fd(sockfd)?;
     let socket = get_socket_from_file(&file)?;
     let sock = &socket.sock;
-
-    if dest_addr.is_null() && addrlen == 0 {
-        todo!("转发到 send");
-    }
 
     match socket.socket_type {
         SocketType::STREAM | SocketType::SEQPACKET => EISCONN,
@@ -431,4 +431,22 @@ pub extern "C" fn connect(sockfd: isize, addr: *const u8, addrlen: usize) -> Sys
     let addr = copy_addr_from_user(addr, addrlen)?;
     sock.data.connect_part_1(addr)?;
     sock.ops.connect(sock)
+}
+
+pub extern "C" fn setsockopt() -> SyscallResult {
+    log::error!("TODO: setsockopt");
+    SyscallResult::success(0)
+}
+
+pub extern "C" fn send(
+    sockfd: isize,
+    buf: *const c_void,
+    size: usize,
+    flags: usize,
+) -> SyscallResult {
+    let file = get_file_from_fd(sockfd)?;
+    let socket = get_socket_from_file(&file)?;
+    let sock = &socket.sock;
+
+    sock.ops.send(sock, buf.cast(), size)
 }

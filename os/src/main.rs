@@ -177,6 +177,8 @@ pub extern "C" fn main(_: usize, dtb: PhysAddr) -> ! {
 
     basic::timer::init();
 
+    trap::trap_handler::init_fixups();
+
     #[cfg(feature = "has-debug-info")]
     basic::debugger::DEBUG_CONTEXT.init();
 

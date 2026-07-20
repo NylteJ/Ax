@@ -1,6 +1,8 @@
 use core::{
     cmp::min,
     net::{Ipv4Addr, SocketAddrV4},
+    ops::FromResidual,
+    sync::atomic::Ordering,
 };
 
 use alloc::boxed::Box;
@@ -111,8 +113,11 @@ define! {
 
     fn accept(sock) -> Result<Box<Sock>, SyscallResult>;
     fn connect(sock) -> SyscallResult;
+
     fn sendto(sock, buf: *const u8, size: usize, addr: SocketAddress) -> SyscallResult;
     fn recvfrom(sock, buf: *mut u8, size: usize, src_addr: *mut u8, addrlen: *mut u32) -> SyscallResult;
+
+    fn send(sock, buf: *const u8, size: usize) -> SyscallResult;
 
     fn ingress_deliver(sock, func: &mut dyn FnMut(SocketMRef<'_, '_>));
 }
@@ -289,7 +294,49 @@ sock_ops! {
             src_addr: *mut u8,
             addrlen: *mut u32,
         ) -> SyscallResult {
-            todo!()
+            let result = this.data.proto.smol_socket.write().recv(|data| {
+                let size = min(size, data.len());
+                let copy_result = copy_to_user(buf, &data[..size]);
+                match copy_result {
+                    Ok(()) => (size, Ok(size)),
+                    Err(err) => (0, Err(err)),
+                }
+            });
+            
+            use smoltcp::socket::tcp::RecvError;
+            let written = match result {
+                Ok(Ok(0)) => return E_SPECIAL_NET_RETRY,
+                Ok(Ok(written)) => written,
+                Ok(Err(err)) => Err(err)?,
+                Err(RecvError::InvalidState) => return ENOTCONN,
+                Err(RecvError::Finished) => 0,
+            };
+
+            if !src_addr.is_null() {
+                let addr = this.data.peer_address.read().expect("已经 connect 的 TCP socket 不应该没有对端地址");
+                copy_sockaddr_to_user(src_addr, addrlen, Domain::INET, &addr)?;
+            }
+            
+            SyscallResult::success(written)
+        }
+
+        fn send(&this, buf: *const u8, size: usize) -> SyscallResult {
+            let mut smol_socket = this.data.proto.smol_socket.write();
+            let send_result = smol_socket.send_all(size, |buffer| {
+                copy_from_user(buffer, buf).map(|_| buffer.len())
+            });
+
+            use smoltcp::socket::tcp::SendAllError;
+            match send_result {
+                Ok(written) => {
+                    do_egress(SocketMRef::Tcp(&mut smol_socket));
+
+                    SyscallResult::success(written)
+                },
+                Err(SendAllError::BufferFull) => todo!(),
+                Err(SendAllError::InvalidState) => ENOTCONN,
+                Err(SendAllError::Custom(err)) => Err(err)?,
+            }
         }
 
         fn ingress_deliver(&this, func: &mut dyn FnMut(SocketMRef<'_, '_>)) {
@@ -406,6 +453,11 @@ sock_ops! {
 
             copy_to_user(buf, &data[..actual_copied])?; // 剩余部分直接静默丢弃，神奇吧
             SyscallResult::success(actual_copied)
+        }
+
+        fn send(&this, buf: *const u8, size: usize) -> SyscallResult {
+            let addr = this.data.peer_address.read().ok_or(ENOTCONN)?;
+            my_ops!().sendto(this, buf, size, SocketAddress::IPv4(addr))
         }
 
         fn ingress_deliver(&this, func: &mut dyn FnMut(SocketMRef<'_, '_>)) {

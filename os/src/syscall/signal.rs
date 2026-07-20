@@ -21,6 +21,7 @@ use crate::multitask::signal::SignalId;
 use crate::multitask::signal::SignalIdUnderlying;
 use crate::multitask::signal::SignalMask;
 use crate::multitask::signal::sigreturn;
+use crate::multitask::task::Task;
 use crate::multitask::task_manager::foreach_task;
 use crate::multitask::task_manager::get_task_by_tid;
 use crate::multitask::wait::SleepError;
@@ -228,6 +229,13 @@ pub extern "C" fn kill(pid: isize, sig: isize) -> SyscallResult {
         1.. => Target::Pid(pid.cast_unsigned()),
     };
 
+    let send_signal_if_not_siginval = |task: &Task| {
+        if signal != SignalId::SIGINVAL {
+            task.process.send_signal(signal);
+        }
+        // 否则，不实际发送任何信号，只执行完整的错误检查
+    };
+
     match target {
         Target::Pid(pid) => {
             let task = get_task_by_tid(pid).ok_or(ESRCH)?;
@@ -236,7 +244,7 @@ pub extern "C" fn kill(pid: isize, sig: isize) -> SyscallResult {
                 return ESRCH;
             }
 
-            task.process.send_signal(signal);
+            send_signal_if_not_siginval(&task);
         }
         Target::Pgid(pgid) => {
             // FIXME: 现在这个实现的性能只能用悲剧形容
@@ -244,7 +252,7 @@ pub extern "C" fn kill(pid: isize, sig: isize) -> SyscallResult {
 
             foreach_task(|task| {
                 if task.process.pgid.load(Ordering::Relaxed) == pgid {
-                    task.process.send_signal(signal);
+                    send_signal_if_not_siginval(task);
                     any = true;
                 }
             });

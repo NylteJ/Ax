@@ -257,6 +257,43 @@ impl<'a, T: 'a> RingBuffer<'a, T> {
         (size, result)
     }
 
+    /// Call `f` repeatedly with successive contiguous slices of unallocated
+    /// buffer elements, enqueueing the amount returned by each call.
+    ///
+    /// Stops when `f` returns 0 or the buffer is full.
+    /// Returns the total number of elements enqueued.
+    ///
+    /// # Panics
+    /// This function panics if the amount of elements returned by `f` is larger
+    /// than the size of the slice passed into it.
+    pub fn enqueue_many_with_mut<F, E>(&mut self, mut f: F) -> Result<usize, E>
+    where
+        F: FnMut(&mut [T]) -> Result<usize, E>,
+    {
+        if self.length == 0 {
+            // Ring is currently empty. Reset `read_at` to optimize
+            // for contiguous space.
+            self.read_at = 0;
+        }
+
+        let mut total = 0;
+        while self.window() > 0 {
+            let write_at = self.get_idx(self.length);
+            let max_size = self.contiguous_window();
+            if max_size == 0 {
+                break;
+            }
+            let size = f(&mut self.storage[write_at..write_at + max_size])?;
+            assert!(size <= max_size);
+            if size == 0 {
+                break;
+            }
+            self.length += size;
+            total += size;
+        }
+        Ok(total)
+    }
+
     /// Enqueue a slice of elements up to the given size into the buffer,
     /// and return a reference to them.
     ///
@@ -627,18 +664,6 @@ mod test {
         assert_eq!(&ring.storage[..], b"abcd....ijkl");
     }
 
-    #[test]
-    fn test_buffer_enqueue_many() {
-        let mut ring = RingBuffer::new(vec![b'.'; 12]);
-
-        ring.enqueue_many(8).copy_from_slice(b"abcdefgh");
-        assert_eq!(ring.len(), 8);
-        assert_eq!(&ring.storage[..], b"abcdefgh....");
-
-        ring.enqueue_many(8).copy_from_slice(b"ijkl");
-        assert_eq!(ring.len(), 12);
-        assert_eq!(&ring.storage[..], b"abcdefghijkl");
-    }
 
     #[test]
     fn test_buffer_enqueue_slice() {

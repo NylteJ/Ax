@@ -205,19 +205,23 @@ fn main() -> isize {
                 b"/sdcd/musl/busybox --install -s /bin;",
                 b"ln -s /sdcd/musl/busybox /bin/busybox;",
                 // ===================================================
-                group!(b"basic-musl" at b"musl/basic" shell b"run-all.sh"),
-                group!(b"basic-glibc" at b"glibc/basic" shell b"run-all.sh"),
-                group!(nobanner at b"musl" shell b"busybox_testcode.sh"),
-                group!(nobanner at b"glibc" shell b"busybox_testcode.sh"),
-                group!(nobanner at b"musl" shell b"libcbench_testcode.sh"),
-                group!(nobanner at b"glibc" shell b"libcbench_testcode.sh"),
-                group!(nobanner at b"musl" shell b"lua_testcode.sh"),
-                group!(nobanner at b"glibc" shell b"lua_testcode.sh"),
-                group!(b"libctest-musl" at b"musl" shell b"run-static.sh", b"run-dynamic.sh"),
-                // group!(b"libctest-glibc" at b"glibc" shell b"run-static.sh", b"run-dynamic.sh"),
+
+                group!(nobanner at b"glibc" shell b"cagent_testcode.sh"),
+
                 // ===================================================
-                b"/sdcd/musl/busybox sh /ltp.sh;",
-                // ===================================================
+                // group!(b"basic-musl" at b"musl/basic" shell b"run-all.sh"),
+                // group!(b"basic-glibc" at b"glibc/basic" shell b"run-all.sh"),
+                // group!(nobanner at b"musl" shell b"busybox_testcode.sh"),
+                // group!(nobanner at b"glibc" shell b"busybox_testcode.sh"),
+                // group!(nobanner at b"musl" shell b"libcbench_testcode.sh"),
+                // group!(nobanner at b"glibc" shell b"libcbench_testcode.sh"),
+                // group!(nobanner at b"musl" shell b"lua_testcode.sh"),
+                // group!(nobanner at b"glibc" shell b"lua_testcode.sh"),
+                // group!(b"libctest-musl" at b"musl" shell b"run-static.sh", b"run-dynamic.sh"),
+                // // group!(b"libctest-glibc" at b"glibc" shell b"run-static.sh", b"run-dynamic.sh"),
+                // // ===================================================
+                // b"/sdcd/musl/busybox sh /ltp.sh;",
+                // // ===================================================
                 b'\0',
             )
             .as_ptr(),

@@ -146,7 +146,7 @@ RV_QEMU_CMD_BASE := \
 		-rtc base=utc \
 		-drive file=/repo/disk.img,if=none,format=raw,id=x0 \
 		-device virtio-blk-device,drive=x0,bus=virtio-mmio-bus.0 \
-		-drive file=/repo/sdcard-rv.img,if=none,format=raw,id=x1 \
+		-drive file=/repo/sdcard-rv-pub.img,if=none,format=raw,id=x1 \
 		-device virtio-blk-device,drive=x1,bus=virtio-mmio-bus.1 \
 
 LA_QEMU_CMD_BASE := \
@@ -161,7 +161,7 @@ LA_QEMU_CMD_BASE := \
 		-device virtio-net-pci,netdev=net0 \
 		-netdev user,id=net0 \
 		-rtc base=utc \
-		-drive file=/repo/sdcard-la.img,if=none,format=raw,id=x0 \
+		-drive file=/repo/sdcard-la-pub.img,if=none,format=raw,id=x0 \
 		-device virtio-blk-pci,drive=x0 \
 # 		-device virtio-blk-pci,drive=x0,bus=virtio-mmio-bus.0 \
 # 		-device virtio-blk-pci,drive=x1,bus=virtio-mmio-bus.1 \

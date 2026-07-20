@@ -176,6 +176,7 @@ pub static TABLE: [Option<SyscallFn>; MAX_SYSCALL_COUNT] = const {
     define!(206, net::sendto);
     define!(207, net::recvfrom);
     define!(203, net::connect);
+    define!(208, net::setsockopt);
 
     define!(172, process::getpid);
     define!(173, process::getppid);
@@ -223,7 +224,7 @@ pub static TABLE: [Option<SyscallFn>; MAX_SYSCALL_COUNT] = const {
 };
 
 #[repr(transparent)]
-#[derive(PartialEq, Eq)]
+#[derive(PartialEq, Eq, Clone, Copy)]
 #[must_use]
 pub struct SyscallResult {
     value: usize,
@@ -234,11 +235,13 @@ impl Try for SyscallResult {
 
     type Residual = Result<Infallible, isize>;
 
+    #[inline]
     fn from_output(output: Self::Output) -> Self {
         debug_assert!(output.cast_signed() >= 0);
         Self { value: output }
     }
 
+    #[inline]
     fn branch(self) -> ControlFlow<Self::Residual, Self::Output> {
         match self.value.cast_signed() {
             x @ ..0 => ControlFlow::Break(Err(x)),
@@ -418,6 +421,13 @@ impl SyscallResult {
         match self.branch() {
             ControlFlow::Continue(x) => x,
             ControlFlow::Break(Err(e)) => unwrap_failed(e),
+        }
+    }
+
+    pub fn is_ok_and(&self, f: impl FnOnce(usize) -> bool) -> bool {
+        match self.branch() {
+            ControlFlow::Continue(x) => f(x),
+            ControlFlow::Break(Err(_)) => false,
         }
     }
 }

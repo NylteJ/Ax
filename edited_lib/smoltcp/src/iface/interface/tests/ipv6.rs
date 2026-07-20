@@ -1302,11 +1302,11 @@ fn test_join_ipv6_multicast_group(#[case] medium: Medium) {
 
     for &group in &groups {
         iface.join_multicast_group(group).unwrap();
-        assert!(iface.has_multicast_group(group));
+        assert!(iface.inner.has_multicast_group(group));
     }
-    assert!(iface.has_multicast_group(IPV6_LINK_LOCAL_ALL_NODES));
+    assert!(iface.inner.has_multicast_group(IPV6_LINK_LOCAL_ALL_NODES));
     iface.poll(timestamp, &mut device, &mut sockets);
-    assert!(iface.has_multicast_group(IPV6_LINK_LOCAL_ALL_NODES));
+    assert!(iface.inner.has_multicast_group(IPV6_LINK_LOCAL_ALL_NODES));
 
     let reports = recv_icmpv6(&mut device, timestamp);
     assert_eq!(reports.len(), 2);
@@ -1378,9 +1378,9 @@ fn test_join_ipv6_multicast_group(#[case] medium: Medium) {
 
         if !group_addr.is_solicited_node_multicast() {
             iface.leave_multicast_group(group_addr).unwrap();
-            assert!(!iface.has_multicast_group(group_addr));
+            assert!(!iface.inner.has_multicast_group(group_addr));
             iface.poll(timestamp, &mut device, &mut sockets);
-            assert!(!iface.has_multicast_group(group_addr));
+            assert!(!iface.inner.has_multicast_group(group_addr));
         }
     }
 }
@@ -1579,27 +1579,27 @@ fn test_solicited_node_multicast_autojoin(#[case] medium: Medium) {
         ip_addrs.clear();
         ip_addrs.push(IpCidr::new(addr1.into(), 64)).unwrap();
     });
-    assert!(iface.has_multicast_group(addr1.solicited_node()));
-    assert!(!iface.has_multicast_group(addr2.solicited_node()));
+    assert!(iface.inner.has_multicast_group(addr1.solicited_node()));
+    assert!(!iface.inner.has_multicast_group(addr2.solicited_node()));
 
     iface.update_ip_addrs(|ip_addrs| {
         ip_addrs.clear();
         ip_addrs.push(IpCidr::new(addr2.into(), 64)).unwrap();
     });
-    assert!(!iface.has_multicast_group(addr1.solicited_node()));
-    assert!(iface.has_multicast_group(addr2.solicited_node()));
+    assert!(!iface.inner.has_multicast_group(addr1.solicited_node()));
+    assert!(iface.inner.has_multicast_group(addr2.solicited_node()));
 
     iface.update_ip_addrs(|ip_addrs| {
         ip_addrs.clear();
         ip_addrs.push(IpCidr::new(addr1.into(), 64)).unwrap();
         ip_addrs.push(IpCidr::new(addr2.into(), 64)).unwrap();
     });
-    assert!(iface.has_multicast_group(addr1.solicited_node()));
-    assert!(iface.has_multicast_group(addr2.solicited_node()));
+    assert!(iface.inner.has_multicast_group(addr1.solicited_node()));
+    assert!(iface.inner.has_multicast_group(addr2.solicited_node()));
 
     iface.update_ip_addrs(|ip_addrs| {
         ip_addrs.clear();
     });
-    assert!(!iface.has_multicast_group(addr1.solicited_node()));
-    assert!(!iface.has_multicast_group(addr2.solicited_node()));
+    assert!(!iface.inner.has_multicast_group(addr1.solicited_node()));
+    assert!(!iface.inner.has_multicast_group(addr2.solicited_node()));
 }

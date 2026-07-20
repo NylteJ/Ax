@@ -21,6 +21,8 @@ programs/init/target
 
 sdcard-rv.img
 sdcard-la.img
+sdcard-rv-pub.img
+sdcard-la-pub.img
 
 disk_img/la-init
 disk_img/rv-init

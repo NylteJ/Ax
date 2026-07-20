@@ -8,7 +8,7 @@ use crate::{
         interfaces::{Regs, Trap as Trap2, TrapContext},
     },
     basic::{
-        DropGuard, abort_and_shutdown,
+        DropGuard, UnsafeInited, abort_and_shutdown,
         debugger::debugbreak,
         stack::TaskKernelStackPtr,
         timer::{check_all_timers, reset_timer_interrupt},
@@ -255,27 +255,28 @@ pub extern "C" fn recover_task_pointer() {
     unsafe { Task::set_current_task(task_addr as *const Task) };
 }
 
-lazy_static! {
-    static ref FIXUPS: [(Range<usize>, usize); 3] = {
-        macro_rules! define {
-            ($ident:ident) => {
-                {
-                    let start: usize;
-                    let end: usize;
-                    let fault: usize;
-                    unsafe {
-                        asm!(concat!("la {0}, suaccess_", stringify!($ident)), out(reg) start);
-                        asm!(concat!("la {0}, euaccess_", stringify!($ident)), out(reg) end);
-                        asm!(concat!("la {0}, __", stringify!($ident), "_uaccess_fault"), out(reg) fault);
-                    }
+static FIXUPS: UnsafeInited<[(Range<usize>, usize); 3]> = unsafe { UnsafeInited::uninit() };
 
-                    (start..end, fault)
+pub fn init_fixups() {
+    macro_rules! define {
+        ($ident:ident) => {
+            {
+                let start: usize;
+                let end: usize;
+                let fault: usize;
+                unsafe {
+                    asm!(concat!("la {0}, suaccess_", stringify!($ident)), out(reg) start);
+                    asm!(concat!("la {0}, euaccess_", stringify!($ident)), out(reg) end);
+                    asm!(concat!("la {0}, __", stringify!($ident), "_uaccess_fault"), out(reg) fault);
                 }
-            };
-        }
 
-        [define!(copy), define!(strcpy), define!(memset)]
-    };
+                (start..end, fault)
+            }
+        };
+    }
+
+    let fixups = [define!(copy), define!(strcpy), define!(memset)];
+    unsafe { UnsafeInited::init_unsafe(&FIXUPS, fixups) };
 }
 
 #[cold]

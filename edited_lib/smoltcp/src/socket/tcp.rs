@@ -87,6 +87,15 @@ impl Display for SendError {
 #[cfg(feature = "std")]
 impl std::error::Error for SendError {}
 
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum SendAllError<T> {
+    InvalidState,
+    /// Buffer is full and cannot grow (at max capacity or borrowed storage).
+    BufferFull,
+    Custom(T),
+}
+
 /// Error returned by [`Socket::recv`]
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
@@ -1334,6 +1343,112 @@ impl<'a> Socket<'a> {
         self.send_impl(|tx_buffer| {
             let size = tx_buffer.enqueue_slice(data);
             (size, size)
+        })
+    }
+
+    /// Send data using a closure, with the total amount specified upfront.
+    ///
+    /// The transmit buffer will be grown, if possible, to accommodate
+    /// `total` additional bytes **before** any data is written. If growth
+    /// is needed but fails (e.g., buffer is at max capacity or uses
+    /// borrowed storage), `Err(SendError::BufferFull)` is returned
+    /// without modifying the buffer.
+    ///
+    /// Once the buffer is sized appropriately, `f` is called repeatedly
+    /// with contiguous free slices, each capped to the remaining byte
+    /// budget. The closure should fill the slice and return the number
+    /// of bytes actually written (which must not exceed the slice length).
+    /// Returning `0` stops the loop early, even if fewer than `total`
+    /// bytes have been written.
+    ///
+    /// Returns `Ok(total_written)` on success. `total_written` may be
+    /// less than `total` if the closure stopped early.
+    ///
+    /// This function returns `Err(SendError::InvalidState)` if the
+    /// transmit half of the connection is not open; see
+    /// [may_send](#method.may_send).
+    ///
+    /// See also [send](#method.send) for the single-contiguous-slice
+    /// variant, and [send_slice_all](#method.send_slice_all) for a
+    /// convenience wrapper around slice data.
+    pub fn send_all<F, E>(&mut self, total: usize, mut f: F) -> Result<usize, SendAllError<E>>
+    where
+        F: FnMut(&mut [u8]) -> Result<usize, E>,
+    {
+        if !self.may_send() {
+            return Err(SendAllError::InvalidState);
+        }
+
+        // Grow buffer upfront to accommodate all data.
+        let needed = self.tx_buffer.len().saturating_add(total);
+        if needed > self.tx_buffer.capacity() {
+            if !self.tx_buffer.try_grow(needed, 0u8) {
+                // Growth failed and capacity is insufficient for `total`.
+                // Fail cleanly without writing any data.
+                return Err(SendAllError::BufferFull);
+            }
+        }
+
+        let old_length = self.tx_buffer.len();
+        let mut remaining = total;
+
+        // Write data in a loop. `remaining` is a local captured by the
+        // closure, so the closure does not reference `self` — no borrow
+        // conflict with `enqueue_many_with_mut`'s mutable borrow of
+        // `self.tx_buffer`.
+        let _ = self.tx_buffer.enqueue_many_with_mut(|buf| {
+            let max = core::cmp::min(buf.len(), remaining);
+            if max == 0 {
+                return Ok(0);
+            }
+            let size = f(&mut buf[..max])?;
+            assert!(size <= max);
+            remaining -= size;
+            Ok(size)
+        }).map_err(SendAllError::Custom)?;
+
+        let total_written = total - remaining;
+
+        if total_written > 0 {
+            // The connection might have been idle for a long time, and so
+            // remote_last_ts would be far in the past. Unless we clear it
+            // here, we'll abort the connection down over in dispatch() by
+            // erroneously detecting it as timed out.
+            if old_length == 0 {
+                self.remote_last_ts = None
+            }
+
+            #[cfg(any(test, feature = "verbose"))]
+            tcp_trace!(
+                "tx buffer: enqueueing {} octets (now {})",
+                total_written,
+                old_length + total_written
+            );
+        }
+
+        Ok(total_written)
+    }
+
+    /// Enqueue a slice of octets using [`send_all`](#method.send_all) semantics.
+    ///
+    /// The transmit buffer will be grown, if possible, to accommodate the
+    /// entire slice before any data is written. If growth is needed but
+    /// fails, `Err(SendError::BufferFull)` is returned without writing.
+    ///
+    /// Returns the number of octets actually enqueued.
+    pub fn send_slice_all(&mut self, data: &[u8]) -> Result<usize, SendError> {
+        let total = data.len();
+        let mut offset: usize = 0;
+        self.send_all::<_, !>(total, |buf| {
+            let n = core::cmp::min(buf.len(), total - offset);
+            buf[..n].copy_from_slice(&data[offset..offset + n]);
+            offset += n;
+            Ok(n)
+        }).map_err(|e| {
+            match e {
+                SendAllError::InvalidState => SendError::InvalidState,
+                SendAllError::BufferFull => SendError::BufferFull,
+            }
         })
     }
 
@@ -4653,6 +4768,65 @@ mod test {
                 ..SEND_TEMPL
             }
         );
+        assert_eq!(s.tx_buffer.len(), 0);
+    }
+
+    #[test]
+    fn test_send_all_zero_total() {
+        let mut s = socket_established();
+        // total == 0, closure should never be called.
+        let written = s
+            .send_all(0, |_buf| {
+                panic!("should not be called");
+            })
+            .unwrap();
+        assert_eq!(written, 0);
+        assert_eq!(s.tx_buffer.len(), 0);
+    }
+
+    #[test]
+    fn test_send_all_invalid_state() {
+        let s = &mut socket();
+        // Socket is in CLOSED state, not ESTABLISHED.
+        let result = s.send_all(6, |_buf| {
+            panic!("should not be called");
+        });
+        assert_eq!(result, Err(SendError::InvalidState));
+    }
+
+    #[test]
+    fn test_send_slice_all_basic() {
+        let mut s = socket_established();
+        let written = s.send_slice_all(b"hello world").unwrap();
+        assert_eq!(written, 11);
+        assert_eq!(s.tx_buffer.len(), 11);
+    }
+
+    #[test]
+    fn test_send_slice_all_growth() {
+        let mut s = socket_established();
+        // Shrink tx_buffer to force growth.
+        let small_buf = SocketBuffer::new(vec![0u8; 2]);
+        s.tx_buffer = small_buf;
+        s.set_tx_max_capacity(1024);
+        let old_cap = s.tx_buffer.capacity();
+        assert_eq!(old_cap, 2);
+
+        let written = s.send_slice_all(b"hello world").unwrap();
+        assert_eq!(written, 11);
+        assert!(s.tx_buffer.capacity() > old_cap);
+        assert_eq!(s.tx_buffer.len(), 11);
+    }
+
+    #[test]
+    fn test_send_slice_all_growth_failure() {
+        let mut s = socket_established();
+        // Small buffer, no growth enabled.
+        let small_buf = SocketBuffer::new(vec![0u8; 2]);
+        s.tx_buffer = small_buf;
+
+        let result = s.send_slice_all(b"hello world");
+        assert_eq!(result, Err(SendError::BufferFull));
         assert_eq!(s.tx_buffer.len(), 0);
     }
 
