@@ -198,6 +198,7 @@ pub static TABLE: [Option<SyscallFn>; MAX_SYSCALL_COUNT] = const {
     define!(135, signal::rt_sigprocmask);
     define!(137, signal::rt_sigtimedwait);
     define!(139, signal::rt_sigreturn);
+    define!(133, signal::rt_sigsuspend);
 
     define!(98, sync::futex);
 

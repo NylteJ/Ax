@@ -51,7 +51,7 @@ impl smoltcp::phy::TxToken for TxToken<'_> {
         let mut buffer = unsafe { Box::from_raw(buffer) };
 
         let ret = f(&mut buffer);
-        log::trace!("transmitted {:?} ({} bytes)", buffer, buffer.len());
+        crate::println!("transmitted {:?} ({} bytes)", crate::basic::bstr::ByteStr::from_bytes(&buffer), buffer.len());
 
         self.device.queue.push_back(buffer);
 

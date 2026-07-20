@@ -297,6 +297,9 @@ sock_ops! {
             let result = this.data.proto.smol_socket.write().recv(|data| {
                 let size = min(size, data.len());
                 let copy_result = copy_to_user(buf, &data[..size]);
+                if copy_result.is_ok() {
+                    crate::println!("recved: {:?}", crate::basic::bstr::ByteStr::from_bytes(&data[..size]));
+                }
                 match copy_result {
                     Ok(()) => (size, Ok(size)),
                     Err(err) => (0, Err(err)),

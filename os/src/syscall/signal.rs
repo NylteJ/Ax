@@ -25,6 +25,7 @@ use crate::multitask::task::Task;
 use crate::multitask::task_manager::foreach_task;
 use crate::multitask::task_manager::get_task_by_tid;
 use crate::multitask::wait::SleepError;
+use crate::multitask::wait::Waiting;
 use crate::syscall::SyscallResult;
 
 use crate::syscall::common::TimeSpec;
@@ -381,4 +382,15 @@ pub extern "C" fn rt_sigtimedwait(
 
 pub extern "C" fn rt_sigreturn() -> usize {
     sigreturn()
+}
+
+pub extern "C" fn rt_sigsuspend(mask: *const SignalMask) -> SyscallResult {
+    let mut mask = copy_one_from_user(mask)?;
+    mask.remove_special();
+    let mask = mask;
+
+    let old_mask = replace(&mut cur_task().signals_wl.lock().mask, mask);
+
+    let err = Waiting::new().sleep().expect_err("我们根本没有设定正常唤醒条件");
+    Err(err)?
 }
