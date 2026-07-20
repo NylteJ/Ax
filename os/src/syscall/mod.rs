@@ -16,7 +16,10 @@ use crate::{
         task::{ForkError, LoadElfError},
         wait::SleepError,
     },
-    network::{sock::BindPart1Error, socket::NewSocketError},
+    network::{
+        sock::{BindPart1Error, ConnectPart1Error},
+        socket::NewSocketError,
+    },
 };
 
 pub mod common;
@@ -172,6 +175,7 @@ pub static TABLE: [Option<SyscallFn>; MAX_SYSCALL_COUNT] = const {
     define!(205, net::getpeername);
     define!(206, net::sendto);
     define!(207, net::recvfrom);
+    define!(203, net::connect);
 
     define!(172, process::getpid);
     define!(173, process::getppid);
@@ -385,6 +389,12 @@ cast_error! {
         BindPart1Error::AlreadyBound => EINVAL,
         BindPart1Error::AddressTypeMismatch => EINVAL,
         BindPart1Error::AddressAlreadyInUse => EADDRINUSE,
+    }
+}
+cast_error! {
+    ConnectPart1Error: match {
+        ConnectPart1Error::AlreadyBound => EISCONN,
+        ConnectPart1Error::AddressTypeMismatch => EINVAL,
     }
 }
 

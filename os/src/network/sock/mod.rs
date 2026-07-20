@@ -47,6 +47,7 @@ pub trait SockDomain: Send + Sync + 'static {
     fn getpeername(&self, addr: *mut u8, addrlen: *mut u32) -> SyscallResult;
 
     fn bind_part_1(&self, addr: SocketAddress, sock: &Sock) -> Result<(), BindPart1Error>;
+    fn connect_part_1(&self, addr: SocketAddress) -> Result<(), ConnectPart1Error>;
 }
 
 #[derive(Debug)]
@@ -62,6 +63,12 @@ impl From<BindSocketError> for BindPart1Error {
             BindSocketError::AddressAlreadyInUse => BindPart1Error::AddressAlreadyInUse,
         }
     }
+}
+
+#[derive(Debug)]
+pub enum ConnectPart1Error {
+    AddressTypeMismatch,
+    AlreadyBound,
 }
 
 pub trait SockProtocol: Send + Sync + 'static {}

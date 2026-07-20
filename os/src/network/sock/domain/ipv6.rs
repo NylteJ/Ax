@@ -2,7 +2,10 @@ use crate::{
     basic::sync::SpinRwLock,
     network::{
         namespace::GLOBAL_NET_NAMESPACE,
-        sock::{BindPart1Error, Sock, SockDomain, SockProtocol, domain::copy_sockaddr_to_user},
+        sock::{
+            BindPart1Error, ConnectPart1Error, Sock, SockDomain, SockProtocol,
+            domain::copy_sockaddr_to_user,
+        },
         socket::SocketAddress,
     },
     syscall::{
@@ -39,20 +42,16 @@ impl<Proto: ?Sized + SockProtocol> SockDomain for IPv6<Proto> {
     }
 
     fn bind_part_1(&self, addr: SocketAddress, sock: &Sock) -> Result<(), BindPart1Error> {
-        let SocketAddress::IPv6(addr) = addr else {
-            return Err(BindPart1Error::AddressTypeMismatch);
-        };
-
-        {
-            let mut address = self.address.write();
-            if address.is_some() {
-                return Err(BindPart1Error::AlreadyBound);
-            }
-            address.replace(addr);
-        }
+        let addr =
+            get_and_set_address!(self.address, set to addr, expected variant IPv6, BindPart1Error);
 
         unsafe { GLOBAL_NET_NAMESPACE.bind_socket(addr.ipv6_addr(), addr.port.get(), sock) }?;
 
+        Ok(())
+    }
+
+    fn connect_part_1(&self, addr: SocketAddress) -> Result<(), ConnectPart1Error> {
+        get_and_set_address!(self.peer_address, set to addr, expected variant IPv6, ConnectPart1Error);
         Ok(())
     }
 }

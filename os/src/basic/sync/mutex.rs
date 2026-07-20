@@ -61,6 +61,7 @@ impl<T: ?Sized, const SPIN: bool> MutexBase<T, SPIN> {
 
             if SPIN {
                 core::hint::spin_loop();
+                panic!("目前我们是单核且无抢占的，自旋永远不会结束，一定是出 bug 了");
             } else {
                 // TODO：真正睡眠
                 syscall::basic::yield_();

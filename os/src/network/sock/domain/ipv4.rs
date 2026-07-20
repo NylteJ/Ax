@@ -1,8 +1,11 @@
 use crate::{
-    basic::sync::SpinRwLock,
+    basic::sync::RwLock,
     network::{
         namespace::GLOBAL_NET_NAMESPACE,
-        sock::{BindPart1Error, Sock, SockDomain, SockProtocol, domain::copy_sockaddr_to_user},
+        sock::{
+            BindPart1Error, ConnectPart1Error, Sock, SockDomain, SockProtocol,
+            domain::copy_sockaddr_to_user,
+        },
         socket::SocketAddress,
     },
     syscall::{
@@ -13,8 +16,8 @@ use crate::{
 };
 
 pub struct IPv4<Proto: ?Sized + SockProtocol> {
-    pub address: SpinRwLock<Option<IPv4SockAddr>>,
-    pub peer_address: SpinRwLock<Option<IPv4SockAddr>>,
+    pub address: RwLock<Option<IPv4SockAddr>>,
+    pub peer_address: RwLock<Option<IPv4SockAddr>>,
 
     pub proto: Proto,
 }
@@ -39,17 +42,8 @@ impl<Proto: ?Sized + SockProtocol> SockDomain for IPv4<Proto> {
     }
 
     fn bind_part_1(&self, addr: SocketAddress, sock: &Sock) -> Result<(), BindPart1Error> {
-        let SocketAddress::IPv4(addr) = addr else {
-            return Err(BindPart1Error::AddressTypeMismatch);
-        };
-
-        {
-            let mut address = self.address.write();
-            if address.is_some() {
-                return Err(BindPart1Error::AlreadyBound);
-            }
-            address.replace(addr);
-        }
+        let addr =
+            get_and_set_address!(self.address, set to addr, expected variant IPv4, BindPart1Error);
 
         unsafe {
             GLOBAL_NET_NAMESPACE.bind_socket(
@@ -61,13 +55,18 @@ impl<Proto: ?Sized + SockProtocol> SockDomain for IPv4<Proto> {
 
         Ok(())
     }
+
+    fn connect_part_1(&self, addr: SocketAddress) -> Result<(), ConnectPart1Error> {
+        get_and_set_address!(self.peer_address, set to addr, expected variant IPv4, ConnectPart1Error);
+        Ok(())
+    }
 }
 
 impl<Proto: SockProtocol> IPv4<Proto> {
     pub fn new(proto: Proto) -> Self {
         Self {
-            address: SpinRwLock::new(None),
-            peer_address: SpinRwLock::new(None),
+            address: RwLock::new(None),
+            peer_address: RwLock::new(None),
             proto,
         }
     }

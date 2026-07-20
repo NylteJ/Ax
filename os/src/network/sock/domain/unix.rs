@@ -1,7 +1,10 @@
 use crate::{
     basic::sync::SpinRwLock,
     network::{
-        sock::{BindPart1Error, Sock, SockDomain, SockProtocol, domain::copy_sockaddr_to_user},
+        sock::{
+            BindPart1Error, ConnectPart1Error, Sock, SockDomain, SockProtocol,
+            domain::copy_sockaddr_to_user,
+        },
         socket::SocketAddress,
     },
     syscall::{
@@ -38,6 +41,9 @@ impl<Proto: ?Sized + SockProtocol> SockDomain for Unix<Proto> {
     }
 
     fn bind_part_1(&self, addr: SocketAddress, sock: &Sock) -> Result<(), BindPart1Error> {
+        todo!()
+    }
+    fn connect_part_1(&self, addr: SocketAddress) -> Result<(), ConnectPart1Error> {
         todo!()
     }
 }

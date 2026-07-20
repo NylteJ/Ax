@@ -101,6 +101,7 @@ impl NetworkNamespace {
         debug_assert!(removed.is_some(), "尝试解绑未绑定的套接字 {addr}:{port}");
     }
 
+    // FIXME: 这步不安全（返回的引用的生命周期过长了）
     pub fn get_sock(&self, addr: Ipv6Addr, port: u16) -> Option<&Sock> {
         debug_assert!(!is_addr_unspecified(addr));
 

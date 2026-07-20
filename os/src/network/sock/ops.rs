@@ -7,7 +7,7 @@ use alloc::boxed::Box;
 use smoltcp::{
     socket::{
         SocketMRef,
-        tcp::ListenError,
+        tcp::{ConnectError, ListenError},
         udp::{SendWithError, UdpMetadata},
     },
     wire::IpAddress,
@@ -78,6 +78,19 @@ macro_rules! sock_ops {
         static $ops_name: SockOps = const {
             #[allow(unused)]
             type This = $target;
+            #[allow(unused)]
+            fn try_cast_to_this(sock: &Sock) -> Option<&This> {
+                if core::ptr::addr_eq(sock.ops, &$ops_name) {
+                    let data_ptr = sock as *const Sock as *const This;
+                    Some(unsafe { data_ptr.as_ref_unchecked() })
+                } else {
+                    None
+                }
+            }
+            #[allow(unused)]
+            macro_rules! my_ops {
+                () => { &$ops_name };
+            }
 
             $($($private)*)?
 
@@ -97,6 +110,7 @@ define! {
     fn listen(sock, backlog: u32) -> SyscallResult;
 
     fn accept(sock) -> Result<Box<Sock>, SyscallResult>;
+    fn connect(sock) -> SyscallResult;
     fn sendto(sock, buf: *const u8, size: usize, addr: SocketAddress) -> SyscallResult;
     fn recvfrom(sock, buf: *mut u8, size: usize, src_addr: *mut u8, addrlen: *mut u32) -> SyscallResult;
 
@@ -105,7 +119,7 @@ define! {
 
 use crate::syscall::err_codes::*;
 
-fn do_egress(socket: SocketMRef<'_, '_>) {
+fn do_egress(socket: SocketMRef<'_, '_>) -> Option<&'static Sock> {
     use crate::{
         basic::timer::{cpu_tick_to_us, get_cpu_tick},
         devices::DEVICES,
@@ -152,7 +166,7 @@ fn do_egress(socket: SocketMRef<'_, '_>) {
     let Some(target_sock) = GLOBAL_NET_NAMESPACE.get_sock(dst_addr, dst_port) else {
         log::warn!("没有为数据包找到目标地址（{dst_addr}:{dst_port}）");
         log::error!("TODO: 回馈端口不可达");
-        return;
+        return None;
     };
 
     target_sock.ops.ingress_deliver(target_sock, &mut |socket| {
@@ -161,6 +175,18 @@ fn do_egress(socket: SocketMRef<'_, '_>) {
 
     use smoltcp::phy::Device;
     debug_assert!(lo.receive(Instant::ZERO).is_none());
+    Some(target_sock)
+}
+
+fn get_emphemeral_v4addr() -> Result<IPv4SockAddr, SyscallResult> {
+    Ok(IPv4SockAddr {
+        port: GLOBAL_NET_NAMESPACE
+            .new_ephemeral_port()
+            .ok_or(EAGAIN)?
+            .into(),
+        addr: 0.into(),
+        _zero: Default::default(),
+    })
 }
 
 sock_ops! {
@@ -194,7 +220,64 @@ sock_ops! {
         fn accept(&this) -> Result<Box<Sock>, SyscallResult> {
             let new_sock = this.data.proto.smol_socket.write().accept().ok_or(E_SPECIAL_NET_RETRY)?;
 
-            Ok(Sock::new(this.ops, IPv4::new(Tcp::with_smol_socket(new_sock))))
+            Ok(Sock::new(my_ops!(), IPv4::new(Tcp::with_smol_socket(new_sock))))
+        }
+
+        fn connect(&this) -> SyscallResult {
+            let local_addr = if let Some(local_addr) = { *this.data.address.read() } {
+                local_addr
+            } else {
+                let v4addr = get_emphemeral_v4addr()?;
+                let addr = SocketAddress::IPv4(v4addr);
+                this.data.bind_part_1(addr, this).expect("TODO");
+                my_ops!().bind_part_2(this).unwrap();
+
+                v4addr
+            };
+
+            let mut local_v4addr = local_addr.ipv4_addr();
+            if local_v4addr.is_unspecified() {
+                local_v4addr = Ipv4Addr::LOCALHOST;
+            }
+            let local_endpoint = SocketAddrV4::new(local_v4addr, local_addr.port.get());
+
+            // FIXME: 支持非回环设备后这里要改
+            let mut smol_socket = this.data.proto.smol_socket.write();
+
+            let connect_result = smol_socket.connect(
+                crate::devices::DEVICES.network_lo_iface.lock().context(),
+                this.data.peer_address.read().expect("part 1 会完成这部分").to_endpoint(),
+                local_endpoint,
+            );
+
+            match connect_result {
+                Ok(()) => (),
+                Err(ConnectError::InvalidState) => return EISCONN,
+                Err(ConnectError::Unaddressable) => return EINVAL, // 对端端口为 0
+            }
+
+            debug_assert_eq!(smol_socket.state(), smoltcp::socket::tcp::State::SynSent);
+
+            // 1. 我方首先发送 SYN，同时对端接收到 SYN
+            let target_sock = do_egress(SocketMRef::Tcp(&mut smol_socket)).expect("TODO");
+            let target_sock = try_cast_to_this(target_sock).expect("do_egress 应当验证这一步");
+            let mut target_smol_socket = target_sock.data.proto.smol_socket.write();
+
+            debug_assert_eq!(target_smol_socket.state(), smoltcp::socket::tcp::State::Listen);
+
+            // 2. 对端发送 SYN+ACK，我方接收到 SYN+ACK 并变为 Established
+            drop(smol_socket);
+            let this_sock = do_egress(SocketMRef::Tcp(&mut target_smol_socket));
+            debug_assert!(this_sock.is_some_and(|s| core::ptr::addr_eq(s, this)));
+            let mut smol_socket = this.data.proto.smol_socket.write();
+            debug_assert_eq!(smol_socket.state(), smoltcp::socket::tcp::State::Established);
+
+            // 3. 我方发送 ACK，对端接收到 ACK 并变为 Established
+            drop(target_smol_socket);
+            let target_sock_ = do_egress(SocketMRef::Tcp(&mut smol_socket));
+            debug_assert!(target_sock_.is_some_and(|s| core::ptr::addr_eq(s, target_sock)));
+
+            SyscallResult::success(0)
         }
 
         fn sendto = unimplemented;
@@ -228,6 +311,11 @@ sock_ops! {
         fn listen = unimplemented;
         fn accept = unimplemented;
 
+        fn connect(&_this) -> SyscallResult {
+            // 无事可做
+            SyscallResult::success(0)
+        }
+
         fn sendto(&this, buf: *const u8, size: usize, addr: SocketAddress) -> SyscallResult {
             let SocketAddress::IPv4(addr) = addr else {
                 return EAFNOSUPPORT;
@@ -235,24 +323,15 @@ sock_ops! {
 
             let smol_sock = &this.data.proto.smol_socket;
 
-            let local_addr = {
-                let rguard = this.data.address.read();
-                if let Some(local_addr) = *rguard {
-                    local_addr
-                } else {
-                    drop(rguard);
+            let local_addr = if let Some(local_addr) = { *this.data.address.read() } {
+                local_addr
+            } else {
+                let v4addr = get_emphemeral_v4addr()?;
+                let addr = SocketAddress::IPv4(v4addr);
+                this.data.bind_part_1(addr, this).expect("TODO");
+                my_ops!().bind_part_2(this).unwrap();
 
-                    let v4addr = IPv4SockAddr {
-                        port: GLOBAL_NET_NAMESPACE.new_ephemeral_port().ok_or(EAGAIN)?.into(),
-                        addr: 0.into(),
-                        _zero: Default::default(),
-                    };
-                    let addr = SocketAddress::IPv4(v4addr);
-                    this.data.bind_part_1(addr, this).expect("TODO");
-                    this.ops.bind_part_2(this).unwrap();
-
-                    v4addr
-                }
+                v4addr
             };
             let mut local_v4addr = local_addr.ipv4_addr();
             if local_v4addr.is_unspecified() {

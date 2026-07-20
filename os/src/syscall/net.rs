@@ -352,6 +352,32 @@ pub extern "C" fn getpeername(sockfd: isize, addr: *mut u8, addrlen: *mut u32) -
     socket.sock.data.getpeername(addr, addrlen)
 }
 
+fn copy_addr_from_user(addr: *const u8, addrlen: usize) -> Result<SocketAddress, SyscallResult> {
+    let mut ret = None;
+    let sys_result = || -> SyscallResult {
+        ret.replace(get_socket_addr! {
+            addr: addr,
+            addrlen: addrlen,
+
+            Domain::UNIX => unix_addr = UnixSockAddr {
+                todo!()
+            }
+            Domain::INET => ipv4_addr = IPv4SockAddr {
+                SocketAddress::IPv4(*ipv4_addr)
+            }
+            Domain::INET6 => ipv6_addr = IPv6SockAddr {
+                SocketAddress::IPv6(*ipv6_addr)
+            }
+        });
+        SyscallResult::success(0)
+    }();
+
+    if sys_result.value != 0 {
+        return Err(sys_result);
+    }
+    return Ok(ret.unwrap());
+}
+
 pub extern "C" fn sendto(
     sockfd: isize,
     buf: *const c_void,
@@ -371,20 +397,7 @@ pub extern "C" fn sendto(
     match socket.socket_type {
         SocketType::STREAM | SocketType::SEQPACKET => EISCONN,
         _ => {
-            let addr = get_socket_addr! {
-                addr: dest_addr,
-                addrlen: addrlen,
-
-                Domain::UNIX => unix_addr = UnixSockAddr {
-                    todo!()
-                }
-                Domain::INET => ipv4_addr = IPv4SockAddr {
-                    SocketAddress::IPv4(*ipv4_addr)
-                }
-                Domain::INET6 => ipv6_addr = IPv6SockAddr {
-                    SocketAddress::IPv6(*ipv6_addr)
-                }
-            };
+            let addr = copy_addr_from_user(dest_addr, addrlen)?;
 
             autoretry(sock.nonblocking.load(Ordering::Relaxed), || {
                 sock.ops.sendto(&socket.sock, buf.cast(), size, addr)
@@ -408,4 +421,14 @@ pub extern "C" fn recvfrom(
     autoretry(sock.nonblocking.load(Ordering::Relaxed), || {
         sock.ops.recvfrom(sock, buf.cast(), size, src_addr, addrlen)
     })
+}
+
+pub extern "C" fn connect(sockfd: isize, addr: *const u8, addrlen: usize) -> SyscallResult {
+    let file = get_file_from_fd(sockfd)?;
+    let socket = get_socket_from_file(&file)?;
+    let sock = &socket.sock;
+
+    let addr = copy_addr_from_user(addr, addrlen)?;
+    sock.data.connect_part_1(addr)?;
+    sock.ops.connect(sock)
 }

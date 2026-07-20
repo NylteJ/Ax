@@ -6,6 +6,24 @@ use crate::{
     syscall::{SyscallResult, net::Domain},
 };
 
+macro_rules! get_and_set_address {
+    ($target:expr, set to $addr:ident, expected variant $type:ident, $err_type:ty) => {{
+        let SocketAddress::$type(addr) = $addr else {
+            return Err(<$err_type>::AddressTypeMismatch);
+        };
+
+        {
+            let mut address = $target.write();
+            if address.is_some() {
+                return Err(<$err_type>::AlreadyBound);
+            }
+            address.replace(addr);
+        }
+
+        addr
+    }};
+}
+
 pub mod ipv4;
 pub mod ipv6;
 pub mod unix;

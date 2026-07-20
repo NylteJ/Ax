@@ -46,6 +46,7 @@ impl<T: ?Sized, const SPIN: bool> RwLockBase<T, SPIN> {
 
             if SPIN {
                 core::hint::spin_loop();
+                panic!("目前我们是单核且无抢占的，自旋永远不会结束，一定是出 bug 了");
             } else {
                 syscall::basic::yield_();
             }
@@ -78,6 +79,7 @@ impl<T: ?Sized, const SPIN: bool> RwLockBase<T, SPIN> {
         {
             if SPIN {
                 core::hint::spin_loop();
+                panic!("目前我们是单核且无抢占的，自旋永远不会结束，一定是出 bug 了");
             } else {
                 syscall::basic::yield_();
             }
@@ -187,6 +189,7 @@ impl<'a, T: ?Sized, const SPIN: bool> ReadGuardBase<'a, T, SPIN> {
 
             if SPIN {
                 core::hint::spin_loop();
+                panic!("目前我们是单核且无抢占的，自旋永远不会结束，一定是出 bug 了");
             } else {
                 syscall::basic::yield_();
             }
