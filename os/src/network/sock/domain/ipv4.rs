@@ -19,6 +19,10 @@ pub struct IPv4<Proto: ?Sized + SockProtocol> {
     pub address: RwLock<Option<IPv4SockAddr>>,
     pub peer_address: RwLock<Option<IPv4SockAddr>>,
 
+    /// 标记此 socket 是通过 accept() 产生的子 socket，它与监听 socket 共享端口绑定。
+    /// Drop 时不应调用 unbind_socket（绑定由监听 socket 管理）。
+    pub is_accepted: bool,
+
     pub proto: Proto,
 }
 
@@ -68,12 +72,17 @@ impl<Proto: SockProtocol> IPv4<Proto> {
             address: RwLock::new(None),
             peer_address: RwLock::new(None),
             proto,
+            is_accepted: false,
         }
     }
 }
 
 impl<Proto: ?Sized + SockProtocol> Drop for IPv4<Proto> {
     fn drop(&mut self) {
+        if self.is_accepted {
+            // 子 socket 与监听 socket 共享端口绑定，不负责解绑
+            return;
+        }
         if let Some(address) = self.address.get_mut() {
             GLOBAL_NET_NAMESPACE
                 .unbind_socket(address.ipv4_addr().to_ipv6_mapped(), address.port.get());

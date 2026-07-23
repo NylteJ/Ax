@@ -249,7 +249,8 @@ sock_ops! {
                     _zero: Default::default(),
                 };
 
-                let data = IPv4::new(Tcp::with_smol_socket(child));
+                let mut data = IPv4::new(Tcp::with_smol_socket(child));
+                data.is_accepted = true; // 与监听 socket 共享端口绑定，Drop 时不调用 unbind_socket
                 *data.address.write() = Some(local_sockaddr);
                 *data.peer_address.write() = Some(remote_sockaddr);
 

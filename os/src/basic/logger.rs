@@ -5,8 +5,8 @@ pub struct Logger;
 impl log::Log for Logger {
     fn enabled(&self, metadata: &log::Metadata) -> bool {
         // cfg!(debug_assertions) || metadata.level() <= log::Level::Info
-        // false
-        cfg!(debug_assertions)
+        false
+        // cfg!(debug_assertions)
         // true
     }
 
