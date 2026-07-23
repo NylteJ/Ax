@@ -46,7 +46,7 @@ pub fn backtrace_at(mut frame_pointer: *const usize) {
         }
 
         #[cfg(target_arch = "riscv64")]
-        if fp <= crate::memory::address::VIRTUAL_ADDRESS_HIGH_BASE {
+        if fp <= crate::memory::address::VIRTUAL_ADDRESS_HIGH_BASE || fp >= 0xfffffffffffff000 {
             break;
         }
 

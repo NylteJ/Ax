@@ -1,7 +1,7 @@
 use core::{
     ffi::{c_char, c_int, c_long, c_short, c_uchar, c_uint, c_ulong, c_ushort, c_void},
     mem::{MaybeUninit, replace},
-    ptr::{self, NonNull, addr_eq},
+    ptr::{self, NonNull, addr_eq, null_mut},
 };
 
 use alloc::{collections::vec_deque::VecDeque, str, vec::Vec};
@@ -16,6 +16,7 @@ use crate::{
         timer::{get_cpu_tick, us_to_cpu_tick},
     },
     filesystem::{
+        SocketFile,
         devfs::drivers::DeviceId,
         new_anonymous_pipes,
         vfs::{
@@ -576,6 +577,12 @@ pub extern "C" fn getdents64(fd: isize, buf: *mut c_void, len: usize) -> Syscall
 pub extern "C" fn read(fd: isize, buf: *mut c_void, count: usize) -> SyscallResult {
     let file = get_file_from_fd(fd)?;
 
+    // 由于 socket file 的错误码和 VfsError 几乎不兼容，我们选择在这一步转发
+    if SocketFile::from_dyn_file(&file).is_some() {
+        // FIXME: 避免重复查找 file 和转型
+        return super::net::recvfrom(fd, buf, count, 0, null_mut(), null_mut());
+    }
+
     let len = file.data.lock().read(buf as *mut u8, count as u64)?;
 
     SyscallResult::success(len as usize)
@@ -597,6 +604,12 @@ pub extern "C" fn read(fd: isize, buf: *mut c_void, count: usize) -> SyscallResu
 /// ```
 pub extern "C" fn write(fd: isize, buf: *const c_void, count: usize) -> SyscallResult {
     let file = get_file_from_fd(fd)?;
+
+    // 由于 socket file 的错误码和 VfsError 几乎不兼容，我们选择在这一步转发
+    if SocketFile::from_dyn_file(&file).is_some() {
+        // FIXME: 避免重复查找 file 和转型
+        return super::net::send(fd, buf, count, 0);
+    }
 
     let len = file.data.lock().write(buf as *const u8, count as u64)?;
 

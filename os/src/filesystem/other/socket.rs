@@ -46,6 +46,14 @@ impl vfs::FileOps for SocketFile {
         todo!()
     }
 
+    fn read(&mut self, _user_buf: *mut u8, _len: u64) -> VfsResult<u64> {
+        unreachable!("外层会转发到 recv")
+    }
+
+    fn write(&mut self, _user_data: *const u8, _len: u64) -> VfsResult<u64> {
+        unreachable!("外层会转发到 send")
+    }
+
     fn fseek(&mut self, seek_from: vfs::SeekFrom) -> VfsResult<u64> {
         Err(VfsError::IsPipeOrSocket)
     }

@@ -1,6 +1,7 @@
 use core::{
     cmp::min,
-    net::{Ipv4Addr, SocketAddrV4},
+    hint::unreachable_unchecked,
+    net::{Ipv4Addr, Ipv6Addr, SocketAddrV4},
     ops::FromResidual,
     sync::atomic::Ordering,
 };
@@ -12,12 +13,13 @@ use smoltcp::{
         tcp::{ConnectError, ListenError},
         udp::{SendWithError, UdpMetadata},
     },
-    wire::IpAddress,
+    wire::{IpAddress, IpEndpoint},
 };
 
 use crate::{
     memory::uaccess::{copy_from_user, copy_to_user},
     network::{
+        is_addr_unspecified,
         namespace::GLOBAL_NET_NAMESPACE,
         sock::{
             Sock, SockDomain,
@@ -25,6 +27,7 @@ use crate::{
             protocol::Tcp,
         },
         socket::SocketAddress,
+        to_v6_addr,
     },
     syscall::{
         SyscallResult,
@@ -124,7 +127,7 @@ define! {
 
 use crate::syscall::err_codes::*;
 
-fn do_egress(socket: SocketMRef<'_, '_>) -> Option<&'static Sock> {
+fn do_egress(socket: SocketMRef<'_, '_>, established_tcp: bool) -> Option<&'static Sock> {
     use crate::{
         basic::timer::{cpu_tick_to_us, get_cpu_tick},
         devices::DEVICES,
@@ -133,6 +136,8 @@ fn do_egress(socket: SocketMRef<'_, '_>) -> Option<&'static Sock> {
         iface::{EgressError, IngressPacket, Meta, PollIngressSingleResult},
         time::Instant,
     };
+
+    debug_assert!(!established_tcp || matches!(&socket, SocketMRef::Tcp(_)));
 
     let mut iface = DEVICES.network_lo_iface.lock();
     let mut lo = DEVICES.network_lo.lock();
@@ -156,31 +161,42 @@ fn do_egress(socket: SocketMRef<'_, '_>) -> Option<&'static Sock> {
     let mut packet = IngressPacket::new();
     let ingress1_result = iface.poll_ingress_read(timestamp, lo, &mut packet);
     match ingress1_result {
-        PollIngressSingleResult::None => unreachable!("我们刚刚发送了数据"),
+        PollIngressSingleResult::None => {
+            log::warn!("poll_ingress_read 没有返回数据包，原因可能是 egress 选择不实际执行发送");
+            return None;
+        },
         PollIngressSingleResult::PacketProcessed => todo!(),
         PollIngressSingleResult::SocketStateChanged => (),
     }
 
-    let dst_addr = match packet.ip_repr.dst_addr() {
-        IpAddress::Ipv4(ipv4_addr) => ipv4_addr.to_ipv6_mapped(),
-        IpAddress::Ipv6(ipv6_addr) => ipv6_addr,
-    };
-
+    let dst_addr = to_v6_addr(packet.ip_repr.dst_addr());
     let dst_port = packet.dst_port();
 
-    let Some(target_sock) = GLOBAL_NET_NAMESPACE.get_sock(dst_addr, dst_port) else {
+    let dst_sock = if established_tcp {
+        let src_addr = to_v6_addr(packet.ip_repr.src_addr());
+        let src_port = packet.src_port();
+
+        GLOBAL_NET_NAMESPACE.get_established_sock(dst_addr, dst_port, src_addr, src_port)
+    } else {
+        GLOBAL_NET_NAMESPACE.get_bound_sock(dst_addr, dst_port)
+    };
+
+    let Some(dst_sock) = dst_sock else {
         log::warn!("没有为数据包找到目标地址（{dst_addr}:{dst_port}）");
         log::error!("TODO: 回馈端口不可达");
+        todo!();
         return None;
     };
 
-    target_sock.ops.ingress_deliver(target_sock, &mut |socket| {
+    dst_sock.ops.ingress_deliver(dst_sock, &mut |socket| {
         iface.poll_ingress_deliver(lo, &packet, socket)
     });
 
+    GLOBAL_NET_NAMESPACE.wait_queue.wake_all();
+
     use smoltcp::phy::Device;
     debug_assert!(lo.receive(Instant::ZERO).is_none());
-    Some(target_sock)
+    Some(dst_sock)
 }
 
 fn get_emphemeral_v4addr() -> Result<IPv4SockAddr, SyscallResult> {
@@ -195,6 +211,64 @@ fn get_emphemeral_v4addr() -> Result<IPv4SockAddr, SyscallResult> {
 }
 
 sock_ops! {
+    private: {
+        /// 立即从 smoltcp 的 backlog 中取出所有完成握手的子 socket，
+        /// 包装为内核 Sock，注册到 established 表并放入 accept_queue。
+        fn eager_accept_children(this: &This) {
+            let tcp = &this.data.proto;
+            let mut smol_socket = tcp.smol_socket.write();
+            let mut extracted = alloc::vec::Vec::new();
+            while let Some(child) = smol_socket.accept() {
+                extracted.push(child);
+            }
+            drop(smol_socket);
+
+            for mut child in extracted {
+                // 扩展缓冲区，与 Tcp::new() 中的设置保持一致
+                child.set_rx_max_capacity(128 * 1024);
+                child.set_tx_max_capacity(64 * 1024);
+
+                let local = child.local_endpoint().unwrap();
+                let remote = child.remote_endpoint().unwrap();
+
+                let smoltcp::wire::IpAddress::Ipv4(local_addr) = local.addr else {
+                    todo!("IPv6")
+                };
+                let smoltcp::wire::IpAddress::Ipv4(remote_addr) = remote.addr else {
+                    todo!("IPv6")
+                };
+
+                let local_sockaddr = IPv4SockAddr {
+                    port: local.port.into(),
+                    addr: u32::from_be_bytes(local_addr.octets()).into(),
+                    _zero: Default::default(),
+                };
+                let remote_sockaddr = IPv4SockAddr {
+                    port: remote.port.into(),
+                    addr: u32::from_be_bytes(remote_addr.octets()).into(),
+                    _zero: Default::default(),
+                };
+
+                let data = IPv4::new(Tcp::with_smol_socket(child));
+                *data.address.write() = Some(local_sockaddr);
+                *data.peer_address.write() = Some(remote_sockaddr);
+
+                let new_sock = Sock::new(my_ops!(), data);
+
+                unsafe {
+                    GLOBAL_NET_NAMESPACE.register_established(
+                        &new_sock,
+                        local_addr.to_ipv6_mapped(),
+                        local.port,
+                        remote_addr.to_ipv6_mapped(),
+                        remote.port,
+                    );
+                }
+
+                tcp.push_accept(new_sock);
+            }
+        }
+    }
     static TCP4_OPS = unsafe impl for super::Tcp4Sock {
         fn bind_part_2(&_this) -> SyscallResult {
             // smoltcp 的绑定操作是在 connect / listen 中进行的，因此这里什么都不用做
@@ -223,13 +297,16 @@ sock_ops! {
         }
 
         fn accept(&this) -> Result<Box<Sock>, SyscallResult> {
-            let new_sock = this.data.proto.smol_socket.write().accept().ok_or(E_SPECIAL_NET_RETRY)?;
+            // 先尝试从 smoltcp backlog 中取出可能已完成的连接
+            //（处理 accept 在 ingress_deliver 之前被调用的情况）
+            eager_accept_children(this);
 
-            Ok(Sock::new(my_ops!(), IPv4::new(Tcp::with_smol_socket(new_sock))))
+            // 从内核的 accept 队列中取出
+            this.data.proto.pop_accept().ok_or(E_SPECIAL_NET_RETRY)
         }
 
         fn connect(&this) -> SyscallResult {
-            let local_addr = if let Some(local_addr) = { *this.data.address.read() } {
+            let local_saddr = if let Some(local_addr) = { *this.data.address.read() } {
                 local_addr
             } else {
                 let v4addr = get_emphemeral_v4addr()?;
@@ -240,18 +317,21 @@ sock_ops! {
                 v4addr
             };
 
-            let mut local_v4addr = local_addr.ipv4_addr();
+            let mut local_v4addr = local_saddr.ipv4_addr();
             if local_v4addr.is_unspecified() {
                 local_v4addr = Ipv4Addr::LOCALHOST;
             }
-            let local_endpoint = SocketAddrV4::new(local_v4addr, local_addr.port.get());
+            let local_port = local_saddr.port.get();
+            let local_endpoint = SocketAddrV4::new(local_v4addr, local_port);
+
+            let remote_addr = this.data.peer_address.read().expect("part 1 会完成这部分");
 
             // FIXME: 支持非回环设备后这里要改
             let mut smol_socket = this.data.proto.smol_socket.write();
 
             let connect_result = smol_socket.connect(
                 crate::devices::DEVICES.network_lo_iface.lock().context(),
-                this.data.peer_address.read().expect("part 1 会完成这部分").to_endpoint(),
+                remote_addr.to_endpoint(),
                 local_endpoint,
             );
 
@@ -264,7 +344,7 @@ sock_ops! {
             debug_assert_eq!(smol_socket.state(), smoltcp::socket::tcp::State::SynSent);
 
             // 1. 我方首先发送 SYN，同时对端接收到 SYN
-            let target_sock = do_egress(SocketMRef::Tcp(&mut smol_socket)).expect("TODO");
+            let target_sock = do_egress(SocketMRef::Tcp(&mut smol_socket), false).expect("TODO");
             let target_sock = try_cast_to_this(target_sock).expect("do_egress 应当验证这一步");
             let mut target_smol_socket = target_sock.data.proto.smol_socket.write();
 
@@ -272,15 +352,36 @@ sock_ops! {
 
             // 2. 对端发送 SYN+ACK，我方接收到 SYN+ACK 并变为 Established
             drop(smol_socket);
-            let this_sock = do_egress(SocketMRef::Tcp(&mut target_smol_socket));
+            let this_sock = do_egress(SocketMRef::Tcp(&mut target_smol_socket), false);
             debug_assert!(this_sock.is_some_and(|s| core::ptr::addr_eq(s, this)));
             let mut smol_socket = this.data.proto.smol_socket.write();
             debug_assert_eq!(smol_socket.state(), smoltcp::socket::tcp::State::Established);
 
             // 3. 我方发送 ACK，对端接收到 ACK 并变为 Established
+            //    对端（子 socket）通过 ingress_deliver 中的 eager accept 自动提取、
+            //    注册到 established 表并放入 accept_queue；无需再手动注册。
             drop(target_smol_socket);
-            let target_sock_ = do_egress(SocketMRef::Tcp(&mut smol_socket));
+            let target_sock_ = do_egress(SocketMRef::Tcp(&mut smol_socket), false);
             debug_assert!(target_sock_.is_some_and(|s| core::ptr::addr_eq(s, target_sock)));
+
+            // 4. 将变为 Established 的我方注册到哈希表中
+            let local_addr = local_v4addr.to_ipv6_mapped();
+            let remote_port = remote_addr.port.get();
+            let remote_addr = remote_addr.ipv4_addr().to_ipv6_mapped();
+            unsafe {
+                GLOBAL_NET_NAMESPACE.register_established(
+                    this,
+                    local_addr,
+                    local_port,
+                    remote_addr,
+                    remote_port,
+                )
+            };
+
+            // debug_assert_eq!(smol_socket.local_endpoint(), this.data.address.read().map(|a| a.to_endpoint()));
+            // debug_assert_eq!(smol_socket.remote_endpoint(), this.data.peer_address.read().map(|a| a.to_endpoint()));
+            // debug_assert_eq!(target_sock.data.proto.smol_socket.read().local_endpoint(), target_sock.data.address.read().map(|a| a.to_endpoint()));
+            // debug_assert_eq!(target_sock.data.proto.smol_socket.read().remote_endpoint(), target_sock.data.peer_address.read().map(|a| a.to_endpoint()));
 
             SyscallResult::success(0)
         }
@@ -297,15 +398,15 @@ sock_ops! {
             let result = this.data.proto.smol_socket.write().recv(|data| {
                 let size = min(size, data.len());
                 let copy_result = copy_to_user(buf, &data[..size]);
-                if copy_result.is_ok() {
-                    crate::println!("recved: {:?}", crate::basic::bstr::ByteStr::from_bytes(&data[..size]));
-                }
+                // if copy_result.is_ok() {
+                //     log::trace!("recved: {:?}", crate::basic::bstr::ByteStr::from_bytes(&data[..size]));
+                // }
                 match copy_result {
                     Ok(()) => (size, Ok(size)),
                     Err(err) => (0, Err(err)),
                 }
             });
-            
+
             use smoltcp::socket::tcp::RecvError;
             let written = match result {
                 Ok(Ok(0)) => return E_SPECIAL_NET_RETRY,
@@ -319,7 +420,7 @@ sock_ops! {
                 let addr = this.data.peer_address.read().expect("已经 connect 的 TCP socket 不应该没有对端地址");
                 copy_sockaddr_to_user(src_addr, addrlen, Domain::INET, &addr)?;
             }
-            
+
             SyscallResult::success(written)
         }
 
@@ -332,7 +433,7 @@ sock_ops! {
             use smoltcp::socket::tcp::SendAllError;
             match send_result {
                 Ok(written) => {
-                    do_egress(SocketMRef::Tcp(&mut smol_socket));
+                    do_egress(SocketMRef::Tcp(&mut smol_socket), true);
 
                     SyscallResult::success(written)
                 },
@@ -344,6 +445,8 @@ sock_ops! {
 
         fn ingress_deliver(&this, func: &mut dyn FnMut(SocketMRef<'_, '_>)) {
             func(SocketMRef::Tcp(&mut this.data.proto.smol_socket.write()));
+            // 立即取出所有完成握手的子 socket
+            eager_accept_children(this);
         }
     }
 }
@@ -405,7 +508,7 @@ sock_ops! {
                 );
 
                 if result.is_ok() {
-                    do_egress(SocketMRef::Udp(&mut smol_sock_guard));
+                    do_egress(SocketMRef::Udp(&mut smol_sock_guard), false);
                 }
 
                 result
