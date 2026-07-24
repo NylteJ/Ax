@@ -206,7 +206,7 @@ fn main() -> isize {
                 b"ln -s /sdcd/musl/busybox /bin/busybox;",
                 // ===================================================
 
-                group!(nobanner at b"glibc" shell b"cagent_testcode_debug.sh"),
+                b"sh /cagent_fulltest.sh;",
 
                 // ===================================================
                 // group!(b"basic-musl" at b"musl/basic" shell b"run-all.sh"),

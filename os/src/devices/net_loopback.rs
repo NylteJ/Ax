@@ -6,7 +6,7 @@ pub struct NetLoopbackDevice {
     queue: VecDeque<Box<[u8]>>,
 }
 
-const LOOPBACK_MTU: usize = 65536;
+const LOOPBACK_MTU: usize = 1500;
 
 impl NetLoopbackDevice {
     pub fn new() -> Self {

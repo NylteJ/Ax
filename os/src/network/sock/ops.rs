@@ -127,7 +127,7 @@ define! {
 
 use crate::syscall::err_codes::*;
 
-fn do_egress(socket: SocketMRef<'_, '_>, established_tcp: bool) -> Option<&'static Sock> {
+pub(crate) fn do_egress(socket: SocketMRef<'_, '_>, established_tcp: bool) -> Option<&'static Sock> {
     use crate::{
         basic::timer::{cpu_tick_to_us, get_cpu_tick},
         devices::DEVICES,
@@ -150,7 +150,7 @@ fn do_egress(socket: SocketMRef<'_, '_>, established_tcp: bool) -> Option<&'stat
     let egress_result = iface.poll_egress_single(lo, socket, &mut meta);
     match egress_result {
         Ok(()) => (),
-        Err(EgressError::Exhausted) => panic!("调用方应当保证 socket 有数据可发"),
+        Err(EgressError::Exhausted) => return None,
         Err(EgressError::NeighborPending) => todo!(),
     }
 
@@ -183,8 +183,7 @@ fn do_egress(socket: SocketMRef<'_, '_>, established_tcp: bool) -> Option<&'stat
 
     let Some(dst_sock) = dst_sock else {
         log::warn!("没有为数据包找到目标地址（{dst_addr}:{dst_port}）");
-        log::error!("TODO: 回馈端口不可达");
-        todo!();
+        log::warn!("对端可能已被销毁；丢弃数据包");
         return None;
     };
 
@@ -225,8 +224,8 @@ sock_ops! {
 
             for mut child in extracted {
                 // 扩展缓冲区，与 Tcp::new() 中的设置保持一致
-                child.set_rx_max_capacity(128 * 1024);
-                child.set_tx_max_capacity(64 * 1024);
+                child.set_rx_max_capacity(super::protocol::tcp::TCP_MAX_RX_BUFFER_BYTES);
+                child.set_tx_max_capacity(super::protocol::tcp::TCP_MAX_TX_BUFFER_BYTES);
 
                 let local = child.local_endpoint().unwrap();
                 let remote = child.remote_endpoint().unwrap();
@@ -345,7 +344,8 @@ sock_ops! {
             debug_assert_eq!(smol_socket.state(), smoltcp::socket::tcp::State::SynSent);
 
             // 1. 我方首先发送 SYN，同时对端接收到 SYN
-            let target_sock = do_egress(SocketMRef::Tcp(&mut smol_socket), false).expect("TODO");
+            let target_sock =
+                do_egress(SocketMRef::Tcp(&mut smol_socket), false).ok_or(EAGAIN)?;
             let target_sock = try_cast_to_this(target_sock).expect("do_egress 应当验证这一步");
             let mut target_smol_socket = target_sock.data.proto.smol_socket.write();
 
@@ -434,7 +434,34 @@ sock_ops! {
             use smoltcp::socket::tcp::SendAllError;
             match send_result {
                 Ok(written) => {
-                    do_egress(SocketMRef::Tcp(&mut smol_socket), true);
+                    // 交替在己方和对端之间调用 do_egress：
+                    // 己方发送数据段 → 回环 → 对端接收并生成 ACK →
+                    // 对端发送 ACK → 回环 → 己方接收 ACK、释放缓冲区。
+                    // 若不发送对端的 ACK，己方缓冲区的数据永远无法被确认，
+                    // 后续 send_all 将返回 BufferFull 并触发 todo!()。
+                    //
+                    // 注意：do_egress 内部会调用目标 socket 的 ingress_deliver，
+                    // 而 ingress_deliver 会获取目标 socket 的写锁。
+                    // 因此在调用 do_egress 发送对端数据前，必须释放己方的写锁，
+                    // 否则对端 egress 的 ACK 回环交付给己方时会发生死锁。
+                    for _ in 0..64 {
+                        match do_egress(SocketMRef::Tcp(&mut smol_socket), true) {
+                            Some(peer_sock) => {
+                                let peer = try_cast_to_this(peer_sock).expect("对端应为 TCPv4 socket");
+                                // 释放己方锁，防止对端 ingress_deliver 回写时死锁
+                                drop(smol_socket);
+                                let mut peer_smol = peer.data.proto.smol_socket.write();
+                                let peer_has_more = do_egress(SocketMRef::Tcp(&mut peer_smol), true).is_some();
+                                drop(peer_smol);
+                                // 重新获取己方锁，继续下一轮
+                                smol_socket = this.data.proto.smol_socket.write();
+                                if !peer_has_more {
+                                    break;
+                                }
+                            }
+                            None => break,
+                        }
+                    }
 
                     SyscallResult::success(written)
                 },

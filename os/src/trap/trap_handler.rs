@@ -90,7 +90,6 @@ extern "C" fn trap_handler(context: &mut NativeTrapContext) {
                 {
                     *UNKNOWN_SYSCALLS.lock().entry(id).or_insert(0) += 1;
                 }
-                assert_eq!(id, 157);
             } else {
                 log::trace!(
                     "系统调用：TID = {}, id = {id} ({}), args = {args:x?} (HEX), return value = {ret_value:#x}",

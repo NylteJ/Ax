@@ -962,8 +962,18 @@ impl<'a> Socket<'a> {
 
     /// Create a new socket suitable for holding a backlog connection.
     fn create_backlog_entry(&self) -> Socket<'a> {
-        let rx_buf = RingBuffer::new(vec![0u8; DEFAULT_MSS]);
-        let tx_buf = RingBuffer::new(vec![0u8; DEFAULT_MSS]);
+        // Use a modest initial buffer to avoid zero-window while keeping memory low.
+        // Buffers can grow up to max capacity if the peer sends data before accept().
+        // After accept(), the kernel's eager_accept_children overrides these limits.
+        const BACKLOG_INITIAL_BUFFER_BYTES: usize = 8192;
+        const BACKLOG_MAX_BUFFER_BYTES: usize = 65536;
+
+        let mut rx_buf = RingBuffer::new(vec![0u8; BACKLOG_INITIAL_BUFFER_BYTES]);
+        let mut tx_buf = RingBuffer::new(vec![0u8; BACKLOG_INITIAL_BUFFER_BYTES]);
+
+        rx_buf.set_max_capacity(BACKLOG_MAX_BUFFER_BYTES);
+        tx_buf.set_max_capacity(BACKLOG_MAX_BUFFER_BYTES);
+
         let mut child = Socket::new(rx_buf, tx_buf);
 
         child.listen_endpoint = self.listen_endpoint;
