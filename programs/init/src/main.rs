@@ -161,7 +161,8 @@ fn main() -> isize {
         return -1;
     }
 
-    if fork() == 0 {
+    let child_pid = fork();
+    if child_pid == 0 {
         // 子进程，运行终端
 
         macro_rules! group {
@@ -197,31 +198,25 @@ fn main() -> isize {
             };
         }
 
+        #[cfg(target_arch = "riscv64")]
         let argv: [*const u8; 5] = [
-            b"/sdcd/musl/busybox\0".as_ptr(),
+            b"/bin/busybox\0".as_ptr(),
             b"sh\0".as_ptr(),
             b"-c\0".as_ptr(),
             concat_bytes!(
-                b"/sdcd/musl/busybox --install -s /bin;",
-                b"ln -s /sdcd/musl/busybox /bin/busybox;",
-                // ===================================================
-
-                b"sh /cagent_fulltest.sh;",
-
-                // ===================================================
-                // group!(b"basic-musl" at b"musl/basic" shell b"run-all.sh"),
-                // group!(b"basic-glibc" at b"glibc/basic" shell b"run-all.sh"),
-                // group!(nobanner at b"musl" shell b"busybox_testcode.sh"),
-                // group!(nobanner at b"glibc" shell b"busybox_testcode.sh"),
-                // group!(nobanner at b"musl" shell b"libcbench_testcode.sh"),
-                // group!(nobanner at b"glibc" shell b"libcbench_testcode.sh"),
-                // group!(nobanner at b"musl" shell b"lua_testcode.sh"),
-                // group!(nobanner at b"glibc" shell b"lua_testcode.sh"),
-                // group!(b"libctest-musl" at b"musl" shell b"run-static.sh", b"run-dynamic.sh"),
-                // // group!(b"libctest-glibc" at b"glibc" shell b"run-static.sh", b"run-dynamic.sh"),
-                // // ===================================================
-                // b"/sdcd/musl/busybox sh /ltp.sh;",
-                // // ===================================================
+                b"/bin/busybox sh /cagent_fulltest.sh;",
+                b'\0',
+            )
+            .as_ptr(),
+            core::ptr::null(),
+        ];
+        #[cfg(target_arch = "loongarch64")]
+        let argv: [*const u8; 5] = [
+            b"/bin/busybox-la\0".as_ptr(),
+            b"sh\0".as_ptr(),
+            b"-c\0".as_ptr(),
+            concat_bytes!(
+                b"/bin/busybox-la sh /cagent_fulltest.sh;",
                 b'\0',
             )
             .as_ptr(),
@@ -233,16 +228,10 @@ fn main() -> isize {
         return fail_code;
     }
 
+    // Wait for the shell child to exit, then shut down
     let mut status: usize = 0xBADC0DE;
-    loop {
-        let ret = syscall!(260, -1, &mut status, 0) as isize;
-        if ret > 0 {
-            // println!("init 进程回收了 {ret}, status: {:#04x}", status);
-            if ret == 1 {
-                return 0; // FIXME: temp
-            }
-        }
-    }
+    syscall!(260, child_pid, &mut status, 0);
+    return 0;
 }
 
 #[panic_handler]

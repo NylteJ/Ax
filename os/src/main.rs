@@ -240,7 +240,7 @@ pub extern "C" fn main(_: usize, dtb: PhysAddr) -> ! {
         let block_device_1 = &*DEVICES.block[0];
         let block_device_2 = &*DEVICES.block[1];
 
-        const ROOT_BLOCK_COUNT: u64 = 8192;
+        const ROOT_BLOCK_COUNT: u64 = 20480; // 10 MiB
 
         let (root_device, sdcard_device) = if block_device_1.block_count() == ROOT_BLOCK_COUNT {
             log::info!("已选定块设备 1 作为根文件系统");

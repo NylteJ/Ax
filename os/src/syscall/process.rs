@@ -734,6 +734,25 @@ pub extern "C" fn setpgid(pid: usize, mut pgid: usize) -> SyscallResult {
     SyscallResult::success(0)
 }
 
+/// 创建一个新会话（session），调用进程成为会话领导者（session leader）。
+/// 调用进程不能是进程组领导者。新会话的 ID 设为调用进程的 PID，
+/// 同时创建一个新的进程组，其 ID 也设为调用进程的 PID。
+pub extern "C" fn setsid() -> SyscallResult {
+    let task = cur_task();
+    let pid = task.process.pid;
+
+    // 如果调用进程已经是进程组领导者，返回 EPERM
+    if task.process.pgid.load(core::sync::atomic::Ordering::Relaxed) == pid {
+        return EPERM;
+    }
+
+    // 设置新的会话 ID 和进程组 ID
+    task.process.sid.store(pid, core::sync::atomic::Ordering::Relaxed);
+    task.process.pgid.store(pid, core::sync::atomic::Ordering::Relaxed);
+
+    SyscallResult::success(pid)
+}
+
 pub extern "C" fn getpgid(pid: usize) -> SyscallResult {
     let task = if pid == 0 {
         cur_task()

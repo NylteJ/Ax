@@ -277,8 +277,13 @@ pub extern "C" fn listen(sockfd: isize, backlog: isize) -> SyscallResult {
 
     let backlog = (backlog as u32).clamp(1, MAX_BACKLOG);
 
+    log::info!("[listen] sockfd={sockfd}, backlog={backlog}, socket_type={:?}", socket.socket_type);
     match socket.socket_type {
-        SocketType::STREAM | SocketType::SEQPACKET => socket.sock.ops.listen(&socket.sock, backlog),
+        SocketType::STREAM | SocketType::SEQPACKET => {
+            let ret = socket.sock.ops.listen(&socket.sock, backlog);
+            log::info!("[listen] done");
+            ret
+        }
         _ => EOPNOTSUPP,
     }
 }

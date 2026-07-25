@@ -3,11 +3,8 @@ use crate::println;
 pub struct Logger;
 
 impl log::Log for Logger {
-    fn enabled(&self, metadata: &log::Metadata) -> bool {
-        // cfg!(debug_assertions) || metadata.level() <= log::Level::Info
+    fn enabled(&self, _metadata: &log::Metadata) -> bool {
         false
-        // cfg!(debug_assertions)
-        // true
     }
 
     fn log(&self, record: &log::Record) {
