@@ -37,7 +37,7 @@ pub fn init() {
     const MAX_LEVEL: log::LevelFilter = if cfg!(debug_assertions) {
         log::LevelFilter::Trace
     } else {
-        log::LevelFilter::Info
+        log::LevelFilter::Debug
     };
 
     unsafe { log::set_logger_racy(&Logger) }.unwrap();
