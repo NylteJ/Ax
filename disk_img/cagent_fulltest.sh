@@ -1,14 +1,5 @@
 #!/bin/sh
-# Detect architecture: try RISC-V busybox, fall back to LoongArch
-if /bin/busybox true 2>/dev/null; then
-    BB=/bin/busybox
-    AGENT=/bin/agent_lite
-    SERVER=/bin/simple_llm_server
-else
-    BB=/bin/busybox-la
-    AGENT=/bin/agent_lite-la
-    SERVER=/bin/simple_llm_server-la
-fi
+BB=/bin/busybox
 export PATH=/bin
 # Clean up leftover files from previous runs first
 cd /sdcd/glibc
@@ -17,14 +8,14 @@ $BB rm -rf /tmp/_cagent_fsdir 2>/dev/null
 
 $BB echo "#### OS COMP TEST GROUP START cagent-glibc ####"
 
-$SERVER 8080 &
+/bin/simple_llm_server 8080 &
 SERVER_PID=$!
 $BB sleep 1
 
 run_test() {
     local test_name="$1"; local prompt="$2"; local validation="$3"; local timeout="${4:-30}"
     local output_file="/tmp/cagent_${test_name}_$$"
-    $BB timeout ${timeout}s $AGENT --workspace . --host 127.0.0.1 --port 8080 "$prompt" > "$output_file" 2>&1
+    $BB timeout ${timeout}s /bin/agent_lite --workspace . --host 127.0.0.1 --port 8080 "$prompt" > "$output_file" 2>&1
     local exit_code=$?
     local success=0
     if [ $exit_code -eq 0 ] && eval "$validation" < "$output_file"; then success=1; fi

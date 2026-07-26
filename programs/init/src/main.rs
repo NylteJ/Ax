@@ -212,11 +212,11 @@ fn main() -> isize {
         ];
         #[cfg(target_arch = "loongarch64")]
         let argv: [*const u8; 5] = [
-            b"/bin/busybox-la\0".as_ptr(),
+            b"/bin/busybox\0".as_ptr(),
             b"sh\0".as_ptr(),
             b"-c\0".as_ptr(),
             concat_bytes!(
-                b"/bin/busybox-la sh /cagent_fulltest.sh;",
+                b"/bin/busybox sh /cagent_fulltest.sh;",
                 b'\0',
             )
             .as_ptr(),

@@ -535,25 +535,41 @@ fn walk_path_impl(path: PathToWalk, follow_last: bool, symlink_count: u8) -> Vfs
             // );
 
             Path(mnt_to, mnt)
-        } else if let Some(symlink_count) = symlink_count
-        && let Some(inode) = &dentry.data.lock().inode // FIXME: 竞态
-        && let inode_data = inode.data.read()
-            && inode_data.mode.kind() == INodeMode::SymbolLink
-        {
-            const SYMLINK_MAX: u8 = 32;
+        } else if let Some(symlink_count) = symlink_count {
+            // Must drop the dentry lock before recursing into walk_path_impl,
+            // otherwise a symlink that resolves back into the same directory
+            // tree will deadlock when walk_step tries to lock the same DEntry.
+            let is_symlink = dentry
+                .data
+                .lock()
+                .inode
+                .as_ref()
+                .is_some_and(|inode| {
+                    inode.data.read().mode.kind() == INodeMode::SymbolLink
+                });
 
-            if symlink_count >= SYMLINK_MAX {
-                return Err(VfsError::TooManyLinks);
-            }
+            if is_symlink {
+                const SYMLINK_MAX: u8 = 32;
 
-            let target = inode_data.read_symlink()?;
-            let ptw = PathToWalk::auto(&target, || cur_path.clone())?;
+                if symlink_count >= SYMLINK_MAX {
+                    return Err(VfsError::TooManyLinks);
+                }
 
-            let walked = walk_path_impl(ptw, true, symlink_count + 1)?;
+                let target = {
+                    let dentry_data = dentry.data.lock();
+                    let inode = dentry_data.inode.as_ref().unwrap();
+                    inode.data.read().read_symlink()?
+                };
+                let ptw = PathToWalk::auto(&target, || cur_path.clone())?;
 
-            match walked {
-                WalkedPath::Positive(path) => return Ok((true, path)),
-                WalkedPath::Negative(npath) => return Ok((false, npath.0)),
+                let walked = walk_path_impl(ptw, true, symlink_count + 1)?;
+
+                match walked {
+                    WalkedPath::Positive(path) => return Ok((true, path)),
+                    WalkedPath::Negative(npath) => return Ok((false, npath.0)),
+                }
+            } else {
+                Path(dentry, cur_path.1.clone())
             }
         } else {
             Path(dentry, cur_path.1.clone())
