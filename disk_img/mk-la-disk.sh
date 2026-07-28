@@ -14,4 +14,4 @@ for app in sh rm ls cat cp mv mkdir touch chmod echo grep sed awk wc date timeou
     ln -sf busybox-la "$app"
 done
 cd "$OLDPWD"
-mkfs.ext4 -F -O ^dir_index -d "$LA_SRC" disk-la.img 10M
+mkfs.ext4 -F -O "^dir_index,^metadata_csum,^64bit,^flex_bg" -d "$LA_SRC" disk-la.img 25M

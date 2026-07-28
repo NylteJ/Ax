@@ -244,7 +244,7 @@ pub extern "C" fn main(_: usize, dtb: PhysAddr) -> ! {
         #[cfg(target_arch = "riscv64")]
         const ROOT_BLOCK_COUNT: u64 = 10240; // 5 MiB
         #[cfg(target_arch = "loongarch64")]
-        const ROOT_BLOCK_COUNT: u64 = 20480; // 10 MiB
+        const ROOT_BLOCK_COUNT: u64 = 51200; // 25 MiB
 
         let (root_device, sdcard_device) = if block_device_1.block_count() == ROOT_BLOCK_COUNT {
             log::info!("已选定块设备 1 作为根文件系统");

@@ -228,7 +228,12 @@ fn main() -> isize {
         return fail_code;
     }
 
-    // Wait for the shell child to exit, then shut down
+    // Block until shell child exits. The test script uses 'wait' which
+    // blocks on the background server, so the child may never exit.
+    // We use a blocking waitpid — test results are printed before the
+    // script reaches 'wait', so they appear on console. The kernel
+    // has a preemptive scheduler so other processes get CPU time
+    // while init blocks here.
     let mut status: usize = 0xBADC0DE;
     syscall!(260, child_pid, &mut status, 0);
     return 0;
