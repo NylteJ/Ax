@@ -9,6 +9,7 @@ use crate::{
 mod basic;
 mod chrono;
 mod regs;
+mod smp;
 mod trap;
 mod uaccess_raw;
 
@@ -20,6 +21,7 @@ unsafe impl Arch for LoongArch64 {
     type Regs = regs::Regs;
     type Basic = basic::Basic;
     type Chrono = chrono::Chrono;
+    type Smp = smp::SmpImpl;
     type UAccessRaw = uaccess_raw::UAccessRaw;
     type Trap = trap::Trap;
 

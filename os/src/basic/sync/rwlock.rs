@@ -45,8 +45,9 @@ impl<T: ?Sized, const SPIN: bool> RwLockBase<T, SPIN> {
             }
 
             if SPIN {
+                // 内核态无抢占（自旋锁临界区内不会发生任务切换），因此持锁者要么在另一个核上
+                // 运行并即将释放锁，要么就是死锁
                 core::hint::spin_loop();
-                panic!("目前我们是单核且无抢占的，自旋永远不会结束，一定是出 bug 了");
             } else {
                 syscall::basic::yield_();
             }
@@ -78,8 +79,9 @@ impl<T: ?Sized, const SPIN: bool> RwLockBase<T, SPIN> {
             .is_err()
         {
             if SPIN {
+                // 内核态无抢占（自旋锁临界区内不会发生任务切换），因此持锁者要么在另一个核上
+                // 运行并即将释放锁，要么就是死锁
                 core::hint::spin_loop();
-                panic!("目前我们是单核且无抢占的，自旋永远不会结束，一定是出 bug 了");
             } else {
                 syscall::basic::yield_();
             }
@@ -188,8 +190,9 @@ impl<'a, T: ?Sized, const SPIN: bool> ReadGuardBase<'a, T, SPIN> {
             }
 
             if SPIN {
+                // 内核态无抢占（自旋锁临界区内不会发生任务切换），因此持锁者要么在另一个核上
+                // 运行并即将释放锁，要么就是死锁
                 core::hint::spin_loop();
-                panic!("目前我们是单核且无抢占的，自旋永远不会结束，一定是出 bug 了");
             } else {
                 syscall::basic::yield_();
             }

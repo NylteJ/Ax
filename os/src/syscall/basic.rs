@@ -6,6 +6,7 @@ use crate::{
     basic::{
         cleanup_and_shutdown,
         shared_with_asm::SharedWithAsm,
+        sync::SpinMutex,
         timer::{
             check_all_timers, cpu_tick_to_us, get_cpu_tick, get_itimer_real, set_itimer_real,
             us_to_cpu_tick,
@@ -25,10 +26,29 @@ use crate::{
 
 use crate::syscall::err_codes::*;
 
+/// 已退出但尚未被回收的任务。见 [`exit_kernel`]。
+static EXITED_TASKS: SpinMutex<alloc::vec::Vec<TaskArc>> = SpinMutex::new(alloc::vec::Vec::new());
+
+/// 回收所有已经退出且不在任何 CPU 上运行的任务的内存。
+///
+/// 注意：不能在自身仍在其栈/页表上运行时回收自身，因此本函数只回收先前退出
+/// （已被放入 [`EXITED_TASKS`]）的任务。
+fn reclaim_exited_tasks() {
+    while let Some(task) = EXITED_TASKS.lock().pop() {
+        log::trace!("回收已退出的 Task {}", task.tid);
+        drop(task);
+    }
+}
+
 pub fn exit_kernel(ec: isize, signal: SignalId) -> ! {
     log::trace!("Task {} exited with code {1} ({1:#x}).", cur_task().tid, ec);
 
     let cur = unsafe { TaskArc::from_asm(current_task()) };
+
+    // 先回收先前已退出的任务（它们的内存已经可以安全释放）。
+    // 注意不能在此时回收自身：我们还在自己的内核栈和页表上运行，
+    // 多核环境下释放后其内存可能被其它核立即复用。
+    reclaim_exited_tasks();
 
     // FIXME: temp
     #[cfg(debug_assertions)]
@@ -62,15 +82,31 @@ pub fn exit_kernel(ec: isize, signal: SignalId) -> ! {
 
     cur.on_exit(signal, ec as u8);
 
-    let Some(next_task) = TASK_SCHEDULER.lock().pick_next() else {
-        log::info!("所有用户程序运行完毕，关机");
+    let next_task = {
+        let mut scheduler = TASK_SCHEDULER.lock();
+        scheduler.pick_next().or_else(|| {
+            // SMP：调度器为空只说明当前核没有可运行的任务，其它核可能仍在运行任务，
+            // 因此切换到本核的空闲任务而不是关机（init 进程退出时上方已经直接关机了）
+            crate::basic::per_cpu::IDLE_TASKS
+                .lock()
+                .get(crate::basic::per_cpu::current_cpu_id())
+                .and_then(|slot| slot.as_ref())
+                .map(TaskArc::clone)
+                .or_else(|| {
+                    log::info!("所有用户程序运行完毕，关机");
+                    None
+                })
+        })
+    };
+    let Some(next_task) = next_task else {
         cleanup_and_shutdown();
     };
 
-    // 注意只在不关机时 drop 当前任务，因为现在使用的页表还是当前任务的页表，drop 掉了其内存就可能被重用（特别注意线程在销毁前不需要 wait），
-    // 导致清理任务出现各种问题。实际上连目前我们所在的内核栈都有可能被重用。
-    // 不关机时 drop 因为下一步就是 switch_to，它不进行内存分配，所以没问题
-    drop(cur);
+    // 注意这里不能像单核时那样在切换前 drop 当前任务：现在使用的页表还是当前任务的页表，
+    // 而且我们就在其内核栈上运行，多核环境下 drop 后其内存可能被其它核立即复用。
+    // 因此把自身放入延迟回收队列，交给下一次 exit 的 `reclaim_exited_tasks` 回收
+    // （那时我们已经切换到了其它任务的内核栈上）。
+    EXITED_TASKS.lock().push(cur);
 
     Task::switch_to(next_task);
     unreachable!();

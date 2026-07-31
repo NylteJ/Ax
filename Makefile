@@ -130,7 +130,8 @@ check: clean
 	}
 
 MEMORY ?= 1024M
-SMP ?= 1
+# 默认开启 SMP（多核），内核的 MAX_CPUS 为 8，此值不应超过 8
+SMP ?= 4
 
 RV_QEMU_CMD_BASE := \
 	qemu-system-riscv64 \

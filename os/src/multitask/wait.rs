@@ -8,7 +8,7 @@ use crate::{
         sync::SpinMutex,
         timer::{get_cpu_tick, us_to_cpu_tick, wake_task_when},
     },
-    multitask::{cur_task, current_task, signal::SignalId, task::Task},
+    multitask::{cur_task, current_task, signal::SignalId, task::{Task, TaskState}},
 };
 
 #[derive(Debug)]
@@ -104,6 +104,11 @@ impl Waiting {
     }
 
     pub fn wait(&mut self, queue: &WaitQueue) {
+        // 注意：必须先把自己标记为睡眠，再放入等待队列。
+        // 这样唤醒者（`try_wake`，同样在遍历队列时执行）只会看到已经处于睡眠状态的我们，
+        // 避免 SMP 下“唤醒发生在标记睡眠之前”导致唤醒丢失。
+        Task::mark_sleep(TaskState::Sleeping);
+
         let entry = Box::new(WaitEntry {
             task: current_task(),
             queue_node: LinkedListLink::new(),
@@ -118,6 +123,9 @@ impl Waiting {
     }
 
     pub fn sleep(&mut self) -> Result<(), SleepError> {
+        // 这里再标记一次是幂等的（`do_sleep` 允许重复标记），
+        // 用于覆盖没有调用 `wait` 的睡眠（例如 sigsuspend）
+        Task::mark_sleep(TaskState::Sleeping);
         Task::sleep_current();
 
         // 和 Linux 一样，我们使用这种间接方式判断

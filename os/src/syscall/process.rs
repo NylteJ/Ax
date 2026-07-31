@@ -507,6 +507,10 @@ pub extern "C" fn wait4(pid: isize, status: *mut c_int, options: usize) -> Sysca
 
                 let mut waiting = Waiting::new();
                 waiting.wait(&cur_task().process.waiting_for_child);
+                // SMP：重新检查一次，避免“条件检查与放入等待队列之间”错过唤醒
+                if target.wait_state.lock().status.is_some() {
+                    continue; // drop(waiting) 会自动从等待队列中移除自身
+                }
                 sleep_err = waiting.sleep().err();
             }
         }
@@ -588,6 +592,15 @@ fn wait4_pred(
 
         let mut waiting = Waiting::new();
         waiting.wait(&task.process.waiting_for_child);
+        // SMP：重新检查一次，避免“条件检查与放入等待队列之间”错过唤醒
+        if task
+            .children
+            .lock()
+            .iter()
+            .any(|child| pred(child) && child.wait_state.lock().status.is_some())
+        {
+            continue; // drop(waiting) 会自动从等待队列中移除自身
+        }
         sleep_err = waiting.sleep().err();
     }
 }

@@ -34,3 +34,58 @@ pub fn init() {
 
     unsafe { asm!("csrwr {0}, 0x88", inlateout(reg) paddr => _) }
 }
+
+/// 完成当前 CPU 上使用 TLB 所需的一切初始化（设置 TLBRENTRY、页表格式配置并清空 TLB）。
+///
+/// 这些 CSR 都是每核独立的，因此每个核（包括次要核）都必须调用一次。
+pub fn init_cpu() {
+    use bit_field::BitField;
+
+    use crate::memory::PAGE_SHIFTS;
+
+    init();
+
+    unsafe {
+        asm!(
+            "csrwr {page_shift}, {STLBPS}",
+            page_shift = inlateout(reg) PAGE_SHIFTS[0] => _,
+            STLBPS = const 0x1e,
+        );
+    }
+
+    unsafe {
+        asm!(
+            "csrwr {page_shift}, {TLBREHI}",
+            page_shift = inlateout(reg) PAGE_SHIFTS[0] => _,
+            TLBREHI = const 0x8e,
+        );
+    }
+
+    // LoongArch 64 支持五级页表，格式也可以自定义，不过我们这里配成 Sv39 就够了
+    {
+        let mut pwcl = 0;
+        pwcl.set_bits(0..=4, PAGE_SHIFTS[0]); // PTbase
+        pwcl.set_bits(5..=9, PAGE_SHIFTS[1] - PAGE_SHIFTS[0]); // PTwidth
+        pwcl.set_bits(10..=14, PAGE_SHIFTS[1]); // Dir1_base
+        pwcl.set_bits(15..=19, PAGE_SHIFTS[2] - PAGE_SHIFTS[1]); // Dir1_width
+        pwcl.set_bits(20..=24, PAGE_SHIFTS[2]); // Dir2_base
+        pwcl.set_bits(25..=29, 9); // Dir2_width
+        pwcl.set_bits(30..=31, 0); // PTEWidth
+
+        let pwch = 0;
+
+        unsafe {
+            asm!(
+                "csrwr {pwcl}, {PWCL}",
+                "csrwr {pwch}, {PWCH}",
+                pwcl = inlateout(reg) pwcl => _,
+                pwch = inlateout(reg) pwch => _,
+                PWCL = const 0x1c,
+                PWCH = const 0x1d,
+            );
+        }
+    }
+
+    // 清空整个 TLB
+    unsafe { asm!("invtlb 0x0, $zero, $zero") };
+}

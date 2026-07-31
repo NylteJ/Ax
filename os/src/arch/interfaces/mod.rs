@@ -1,12 +1,14 @@
 mod basic;
 mod chrono;
 mod regs;
+mod smp;
 mod trap;
 mod uaccess_raw;
 
 pub use basic::Basic;
 pub use chrono::Chrono;
 pub use regs::Regs;
+pub use smp::Smp;
 pub use trap::{Trap, TrapContext};
 pub use uaccess_raw::UAccessRaw;
 
@@ -19,6 +21,7 @@ pub unsafe trait Arch {
     type Regs: Regs;
     type Basic: Basic;
     type Chrono: Chrono;
+    type Smp: Smp;
     type UAccessRaw: UAccessRaw;
     type Trap: Trap;
 

@@ -93,14 +93,20 @@ mod trap;
 
 const BOOT_STACK_BYTES: usize = 128 * 1024; // 128KB，设小了会带来不幸（欸我操这 page table 怎么这么大.jpg）
 
+// 每个核都需要自己的启动栈（次要核在进入各自的空闲任务前会短暂使用它）。
+// 布局：第 0 号栈为启动核（0 号核）的启动栈（其栈顶即 `boot_stack_top`），
+// 第 N 号栈（1 <= N <= MAX_CPUS）为 N 号核的启动栈（栈顶为 boot_stacks_base + N * BOOT_STACK_BYTES）。
+// 注意 MAX_CPUS 号栈实际上是多余的（核的编号从 0 开始），但多预留一个无妨。
 global_asm!(
     ".section .bss.stack",
-    ".globl boot_stack_bottom",
-    "boot_stack_bottom:",
+    ".globl boot_stacks_base",
+    "boot_stacks_base:",
     "    .space {BOOT_STACK_BYTES}",
     ".globl boot_stack_top",
     "boot_stack_top:",
+    "    .space {BOOT_STACK_BYTES} * {MAX_CPUS}",
     BOOT_STACK_BYTES = const BOOT_STACK_BYTES,
+    MAX_CPUS = const basic::per_cpu::MAX_CPUS,
 );
 
 // main 必须不能返回（因为 _start 中用的是无条件跳转）
@@ -110,66 +116,15 @@ pub extern "C" fn main(_: usize, dtb: PhysAddr) -> ! {
 
     arch::NativeRegs::set_tp(0);
 
+    // 完成当前 CPU 上 TLB 相关初始化（TLB 相关的 CSR 是每核独立的）
     #[cfg(target_arch = "loongarch64")]
-    memory::tlb_refill_handler::init();
+    memory::tlb_refill_handler::init_cpu();
 
     logger::init();
 
     init_heap();
 
     frame_allocator::init();
-
-    // 设置 LoongArch 64 下的页表格式
-    #[cfg(target_arch = "loongarch64")]
-    {
-        use memory::PAGE_SHIFTS;
-
-        unsafe {
-            asm!(
-                "csrwr {page_shift}, {STLBPS}",
-                page_shift = inlateout(reg) PAGE_SHIFTS[0] => _,
-                STLBPS = const 0x1e,
-            );
-        }
-
-        unsafe {
-            asm!(
-                "csrwr {page_shift}, {TLBREHI}",
-                page_shift = inlateout(reg) PAGE_SHIFTS[0] => _,
-                TLBREHI = const 0x8e,
-            );
-        }
-
-        // LoongArch 64 支持五级页表，格式也可以自定义，不过我们这里配成 Sv39 就够了
-        {
-            use bit_field::BitField;
-
-            let mut pwcl = 0;
-            pwcl.set_bits(0..=4, PAGE_SHIFTS[0]); // PTbase
-            pwcl.set_bits(5..=9, PAGE_SHIFTS[1] - PAGE_SHIFTS[0]); // PTwidth
-            pwcl.set_bits(10..=14, PAGE_SHIFTS[1]); // Dir1_base
-            pwcl.set_bits(15..=19, PAGE_SHIFTS[2] - PAGE_SHIFTS[1]); // Dir1_width
-            pwcl.set_bits(20..=24, PAGE_SHIFTS[2]); // Dir2_base
-            pwcl.set_bits(25..=29, 9); // Dir2_width
-            pwcl.set_bits(30..=31, 0); // PTEWidth
-
-            let pwch = 0;
-
-            unsafe {
-                asm!(
-                    "csrwr {pwcl}, {PWCL}",
-                    "csrwr {pwch}, {PWCH}",
-                    pwcl = inlateout(reg) pwcl => _,
-                    pwch = inlateout(reg) pwch => _,
-                    PWCL = const 0x1c,
-                    PWCH = const 0x1d,
-                );
-            }
-        }
-
-        // 清空整个 TLB
-        unsafe { asm!("invtlb 0x0, $zero, $zero") };
-    }
 
     basic::timer::init_clock_freq();
 
@@ -333,6 +288,10 @@ pub extern "C" fn main(_: usize, dtb: PhysAddr) -> ! {
     log::info!("零页 {:#x} 初始化完毕", zero_page_num.0);
 
     multitask::futex::init();
+
+    // 创建各核的空闲任务并启动其它核（SMP）
+    basic::per_cpu::init();
+    basic::per_cpu::start_secondary_cpus();
 
     // FIXME
 

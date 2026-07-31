@@ -1,4 +1,5 @@
 use core::{
+    arch::naked_asm,
     cell::UnsafeCell,
     ffi::c_int,
     marker::PhantomPinned,
@@ -6,7 +7,7 @@ use core::{
     num::NonZero,
     ops::Deref,
     ptr::{NonNull, addr_eq, null_mut},
-    sync::atomic::{AtomicPtr, AtomicU8, AtomicU32, Ordering},
+    sync::atomic::{AtomicPtr, AtomicU8, AtomicU32, AtomicUsize, Ordering},
 };
 
 use alloc::{alloc::AllocError, collections::TryReserveError, sync::Arc, vec::Vec};
@@ -114,6 +115,12 @@ pub struct Task {
 
     pub(super) refcount: AtomicU32,
 
+    /// 当前（或上次）运行此任务所在的 CPU ID。
+    ///
+    /// 在任务运行期间，它恒等于当前 CPU 的 ID（由切换到它的那个 CPU 在恢复其执行前写入）。
+    /// 内核态下可以通过它得知“我现在在哪个核上”。
+    pub last_cpu: AtomicUsize,
+
     _pin: PhantomPinned, // Task 的地址需要在 tp、内核栈等区域存储，因此不能移动
 }
 
@@ -123,7 +130,7 @@ pub struct ZombieWaitingState {
     pub status: Option<(SignalId, u8)>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 #[repr(u8)]
 pub enum TaskState {
     /// 正常状态，正在运行或可被调度
@@ -309,6 +316,9 @@ impl Task {
 
             refcount: AtomicU32::new(1),
 
+            // init 进程始终运行在启动核（0 号核）上
+            last_cpu: AtomicUsize::new(0),
+
             _pin: PhantomPinned,
         })
         .expect("必须要能够为 init 进程分配内存");
@@ -339,6 +349,128 @@ impl Task {
         // 至此，task 终于完全初始化完毕了！
 
         unsafe { arch::NativeBasic::execute_init(entry, USER_STACK_HIGHEST, kstack_sp) };
+    }
+
+    /// 为指定 CPU 创建其空闲任务。
+    ///
+    /// 空闲任务不会被放入调度器（只有对应 CPU 无任务可跑时才会被切换到），
+    /// 也不会注册到 PID 表中。其 TID 使用保留值 `usize::MAX - cpu`。
+    pub fn create_idle_task(cpu: usize) -> TaskArc {
+        let (_kstack, task_ptr_ptr) = Self::alloc_kstack().expect("必须能够为空闲任务分配内核栈");
+        let kstack_sp = (task_ptr_ptr as usize) / STACK_ALIGN * STACK_ALIGN;
+        // 与 fork 一致：kstack 字段的初始值必须是栈指针（不是栈底），
+        // 因为进入空闲任务时会直接读取它
+        let kstack = unsafe { TaskKernelStackPtr::from_addr(kstack_sp) };
+
+        let task = TaskArc::try_new(Self {
+            kstack,
+            tid: usize::MAX - cpu,
+
+            policy: SchedulePolicy::FIFO,
+            priority: 0,
+
+            address_space: SpinRwLock::new(Arc::new(SpinRwLock::new(Self::new_addr_space()))),
+            files: Arc::new(SpinRwLock::new(FileDescriptorTable::new())),
+
+            fs_data: Arc::new(SpinRwLock::new(FilesystemData {
+                current_work_dir: crate::filesystem::vfs::ROOT_PATH.clone(),
+            })),
+
+            process: Arc::new(ProcessData::new(
+                usize::MAX - cpu,
+                usize::MAX - cpu,
+                usize::MAX - cpu,
+                ProcessRLimits::default(),
+            )),
+            task_of_process_link: LinkedListLink::new(),
+
+            robust_list_head: AtomicPtr::new(null_mut()),
+
+            signal_handler: Arc::new(SpinRwLock::new(SignalHandler::new())),
+            signals_wl: SpinMutex::new(SignalsWaitingList::new()),
+
+            children: SpinMutex::new(intrusive_collections::LinkedList::new(TaskAdapter::new())),
+            children_link: LinkedListLink::new(),
+            parent: SpinMutex::new(NonNull::dangling()),
+
+            wait_state: SpinMutex::new(ZombieWaitingState { status: None }),
+            exit_signal: SignalId::SIGINVAL,
+            state: AtomicU8::new(TaskState::Normal as u8),
+
+            time_stats: SpinRwLock::new(TaskTimeStats::new()),
+
+            tid_address: AtomicPtr::new(null_mut()),
+
+            timer_rbtree_key: UnsafeCell::new(0),
+            timer_rbtree_link: RBTreeLink::new(),
+
+            itimer_real: UnsafeCell::new(None),
+            itimer_real_rbtree_link: RBTreeLink::new(),
+
+            // root
+            user_ids: SpinRwLock::new(TaskUserIds {
+                uid: 0,
+                gid: 0,
+                fsuid: 0,
+                fsgid: 0,
+                euid: 0,
+                egid: 0,
+                suid: 0,
+                sgid: 0,
+            }),
+
+            refcount: AtomicU32::new(1),
+
+            last_cpu: AtomicUsize::new(cpu),
+
+            _pin: PhantomPinned,
+        })
+        .expect("必须能够为空闲任务分配内存");
+
+        // 与 execute_init 保持一致，在内核栈顶端写入任务指针
+        // （空闲任务不会进入用户态，因此这里的值实际上不会被用到）
+        unsafe { task_ptr_ptr.write(task.deref()) };
+
+        task
+    }
+
+    /// 让当前 CPU 直接进入指定任务，此调用不会返回。
+    ///
+    /// 它用于让次要核首次进入自己的空闲任务：与 `execute_init` 类似，
+    /// 直接设置 tp、sp 并跳转到 `idle_loop`，而不是经过 `switch_context`
+    /// （因为此时根本没有可保存的上下文，且 tp 还不是任何任务）。
+    ///
+    /// # Safety
+    /// 传入的指针必须来自对应任务的 `into_asm` 返回值（即所有权已转移给汇编侧）。
+    #[naked]
+    pub unsafe extern "C" fn enter_idle_task(_task_ptr: *const Task) {
+        // 参数按调用约定位于 a0 / $a0，naked 函数中直接使用寄存器即可
+        #[cfg(target_arch = "riscv64")]
+        unsafe {
+            naked_asm!(
+                // 1. tp = 空闲任务
+                "mv tp, a0",
+                // 2. sp = 空闲任务的内核栈
+                "ld sp, {KSTACK_OFFSET}(tp)",
+                // 3. 进入空闲循环（不会返回）
+                "call {idle_loop}",
+                KSTACK_OFFSET = const offset_of!(Task, kstack),
+                idle_loop = sym crate::basic::per_cpu::idle_loop,
+            );
+        }
+        #[cfg(target_arch = "loongarch64")]
+        unsafe {
+            naked_asm!(
+                // 1. $tp = 空闲任务
+                "move $tp, $a0",
+                // 2. $sp = 空闲任务的内核栈
+                "ld.d $sp, $tp, {KSTACK_OFFSET}",
+                // 3. 进入空闲循环（不会返回）
+                "bl {idle_loop}",
+                KSTACK_OFFSET = const offset_of!(Task, kstack),
+                idle_loop = sym crate::basic::per_cpu::idle_loop,
+            );
+        }
     }
 
     /// 复制一份当前任务，并将其添加到调度器中，返回新任务的 TID。子任务的返回值（a0）会被篡改为 0。
@@ -541,6 +673,9 @@ impl Task {
 
             refcount: AtomicU32::new(1),
 
+            // 会被调度器放到任意核上运行，届时由切换到它的核覆写
+            last_cpu: AtomicUsize::new(0),
+
             _pin: PhantomPinned,
         })?;
 
@@ -700,6 +835,11 @@ impl Task {
             TaskState::Normal as u8
         );
         debug_assert!(!addr_eq(&*target, current_task()));
+
+        // 告诉目标任务它将在哪个核上运行（SMP）
+        target
+            .last_cpu
+            .store(cur_task().last_cpu.load(Ordering::Relaxed), Ordering::Relaxed);
 
         let context = target.get_context();
         unsafe { target.into_asm() };
@@ -1229,11 +1369,23 @@ impl Task {
         cur_task().do_sleep(TaskState::SleepingUninterruptible);
     }
 
+    /// 将当前任务标记为睡眠状态，但**不**进入等待循环。
+    ///
+    /// 用于在真正睡眠前（例如在将自身放入等待队列前）预先标记，从而保证
+    /// 唤醒者（`try_wake` / `try_interrupt_sleep`）在看到我们时我们必然已经是
+    /// 睡眠状态，避免 SMP 下“唤醒先于标记”导致唤醒丢失。
+    pub fn mark_sleep(state: TaskState) {
+        let old_state = cur_task().state.swap(state as u8, Ordering::Relaxed);
+        debug_assert!(
+            old_state == TaskState::Normal as u8 || old_state == state as u8,
+            "试图在非正常状态（{old_state}）下标记睡眠"
+        );
+    }
+
     fn do_sleep(&self, new_state: TaskState) {
         let old_state = self.state.swap(new_state as u8, Ordering::Relaxed);
-        debug_assert_eq!(
-            old_state,
-            TaskState::Normal as u8,
+        debug_assert!(
+            old_state == TaskState::Normal as u8 || old_state == new_state as u8,
             "试图在非正常状态 （{old_state}） 下睡眠"
         );
 
@@ -1247,7 +1399,12 @@ impl Task {
                 // 注意这个 Acquire load 是必须的，因为我们需要与唤醒者的 Release store 同步
                 let cur_state = self.state.load(Ordering::Acquire);
 
-                debug_assert_eq!(cur_state, TaskState::Normal as u8);
+                // 能被调度器选中本身就说明我们被唤醒过了；若唤醒发生在预先标记（`mark_sleep`）
+                // 之后、进入此循环之前，此时状态可能仍是睡眠状态，但这并不代表唤醒丢失
+                debug_assert!(
+                    cur_state == TaskState::Normal as u8 || cur_state == new_state as u8,
+                    "睡眠结束时状态异常：{cur_state}"
+                );
                 break;
             }
 

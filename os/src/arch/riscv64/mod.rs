@@ -15,6 +15,7 @@ use crate::{
 mod basic;
 mod chrono;
 mod regs;
+mod smp;
 mod trap;
 mod uaccess_raw;
 
@@ -26,6 +27,7 @@ unsafe impl Arch for RiscV64 {
     type Regs = regs::Regs;
     type Basic = basic::Basic;
     type Chrono = chrono::Chrono;
+    type Smp = smp::SmpImpl;
     type UAccessRaw = uaccess_raw::UAccessRaw;
     type Trap = trap::Trap;
 
@@ -65,6 +67,44 @@ unsafe impl Arch for RiscV64 {
                 main = sym main,
             );
         }
+    }
+}
+
+/// 次要 hart 的入口。由启动核通过 SBI 的 `sbi_hart_start` 以**物理地址**唤醒至此。
+///
+/// 新 hart 刚被唤醒时 satp 处于 Bare 模式，因此这里需要复刻 `_start` 中启用虚拟内存并
+/// 跳转到高地址的流程（PC 相对寻址在此场景下恰好给出物理地址）。
+#[unsafe(no_mangle)]
+#[naked]
+#[unsafe(link_section = ".text.entry")]
+extern "C" fn secondary_start() {
+    unsafe {
+        naked_asm!(
+            // 与 _start 相同：启用虚拟内存（此时 PC 还在物理地址，因此 la 得到的是物理地址）
+            "la t1, {BOOT_PAGE_TABLE}",
+            "li t2, 8 << 60",
+            "srli t1, t1, 12",
+            "or t1, t1, t2",
+            "csrw satp, t1",
+            "sfence.vma",
+            // 跳到高地址（注意这里的偏移量和下面的汇编代码长度强相关！）
+            "li t0, {LINEAR_MAPPING_OFFSET} + 4 * 2",
+            "auipc t1, 0",
+            "add t1, t1, t0",
+            "jr t1",
+            // OK，现在一切正常了！a0 = hartid（由 SBI 传入）
+            // 使用本 hart 自己的启动栈（第 (hartid+1) 号栈）
+            "la sp, boot_stacks_base",
+            "li t0, {BOOT_STACK_BYTES}",
+            "mul t0, t0, a0",
+            "add sp, sp, t0",
+            "add sp, sp, t0",
+            "call {secondary_entry}",
+            BOOT_PAGE_TABLE = sym BOOT_PAGE_TABLE,
+            LINEAR_MAPPING_OFFSET = const LINEAR_MAPPING_OFFSET,
+            BOOT_STACK_BYTES = const crate::BOOT_STACK_BYTES,
+            secondary_entry = sym crate::basic::per_cpu::secondary_entry,
+        );
     }
 }
 

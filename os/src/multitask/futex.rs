@@ -21,7 +21,7 @@ use crate::{
         address_space::AddressSpace,
         uaccess::{CopyError, copy_one_from_user, copy_one_to_user},
     },
-    multitask::{cur_task, task::Task},
+    multitask::{cur_task, task::{Task, TaskState}},
 };
 
 // 我们不会真正用它访问任何东西，它永远只用于比较，因此它只要能唯一确定一个 Futex 就行了
@@ -183,6 +183,9 @@ impl FutexGuard<'_> {
             mask,
         });
         let ftx_q_ptr: *const FutexQ = &*ftx_q;
+        // 注意：必须在持有桶锁（唤醒者也在同一把锁下遍历队列）时先把自己标记为睡眠，
+        // 否则 SMP 下唤醒者可能在我们标记睡眠之前就看到了队列中的我们，导致唤醒丢失
+        Task::mark_sleep(TaskState::Sleeping);
         self.queue.push_back(ftx_q);
 
         drop(self); // 释放锁
