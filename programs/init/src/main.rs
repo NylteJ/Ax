@@ -161,7 +161,8 @@ fn main() -> isize {
         return -1;
     }
 
-    if fork() == 0 {
+    let child_pid = fork();
+    if child_pid == 0 {
         // 子进程，运行终端
 
         macro_rules! group {
@@ -198,30 +199,11 @@ fn main() -> isize {
         }
 
         let argv: [*const u8; 5] = [
-            b"/sdcd/musl/busybox\0".as_ptr(),
+            b"/bin/busybox\0".as_ptr(),
             b"sh\0".as_ptr(),
             b"-c\0".as_ptr(),
             concat_bytes!(
-                b"/sdcd/musl/busybox --install -s /bin;",
-                b"ln -s /sdcd/musl/busybox /bin/busybox;",
-                // ===================================================
-
-                group!(nobanner at b"glibc" shell b"cagent_testcode_debug.sh"),
-
-                // ===================================================
-                // group!(b"basic-musl" at b"musl/basic" shell b"run-all.sh"),
-                // group!(b"basic-glibc" at b"glibc/basic" shell b"run-all.sh"),
-                // group!(nobanner at b"musl" shell b"busybox_testcode.sh"),
-                // group!(nobanner at b"glibc" shell b"busybox_testcode.sh"),
-                // group!(nobanner at b"musl" shell b"libcbench_testcode.sh"),
-                // group!(nobanner at b"glibc" shell b"libcbench_testcode.sh"),
-                // group!(nobanner at b"musl" shell b"lua_testcode.sh"),
-                // group!(nobanner at b"glibc" shell b"lua_testcode.sh"),
-                // group!(b"libctest-musl" at b"musl" shell b"run-static.sh", b"run-dynamic.sh"),
-                // // group!(b"libctest-glibc" at b"glibc" shell b"run-static.sh", b"run-dynamic.sh"),
-                // // ===================================================
-                // b"/sdcd/musl/busybox sh /ltp.sh;",
-                // // ===================================================
+                b"/bin/busybox sh /cagent_fulltest.sh;",
                 b'\0',
             )
             .as_ptr(),
@@ -233,16 +215,25 @@ fn main() -> isize {
         return fail_code;
     }
 
+    // Block until shell child exits. The test script uses 'wait' which
+    // blocks on the background server, so the child may never exit.
+    // We use a blocking waitpid — test results are printed before the
+    // script reaches 'wait', so they appear on console. The kernel
+    // has a preemptive scheduler so other processes get CPU time
+    // while init blocks here.
     let mut status: usize = 0xBADC0DE;
+    syscall!(260, child_pid, &mut status, 0);
+
+    // Reap any orphaned grandchild zombies that were reparented to init (PID 1).
+    // The test script may spawn background processes that outlive the shell.
+    // WNOHANG (flag=1) makes this non-blocking.
     loop {
-        let ret = syscall!(260, -1, &mut status, 0) as isize;
-        if ret > 0 {
-            // println!("init 进程回收了 {ret}, status: {:#04x}", status);
-            if ret == 1 {
-                return 0; // FIXME: temp
-            }
+        let ret = syscall!(260, -1, &mut status, 1) as isize;
+        if ret <= 0 {
+            break;
         }
     }
+    return 0;
 }
 
 #[panic_handler]

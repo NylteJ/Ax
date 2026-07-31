@@ -217,10 +217,10 @@ clippy-la:
 	}
 
 disk.img: $(wildcard disk_img/*) disk_img/rv-init disk_img/la-init
-	mkfs.ext4 -F -d ./disk_img disk.img 4M
+	rm -rf /tmp/disk_img_rv && cp -r ./disk_img /tmp/disk_img_rv && rm -f /tmp/disk_img_rv/bin/*-la && mkfs.ext4 -F -O ^dir_index -d /tmp/disk_img_rv disk.img 5M
 
-disk-la.img: disk.img
-	cp disk.img disk-la.img
+disk-la.img: $(wildcard disk_img/*) disk_img/rv-init disk_img/la-init disk_img/mk-la-disk.sh
+	bash disk_img/mk-la-disk.sh
 
 .PHONY: regen-disk
 regen-disk:

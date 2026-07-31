@@ -90,7 +90,6 @@ extern "C" fn trap_handler(context: &mut NativeTrapContext) {
                 {
                     *UNKNOWN_SYSCALLS.lock().entry(id).or_insert(0) += 1;
                 }
-                assert_eq!(id, 157);
             } else {
                 log::trace!(
                     "系统调用：TID = {}, id = {id} ({}), args = {args:x?} (HEX), return value = {ret_value:#x}",
@@ -312,6 +311,9 @@ fn user_fault(context: &NativeTrapContext) {
     log::info!("其试图访问：{:#x}", arch::NativeTrap::get_bad_address());
     log::info!("对应代码所在地址：{:#x}", context.ret_pc);
     log::debug!("寄存器信息：\n{:#?}", context.regs);
+    // Also print key registers at info level for crash debugging
+    log::info!("[fault] pc={:#x}, ra={:#x}, sp={:#x}, tp={:#x}, a0={:#x}",
+        context.ret_pc, context.regs.ra, context.regs.sp, context.regs.tp, context.regs.a0);
     log::error!(
         "=================================================================================="
     );

@@ -103,24 +103,39 @@ pub struct ExtentPathNode {
 impl Ext4ExtentHeader {
     /// Load the extent header from u32 array.
     pub fn load_from_u32(data: &[u32]) -> Self {
-        unsafe { core::ptr::read(data.as_ptr() as *const _) }
+        let mut header: Self = unsafe { core::ptr::read(data.as_ptr() as *const _) };
+        header.sanitize();
+        header
     }
 
     /// Load the extent header from u32 array mutably.
     pub fn load_from_u32_mut(data: &mut [u32]) -> &mut Self {
         let ptr = data.as_mut_ptr() as *mut Self;
-        unsafe { &mut *ptr }
+        let header: &mut Self = unsafe { &mut *ptr };
+        header.sanitize();
+        header
     }
 
     /// Load the extent header from u8 array.
     pub fn load_from_u8(data: &[u8]) -> Self {
-        unsafe { core::ptr::read(data.as_ptr() as *const _) }
+        let mut header: Self = unsafe { core::ptr::read(data.as_ptr() as *const _) };
+        header.sanitize();
+        header
     }
 
     /// Load the extent header from u8 array mutably.
     pub fn load_from_u8_mut(data: &mut [u8]) -> &mut Self {
         let ptr = data.as_mut_ptr() as *mut Self;
-        unsafe { &mut *ptr }
+        let header: &mut Self = unsafe { &mut *ptr };
+        header.sanitize();
+        header
+    }
+
+    /// Sanitize corrupted metadata values to prevent out-of-bounds access
+    fn sanitize(&mut self) {
+        if self.entries_count > self.max_entries_count {
+            self.entries_count = self.max_entries_count;
+        }
     }
 
     /// Is the node a leaf node?
@@ -141,6 +156,7 @@ impl Ext4ExtentHeader {
         header.max_entries_count = u16::from_le_bytes(bytes[4..6].try_into().unwrap());
         header.depth = u16::from_le_bytes(bytes[6..8].try_into().unwrap());
         header.generation = u32::from_le_bytes(bytes[8..12].try_into().unwrap());
+        header.sanitize();
         header
     }
 }
@@ -297,8 +313,15 @@ impl ExtentNode {
         match &mut self.data {
             NodeData::Root(root_data) => {
                 let header = self.header;
+                // Validate entries_count: root_data has 15 u32, header takes 3, extents take 3 each
+                let max_entries = (15 - 3) / 3;
+                let entry_count = (header.entries_count as usize).min(max_entries);
+                if entry_count == 0 {
+                    let extent = Ext4Extent::load_from_u32(&root_data[3..]);
+                    return Some((extent, 0));
+                }
                 let mut l = 1;
-                let mut r = header.entries_count as usize - 1;
+                let mut r = entry_count - 1;
                 while l <= r {
                     let m = l + (r - l) / 2;
                     let idx = 3 + m * 3;
@@ -311,12 +334,19 @@ impl ExtentNode {
                 }
                 let idx = 3 + (l - 1) * 3;
                 let ext = Ext4Extent::load_from_u32(&root_data[idx..]);
-    
+
                 Some((ext, l - 1))
             }
             NodeData::Internal(internal_data) => {
+                // Validate entries_count against actual data size
+                let max_entries = (internal_data.len().saturating_sub(size_of::<Ext4ExtentHeader>())) / size_of::<Ext4Extent>();
+                let entry_count = (self.header.entries_count as usize).min(max_entries);
+                if entry_count == 0 {
+                    let extent = Ext4Extent::load_from_u8(&internal_data[size_of::<Ext4ExtentHeader>()..]);
+                    return Some((extent, 0));
+                }
                 let mut l = 1;
-                let mut r = (self.header.entries_count - 1) as usize;
+                let mut r = entry_count - 1;
     
                 while l <= r {
                     let m = l + (r - l) / 2;
@@ -349,8 +379,15 @@ impl ExtentNode {
                 let start = size_of::<Ext4ExtentHeader>() / 4;
                 let indexes = &root_data[start..];
 
+                // Validate entries_count against available space
+                let max_entries = indexes.len() / (size_of::<Ext4ExtentIndex>() / 4);
+                let entry_count = (self.header.entries_count as usize).min(max_entries);
+                if entry_count == 0 {
+                    return None;
+                }
+
                 let mut l = 1; // Skip the first index
-                let mut r = self.header.entries_count as usize - 1;
+                let mut r = entry_count - 1;
 
                 while l <= r {
                     let m = l + (r - l) / 2;
@@ -378,8 +415,11 @@ impl ExtentNode {
                 let start = size_of::<Ext4ExtentHeader>();
                 let indexes = &internal_data[start..];
 
+                // Validate entries_count against available space
+                let max_entries = indexes.len() / size_of::<Ext4ExtentIndex>();
+                let entry_count = ((self.header.entries_count - 1) as usize).min(max_entries.saturating_sub(1));
                 let mut l = 0;
-                let mut r = (self.header.entries_count - 1) as usize;
+                let mut r = entry_count;
 
                 while l <= r {
                     let m = l + (r - l) / 2;

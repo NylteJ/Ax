@@ -803,7 +803,9 @@ const AT_REMOVEDIR: usize = 0x200;
 pub extern "C" fn unlinkat(dirfd: isize, path: *const c_char, flags: usize) -> SyscallResult {
     let path = copy_str_from_user(path, FILENAME_LEN_HINT, PATH_LEN_MAX)?;
     let walk_path_from = parse_walk_path_from(dirfd, path.as_ref())?;
-    let dentry = walk_path(walk_path_from)?.ensure()?.0;
+    // unlink/rmdir must NOT follow the last symlink — removing a symlink
+    // removes the symlink itself, not its target (POSIX)
+    let dentry = walk_path_no_follow(walk_path_from)?.ensure()?.0;
     let dir_inode = dentry
         .data
         .lock()

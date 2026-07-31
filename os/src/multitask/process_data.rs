@@ -22,6 +22,8 @@ pub struct ProcessData {
     pub pid: usize,
     /// 进程组 ID
     pub pgid: AtomicUsize,
+    /// 会话 ID (session ID)
+    pub sid: AtomicUsize,
 
     pub tasks: SpinRwLock<intrusive_collections::LinkedList<TaskOfProcessAdapter>>,
 
@@ -39,10 +41,11 @@ pub struct ProcessData {
 intrusive_adapter!(pub TaskOfProcessAdapter = UnsafeRef<Task>: Task { task_of_process_link => LinkedListLink });
 
 impl ProcessData {
-    pub fn new(pid: usize, pgid: usize, rlimits: ProcessRLimits) -> Self {
+    pub fn new(pid: usize, pgid: usize, sid: usize, rlimits: ProcessRLimits) -> Self {
         Self {
             pid,
             pgid: AtomicUsize::new(pgid),
+            sid: AtomicUsize::new(sid),
             tasks: SpinRwLock::new(intrusive_collections::LinkedList::new(
                 TaskOfProcessAdapter::new(),
             )),

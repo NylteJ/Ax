@@ -215,6 +215,16 @@ pub const USER_STACK_BYTES: usize = 2048 * PAGE_BYTES;
 static_assertions::const_assert!(USER_STACK_BYTES % PAGE_BYTES == 0);
 static_assertions::const_assert!(USER_STACK_BYTES > PAGE_BYTES);
 
+/// TLS (Thread-Local Storage) information extracted from ELF PT_TLS segment
+struct TlsInfo {
+    /// File offset of TLS initialization image
+    file_offset: u64,
+    /// Size of TLS initialization image in file
+    file_size: u64,
+    /// Total size of TLS block in memory (includes zero-filled BSS portion)
+    mem_size: u64,
+}
+
 impl Task {
     /// 执行 init 进程。此调用不会返回。
     ///
@@ -255,6 +265,7 @@ impl Task {
             })),
 
             process: Arc::new(ProcessData::new(
+                INIT_PID,
                 INIT_PID,
                 INIT_PID,
                 ProcessRLimits::default(),
@@ -467,6 +478,7 @@ impl Task {
             Arc::new(ProcessData::new(
                 tid,
                 self.process.pgid.load(Ordering::Relaxed),
+                self.process.sid.load(Ordering::Relaxed),
                 rlimits,
             ))
         };
@@ -580,7 +592,7 @@ impl Task {
         // 加载 ELF 文件并获取入口地址
         let load_elf_result = Self::load_elf(&file, &my_addr_space);
         drop(my_addr_space); // 避免和 DropGuard 中的写锁产生死锁
-        let (entry, auxv) = load_elf_result?;
+        let (entry, auxv, tls_info) = load_elf_result?;
 
         // 将入口地址和栈指针写入到 TrapContext 中
         // 特别注意，和前面几个函数不同，我们并没有更换内核栈，因此不需要伪造任何东西，只要修改 ret_pc 和 sp 即可
@@ -588,6 +600,77 @@ impl Task {
         let trap_context = unsafe { self.get_trap_context().cast_mut().as_mut_unchecked() };
         trap_context.ret_pc = entry;
         trap_context.regs.sp = USER_STACK_HIGHEST;
+
+        // Set up TLS for the main thread if the ELF has a TLS segment.
+        // glibc expects the kernel to allocate TLS and set tp.
+        if let Some(ref tls) = tls_info {
+            let tls_memsz = tls.mem_size as usize;
+            if tls_memsz > 0 {
+                // TCB (Thread Control Block) size before TLS data.
+                // Both LoongArch and RISC-V glibc use TLS variant 1 (TLS_TCB_AT_TP=1):
+                // tp -> TCB (tcbhead_t) -> TLS data.
+                // tcbhead_t is 2 pointers (dtv + self) = 16 bytes on 64-bit.
+                const TCB_SIZE: usize = 16;
+                let total_size = TCB_SIZE + tls_memsz;
+                let layout = unsafe {
+                    alloc::alloc::Layout::from_size_align_unchecked(total_size, 16)
+                };
+                let tls_base = unsafe { alloc::alloc::alloc(layout) };
+                if !tls_base.is_null() {
+                    // Zero-initialize the entire TLS block
+                    unsafe { core::ptr::write_bytes(tls_base, 0, total_size) };
+
+                    // Copy TLS initialization image to offset TCB_SIZE
+                    if tls.file_size > 0 {
+                        let mut file_guard = file.data.lock();
+                        if file_guard
+                            .fseek(vfs::SeekFrom::Start(tls.file_offset))
+                            .is_err()
+                        {
+                            log::error!("TLS: fseek 失败，无法加载 TLS 初始化映像");
+                            unsafe { alloc::alloc::dealloc(tls_base, layout) };
+                            return Err(LoadElfError::BadElfHead);
+                        }
+                        let dst = unsafe { tls_base.add(TCB_SIZE) };
+                        // Clamp copy size to the smaller of file_size and mem_size
+                        // (should always be file_size since we validated p_filesz <= p_memsz)
+                        let copy_size = (tls.file_size as usize).min(tls_memsz);
+                        // kread 按页（4 KiB）逐页调用 visitor，必须用游标推进写入位置，
+                        // 否则跨多页的 TLS 初始化映像会互相覆盖。
+                        let mut copied = 0usize;
+                        if file_guard
+                            .kread(
+                                |data| {
+                                    let len = data.len().min(copy_size - copied);
+                                    unsafe {
+                                        core::ptr::copy_nonoverlapping(
+                                            data.as_ptr(),
+                                            dst.add(copied),
+                                            len,
+                                        )
+                                    };
+                                    copied += len;
+                                    Ok(len as u64)
+                                },
+                                copy_size as u64,
+                            )
+                            .is_err()
+                        {
+                            log::error!("TLS: kread 失败，无法加载 TLS 初始化映像");
+                            unsafe { alloc::alloc::dealloc(tls_base, layout) };
+                            return Err(LoadElfError::BadElfHead);
+                        }
+                    }
+
+                    // tp points to TCB (= base of allocation)
+                    trap_context.regs.tp = tls_base as usize;
+                    log::info!(
+                        "TLS: base={tls_base:p}, tp={:#x}, tcb={}, filesz={}, memsz={}",
+                        trap_context.regs.tp, TCB_SIZE, tls.file_size, tls.mem_size
+                    );
+                }
+            }
+        }
 
         // 关闭标记为 CLOEXEC 的文件描述符
         self.files.write().close_on_exec();
@@ -769,16 +852,19 @@ impl Task {
     ///
     /// 它也负责设置初始堆区 VMA 和 brk。
     /// （和 Linux 不同，我们初始时就有一个很短的堆区 VMA，因为反正虚拟地址多得用不完，这样只会掩盖少量用户态越界访问）
+    ///
+    /// Returns (entry_point, auxv, optional_tls_info)
     fn load_elf(
         file: &FileArc,
         address_space: &SpinRwLock<AddressSpace>,
-    ) -> Result<(usize, AuxiliaryVec), LoadElfError> {
+    ) -> Result<(usize, AuxiliaryVec, Option<TlsInfo>), LoadElfError> {
         struct InnerReturn {
             load_seg_start: VirtAddr,
             load_seg_end: VirtAddr,
             program_entry: usize,
             interp_entry: Option<usize>,
             ehdr: elf::file::FileHeader<NativeEndian>,
+            tls_info: Option<TlsInfo>,
         }
 
         fn inner(
@@ -815,10 +901,11 @@ impl Task {
             let mut load_seg_end = None;
 
             let mut interp_entry = None;
+            let mut tls_info = None;
 
             let segs = elf.segments().unwrap();
             for seg in segs {
-                use elf::abi::{PT_GNU_STACK, PT_INTERP, PT_LOAD, PT_NULL};
+                use elf::abi::{PT_GNU_STACK, PT_INTERP, PT_LOAD, PT_NULL, PT_TLS};
 
                 match seg.p_type {
                     PT_NULL => (),
@@ -1000,6 +1087,29 @@ impl Task {
                         let entry = inner(&file, address_space, true)?.program_entry;
                         interp_entry.replace(entry + DYNAMIC_INTERPRETER_BASE.0);
                     }
+                    PT_TLS => {
+                        log::info!(
+                            "发现 PT_TLS 段: offset={:#x}, filesz={:#x}, memsz={:#x}",
+                            seg.p_offset, seg.p_filesz, seg.p_memsz
+                        );
+                        if tls_info.is_some() {
+                            log::error!("ELF 文件有多个 PT_TLS 段，无法加载");
+                            return Err(LoadElfError::BadElfHead);
+                        }
+                        // Validate PT_TLS invariants per ELF spec: p_memsz >= p_filesz
+                        if seg.p_filesz > seg.p_memsz {
+                            log::error!("PT_TLS 段异常: p_filesz > p_memsz");
+                            return Err(LoadElfError::BadElfHead);
+                        }
+                        // Note: TLS segment can appear both in the executable and in the
+                        // interpreter. We store the TLS info; in the outer function we
+                        // will allocate and set up the TLS area for the main thread.
+                        tls_info = Some(TlsInfo {
+                            file_offset: seg.p_offset,
+                            file_size: seg.p_filesz,
+                            mem_size: seg.p_memsz,
+                        });
+                    }
                     PT_GNU_STACK => {
                         log::info!(
                             "发现 PT_GNU_STACK 段，然而，我们的栈区本就不可执行，因此无需进一步操作"
@@ -1015,6 +1125,7 @@ impl Task {
                 program_entry: elf.ehdr.e_entry as usize,
                 interp_entry,
                 ehdr: elf.ehdr,
+                tls_info,
             })
         }
 
@@ -1024,6 +1135,7 @@ impl Task {
             program_entry,
             interp_entry,
             ehdr,
+            tls_info,
         } = inner(file, address_space, false)?;
 
         // 初始化堆区 VMA 和 brk
@@ -1069,7 +1181,7 @@ impl Task {
             with 2 more space
         ];
 
-        Ok((interp_entry.unwrap_or(program_entry), auxv))
+        Ok((interp_entry.unwrap_or(program_entry), auxv, tls_info))
     }
 
     fn transfer_children_to_init(&self) {

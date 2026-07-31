@@ -21,12 +21,14 @@ pub struct Ext4INode {
 
 impl INodeOps for Ext4INode {
     fn create(&mut self, mode: vfs::INodeMode, dentry: vfs::DEntryArc) -> VfsResult<vfs::INodeArc> {
-        Self::new_normal(
+        let result = Self::new_normal(
             vfs::INode::get_filesystem(self),
             vfs::INode::get_id(self),
             dentry.data.lock().name.as_ref(),
             mode,
-        )
+        );
+        self.reload_from_disk();
+        result
     }
 
     fn lookup(&self, name: &ByteStr, dentry: vfs::DEntryArc) -> VfsResult<vfs::DEntryArc> {
@@ -94,6 +96,8 @@ impl INodeOps for Ext4INode {
             ext4.get_inode_ref(target.id).inode.links_count().into()
         );
 
+        self.reload_from_disk();
+
         Ok(())
     }
 
@@ -138,16 +142,20 @@ impl INodeOps for Ext4INode {
             ext4.get_inode_ref(target.id).inode.links_count().into()
         );
 
+        self.reload_from_disk();
+
         Ok(())
     }
 
     fn mkdir(&mut self, dentry: vfs::DEntryArc, mode: vfs::INodeMode) -> VfsResult<vfs::INodeArc> {
-        Self::new_normal(
+        let result = Self::new_normal(
             vfs::INode::get_filesystem(self),
             vfs::INode::get_id(self),
             dentry.data.lock().name.as_ref(),
             mode,
-        )
+        );
+        self.reload_from_disk();
+        result
     }
 
     fn rmdir(&mut self, dentry: &vfs::DEntryArc) -> VfsResult<()> {
@@ -227,6 +235,8 @@ impl INodeOps for Ext4INode {
 
         debug_assert_eq!(target_data.hard_links, 2);
 
+        self.reload_from_disk();
+
         Ok(())
     }
 
@@ -241,20 +251,22 @@ impl INodeOps for Ext4INode {
     }
 
     fn symlink(&mut self, target: ByteString, dentry: vfs::DEntryArc) -> VfsResult<vfs::INodeArc> {
-        let fs = vfs::INode::get_filesystem::<Ext4Fs>(self);
-        let ext4 = &fs.ops.ext4;
-
+        let parent_id = vfs::INode::get_id(self);
         let mode = vfs::INodeMode::all_permitted() | vfs::INodeMode::SymbolLink;
-        let mut ret =
-            Self::new_normal(fs, vfs::INode::get_id(self), &dentry.data.lock().name, mode)?;
+        let mut result =
+            Self::new_normal(vfs::INode::get_filesystem(self), parent_id, &dentry.data.lock().name, mode)?;
+
+        self.reload_from_disk();
 
         let ret_ref = unsafe {
-            (ret.get_mut() as *mut vfs::INode)
+            (result.get_mut() as *mut vfs::INode)
                 .cast::<vfs::INode<Self>>()
                 .as_mut_unchecked()
         };
         let ret_data = ret_ref.data.get_mut();
 
+        let fs = vfs::INode::get_filesystem::<Ext4Fs>(self);
+        let ext4 = &fs.ops.ext4;
         let mut inode_ref = &mut ret_data.ops.inode;
 
         debug_assert_eq!(inode_ref.inode.blocks_count(), 0);
@@ -277,7 +289,7 @@ impl INodeOps for Ext4INode {
 
         ext4.write_back_inode(&mut inode_ref);
 
-        Ok(ret)
+        Ok(result)
     }
 
     fn read_symlink(&self) -> VfsResult<ByteString> {
@@ -329,6 +341,14 @@ impl Ext4INode {
             page_cache: None,
             ops: Self { inode },
         })
+    }
+
+    /// Reload the inode from disk to update cached metadata (size, links, etc.)
+    /// after an ext4_rs operation that may have modified it on disk.
+    fn reload_from_disk(&mut self) {
+        let fs = vfs::INode::get_filesystem::<Ext4Fs>(self);
+        let ext4 = &fs.ops.ext4;
+        self.inode = ext4.get_inode_ref(vfs::INode::get_id(self));
     }
 
     fn new_normal(

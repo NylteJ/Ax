@@ -734,6 +734,25 @@ pub extern "C" fn setpgid(pid: usize, mut pgid: usize) -> SyscallResult {
     SyscallResult::success(0)
 }
 
+/// 创建一个新会话（session），调用进程成为会话领导者（session leader）。
+/// 调用进程不能是进程组领导者。新会话的 ID 设为调用进程的 PID，
+/// 同时创建一个新的进程组，其 ID 也设为调用进程的 PID。
+pub extern "C" fn setsid() -> SyscallResult {
+    let task = cur_task();
+    let pid = task.process.pid;
+
+    // 如果调用进程已经是进程组领导者，返回 EPERM
+    if task.process.pgid.load(core::sync::atomic::Ordering::Relaxed) == pid {
+        return EPERM;
+    }
+
+    // 设置新的会话 ID 和进程组 ID
+    task.process.sid.store(pid, core::sync::atomic::Ordering::Relaxed);
+    task.process.pgid.store(pid, core::sync::atomic::Ordering::Relaxed);
+
+    SyscallResult::success(pid)
+}
+
 pub extern "C" fn getpgid(pid: usize) -> SyscallResult {
     let task = if pid == 0 {
         cur_task()
@@ -746,4 +765,49 @@ pub extern "C" fn getpgid(pid: usize) -> SyscallResult {
     }
 
     SyscallResult::success(task.process.pgid.load(Ordering::Relaxed))
+}
+
+/// * 功能：获取进程的CPU亲和性掩码；
+/// * 输入：
+///     - pid: 进程ID，0表示当前进程；
+///     - cpusetsize: 用户提供的掩码缓冲区大小（字节）；
+///     - mask: 指向用户空间cpu_set_t缓冲区的指针；
+/// * 返回值：成功返回实际cpumask大小（字节），失败返回错误码；
+pub extern "C" fn sched_getaffinity(
+    pid: usize,
+    cpusetsize: usize,
+    mask: *mut u8,
+) -> SyscallResult {
+    if pid != 0 && get_task_by_tid(pid).is_none() {
+        return ESRCH;
+    }
+
+    // 我们需要返回一个和系统 CPU 核心数量相同的掩码
+    // 对于 -smp 1 的情况，只需要 1 个 CPU
+    const CPU_COUNT: usize = 8; // 最大支持 8 个 CPU，但实际只设置 1 个
+    // 对齐到 sizeof(unsigned long)，Linux 要求 cpumask 大小为长整型的倍数
+    // CPU_COUNT=8, div_ceil(8)=1, max(sizeof(usize))=8 → KERNEL_CPU_SET_BYTES=8
+    const KERNEL_CPU_SET_BYTES: usize = {
+        let raw = CPU_COUNT.div_ceil(8);
+        if raw < core::mem::size_of::<usize>() {
+            core::mem::size_of::<usize>()
+        } else {
+            raw
+        }
+    };
+
+    if cpusetsize == 0 {
+        return EINVAL;
+    }
+
+    // CPU 亲和性掩码：仅设置 CPU 0 为可用
+    let bytes_to_copy = cpusetsize.min(KERNEL_CPU_SET_BYTES);
+    // 使用栈分配，最多 8 字节，避免不必要的堆分配
+    let mut cpu_mask = [0u8; KERNEL_CPU_SET_BYTES];
+    cpu_mask[0] = 1; // 设置 bit 0 (CPU 0)
+
+    // 对于更大的掩码，高位都是 0（表示这些 CPU 不存在/不可用）
+    copy_to_user(mask, &cpu_mask[..bytes_to_copy])?;
+
+    SyscallResult::success(KERNEL_CPU_SET_BYTES)
 }
