@@ -100,8 +100,9 @@ pub extern "C" fn secondary_entry(cpu_id: usize) -> ! {
     #[cfg(target_arch = "loongarch64")]
     crate::memory::tlb_refill_handler::init_cpu();
 
-    // 次要核定时器：LoongArch 正常；RISC-V 上存在 QEMU 相关的损坏问题（启用后用户内存被破坏，
-    // 表现为任务跳到 PC=0、sscratch 变成垃圾值；已排除处理逻辑、SBI 调用与抢占，问题在裸 trap 路径），
+    // 次要核定时器：LoongArch 正常启用；RISC-V 上存在 QEMU 相关的不稳定损坏问题
+    // （任务跳到 PC=0、sscratch 变垃圾值；已排除处理逻辑、SBI 调用与抢占，使用旧 CLINT
+    //  （-machine virt,aclint=false）时偶尔可通过，但仍有损坏，问题疑似在 trap 路径），
     // 因此 RISC-V 暂时不启用
     #[cfg(target_arch = "loongarch64")]
     {
