@@ -100,9 +100,14 @@ pub extern "C" fn secondary_entry(cpu_id: usize) -> ! {
     #[cfg(target_arch = "loongarch64")]
     crate::memory::tlb_refill_handler::init_cpu();
 
-    // 注意：次要核的定时器中断目前暂不启用（启用后存在损坏用户内存的 bug，待调查）
-    // trap::enable_timer_interrupt();
-    // timer::start_timer_tick_tock();
+    // 次要核定时器：LoongArch 正常；RISC-V 上存在 QEMU 相关的损坏问题（启用后用户内存被破坏，
+    // 表现为任务跳到 PC=0、sscratch 变成垃圾值；已排除处理逻辑、SBI 调用与抢占，问题在裸 trap 路径），
+    // 因此 RISC-V 暂时不启用
+    #[cfg(target_arch = "loongarch64")]
+    {
+        trap::enable_timer_interrupt();
+        timer::start_timer_tick_tock();
+    }
 
     // 将空闲任务的所有权转移到汇编侧，然后进入它
     let idle_task = IDLE_TASKS
