@@ -31,6 +31,13 @@ pub static IDLE_TASKS: SpinMutex<[Option<TaskArc>; MAX_CPUS]> =
 pub static SECONDARY_BOOT_FLAG: core::sync::atomic::AtomicBool =
     core::sync::atomic::AtomicBool::new(false);
 
+/// 启动核竞争计数器（LoongArch 专用）。
+///
+/// LoongArch 的 QEMU 上所有核同时从复位向量启动，且 CSR_TID 并不可靠（读出的值无法区分核），
+/// 因此启动核的 `_start` 汇编会通过原子加操作竞争槽位：第一个到达的核拿到槽位 0（启动核），
+/// 其余核依次拿到 1、2、3...（即为它们的核 ID）。
+pub static BOOT_CLAIM: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+
 /// 获取当前运行所在 CPU 的 ID。
 ///
 /// 该值在每个 CPU 切换任务时被写入对应任务，因此读取到的永远是当前 CPU 的 ID。
