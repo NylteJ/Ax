@@ -79,6 +79,9 @@ impl<Proto: SockProtocol> IPv4<Proto> {
 
 impl<Proto: ?Sized + SockProtocol> Drop for IPv4<Proto> {
     fn drop(&mut self) {
+        // 网络操作必须在 NET_LOCK 下进行（可重入）。见 NET_LOCK 的文档。
+        let _net_lock = crate::network::NET_LOCK.lock_guard();
+
         if self.is_accepted {
             // 子 socket 与监听 socket 共享端口绑定，不负责解绑
             return;

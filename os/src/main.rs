@@ -297,6 +297,7 @@ pub extern "C" fn main(_: usize, dtb: PhysAddr) -> ! {
 
     println!("准备进入用户态...");
 
+
     // trap::set_global_interrupts_enable(true);
     trap::enable_timer_interrupt();
     basic::timer::start_timer_tick_tock();

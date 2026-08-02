@@ -115,6 +115,9 @@ pub struct Task {
 
     pub(super) refcount: AtomicU32,
 
+    /// 当前是否正在某核上运行（用于防止同一任务被两个核同时运行）
+    pub running: core::sync::atomic::AtomicBool,
+
     /// 当前（或上次）运行此任务所在的 CPU ID。
     ///
     /// 在任务运行期间，它恒等于当前 CPU 的 ID（由切换到它的那个 CPU 在恢复其执行前写入）。
@@ -315,6 +318,7 @@ impl Task {
             }),
 
             refcount: AtomicU32::new(1),
+            running: core::sync::atomic::AtomicBool::new(false),
 
             // init 进程始终运行在启动核（0 号核）上
             last_cpu: AtomicUsize::new(0),
@@ -344,6 +348,9 @@ impl Task {
         let entry = Self::load_elf(&file, &task.address_space.read()).unwrap().0;
 
         register_task(&task);
+        // init 不经过 switch_to 直接开始执行，必须手动标记其为运行中，否则被抢占入队后
+        // 会被其它核误选（同一任务同时在两个核上运行）
+        task.running.store(true, Ordering::Relaxed);
         unsafe { UnsafeInited::init_unsafe(&INIT_TASK, task) };
 
         // 至此，task 终于完全初始化完毕了！
@@ -358,9 +365,26 @@ impl Task {
     pub fn create_idle_task(cpu: usize) -> TaskArc {
         let (_kstack, task_ptr_ptr) = Self::alloc_kstack().expect("必须能够为空闲任务分配内核栈");
         let kstack_sp = (task_ptr_ptr as usize) / STACK_ALIGN * STACK_ALIGN;
-        // 与 fork 一致：kstack 字段的初始值必须是栈指针（不是栈底），
-        // 因为进入空闲任务时会直接读取它
-        let kstack = unsafe { TaskKernelStackPtr::from_addr(kstack_sp) };
+
+        // 与 fork 一致：预先填充挂起上下文（return_address = idle_loop）。
+        // 退出路径在调度器为空时会切换到本核的空闲任务；启动核从未进入过空闲循环，
+        // 其空闲任务的上下文若不预先填充，切换时会加载到栈顶的随机内容（ra=0 等），
+        // 导致 CPU 跳转到地址 0 并陷入缺页死循环。
+        let task_ctx_ptr = (kstack_sp - size_of::<TaskContext>()) as *mut TaskContext;
+        unsafe {
+            task_ctx_ptr
+                .byte_add(offset_of!(TaskContext, return_address))
+                .cast::<usize>()
+                .write(crate::basic::per_cpu::idle_loop as usize);
+            task_ctx_ptr
+                .byte_add(offset_of!(TaskContext, stack_pointer))
+                .cast::<usize>()
+                .write(kstack_sp);
+            // task_pointer 与 page_table_register 在任务创建完成后填写
+        }
+        // 与 fork 一致：kstack 字段的初始值必须是上下文地址（不是栈底），
+        // 因为进入空闲任务时（enter_idle_task）与切换回空闲任务时都会直接读取它
+        let kstack = unsafe { TaskKernelStackPtr::from_addr(task_ctx_ptr as usize) };
 
         let task = TaskArc::try_new(Self {
             kstack,
@@ -420,6 +444,7 @@ impl Task {
             }),
 
             refcount: AtomicU32::new(1),
+            running: core::sync::atomic::AtomicBool::new(false),
 
             last_cpu: AtomicUsize::new(cpu),
 
@@ -430,6 +455,24 @@ impl Task {
         // 与 execute_init 保持一致，在内核栈顶端写入任务指针
         // （空闲任务不会进入用户态，因此这里的值实际上不会被用到）
         unsafe { task_ptr_ptr.write(task.deref()) };
+
+        // 补全挂起上下文中的 task_pointer 与 page_table_register
+        unsafe {
+            task_ctx_ptr
+                .byte_add(offset_of!(TaskContext, task_pointer))
+                .cast::<usize>()
+                .write(task.deref() as *const Task as usize);
+            task_ctx_ptr
+                .byte_add(offset_of!(TaskContext, page_table_register))
+                .cast::<usize>()
+                .write(task.address_space.read().read().get_page_table().to_native_register());
+
+            #[cfg(target_arch = "loongarch64")]
+            task_ctx_ptr
+                .byte_add(offset_of!(TaskContext, euen))
+                .cast::<usize>()
+                .write(0); // EUEN = 0：不保存/恢复浮点上下文
+        }
 
         task
     }
@@ -672,6 +715,7 @@ impl Task {
             user_ids: SpinRwLock::new(*self.user_ids.read()),
 
             refcount: AtomicU32::new(1),
+            running: core::sync::atomic::AtomicBool::new(false),
 
             // 会被调度器放到任意核上运行，届时由切换到它的核覆写
             last_cpu: AtomicUsize::new(0),
@@ -835,6 +879,15 @@ impl Task {
             TaskState::Normal as u8
         );
         debug_assert!(!addr_eq(&*target, current_task()));
+
+        if target.running.load(Ordering::Relaxed) {
+            crate::println!(
+                "DIAG DOUBLE-RUN!! 目标任务 tid={} 已在运行却被再次切换（cur tid={}）",
+                target.tid,
+                cur_task().tid,
+            );
+        }
+        target.running.store(true, Ordering::Relaxed);
 
         // 告诉目标任务它将在哪个核上运行（SMP）
         target

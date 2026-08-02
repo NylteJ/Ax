@@ -35,6 +35,7 @@ const PAGE_TABLE_OFFSET: usize = offset_of!(TaskContext, page_table_register);
 const REGS_OFFSET: usize = offset_of!(TaskContext, callee_saved_registers);
 
 const KSTACK_OFFSET_IN_TASK: usize = offset_of!(crate::multitask::task::Task, kstack);
+const RUNNING_OFFSET_IN_TASK: usize = offset_of!(crate::multitask::task::Task, running);
 
 /// 保存当前上下文，并切换到另一个上下文。
 ///
@@ -63,6 +64,8 @@ pub unsafe extern "C" fn switch_context(to: &TaskContext) {
                 )*
                 // 3. 更新当前 Task 结构体的内核栈顶指针
                 "sd sp, {KSTACK_OFFSET_IN_TASK}(tp)",
+                // 保存完成后清除 running 标志（上下文已完整保存，此后其它核可安全地调度本任务）
+                "sb zero, {RUNNING_OFFSET_IN_TASK}(tp)",
                 // 4. 恢复目标上下文（ra、tp、sp、satp、s0~s11）
                 "ld ra, {RA_OFFSET}(a0)",
                 "ld tp, {TASK_ADDR_OFFSET}(a0)",
@@ -85,6 +88,7 @@ pub unsafe extern "C" fn switch_context(to: &TaskContext) {
                 REGS_OFFSET = const REGS_OFFSET,
                 TASK_ADDR_OFFSET = const TASK_ADDR_OFFSET,
                 KSTACK_OFFSET_IN_TASK = const KSTACK_OFFSET_IN_TASK,
+                RUNNING_OFFSET_IN_TASK = const RUNNING_OFFSET_IN_TASK,
             )}
         );
     }
@@ -116,6 +120,8 @@ pub unsafe extern "C" fn switch_context(to: &TaskContext) {
                 "0:",
                 // 4. 更新当前 Task 结构体的内核栈顶指针
                 "st.d $sp, $tp, {KSTACK_OFFSET_IN_TASK}",
+                // 保存完成后清除 running 标志（上下文已完整保存，此后其它核可安全地调度本任务）
+                "st.b $zero, $tp, {RUNNING_OFFSET_IN_TASK}",
                 // 5. 恢复除 $ra 外的常规目标上下文（$tp、$sp、PGDL、EUEN、$s0~$s9）
                 "ld.d $tp, $a0, {TASK_ADDR_OFFSET}",
                 "ld.d $sp, $a0, {SP_OFFSET}",
@@ -149,6 +155,7 @@ pub unsafe extern "C" fn switch_context(to: &TaskContext) {
                 REGS_OFFSET = const REGS_OFFSET,
                 TASK_ADDR_OFFSET = const TASK_ADDR_OFFSET,
                 KSTACK_OFFSET_IN_TASK = const KSTACK_OFFSET_IN_TASK,
+                RUNNING_OFFSET_IN_TASK = const RUNNING_OFFSET_IN_TASK,
                 store_fregs_to = sym store_fregs_to,
                 load_fregs = sym load_fregs,
             )}

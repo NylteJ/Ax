@@ -70,6 +70,9 @@ impl Tcp {
 
 impl Drop for Tcp {
     fn drop(&mut self) {
+        // 网络操作必须在 NET_LOCK 下进行（可重入）。见 NET_LOCK 的文档。
+        let _net_lock = crate::network::NET_LOCK.lock_guard();
+
         let smol_socket = self.smol_socket.get_mut();
 
         // 曾处于 Established 及其后续状态（FinWait1/2, CloseWait, Closing, LastAck）

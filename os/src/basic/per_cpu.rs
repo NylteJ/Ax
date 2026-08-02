@@ -2,7 +2,7 @@ use core::sync::atomic::Ordering;
 
 use crate::{
     arch,
-    arch::interfaces::{Basic, Regs, Smp},
+    arch::interfaces::{Basic, Regs, Smp, Trap},
     basic::{shared_with_asm::SharedWithAsm, sync::SpinMutex, timer},
     multitask::{
         cur_task, current_task,
@@ -94,17 +94,19 @@ pub extern "C" fn secondary_entry(cpu_id: usize) -> ! {
 
     log::info!("CPU {cpu_id} 启动成功，正在进入空闲循环...");
 
+
     // 次要核需要单独完成与当前 CPU 相关的初始化
 
     // TLB 相关 CSR 是每核独立的
     #[cfg(target_arch = "loongarch64")]
     crate::memory::tlb_refill_handler::init_cpu();
 
-    // 次要核定时器：LoongArch 正常启用；RISC-V 上存在 QEMU 相关的不稳定损坏问题
-    // （任务跳到 PC=0、sscratch 变垃圾值；已排除处理逻辑、SBI 调用与抢占，使用旧 CLINT
-    //  （-machine virt,aclint=false）时偶尔可通过，但仍有损坏，问题疑似在 trap 路径），
-    // 因此 RISC-V 暂时不启用
-    #[cfg(target_arch = "loongarch64")]
+    // 次要核定时器：两架构均启用。RISC-V 上必须先在当前核上设置 stvec（trap 处理器），
+    // 因为 stvec 是每核独立的 CSR，启动核的 stvec 不会自动传导到次要核（此前次要核的
+    // stvec 残留为 OpenSBI 的垃圾值，首次用户态定时器中断会跳转到该地址导致用户内存损坏）
+    #[cfg(target_arch = "riscv64")]
+    arch::NativeRegs::set_trap_handler(arch::NativeTrap::trap_handler_raw_from_kernel);
+
     {
         trap::enable_timer_interrupt();
         timer::start_timer_tick_tock();

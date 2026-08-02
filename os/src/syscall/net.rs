@@ -253,6 +253,8 @@ pub extern "C" fn bind(sockfd: isize, addr: *const u8, addrlen: usize) -> Syscal
         }
     };
 
+    // 网络操作必须在 NET_LOCK 下进行（可重入）。见 NET_LOCK 的文档。
+    let _net_lock = crate::network::NET_LOCK.lock_guard();
     sock.data.bind_part_1(socket_addr, sock)?;
     sock.ops.bind_part_2(sock)
 }
@@ -280,6 +282,7 @@ pub extern "C" fn listen(sockfd: isize, backlog: isize) -> SyscallResult {
     log::info!("[listen] sockfd={sockfd}, backlog={backlog}, socket_type={:?}", socket.socket_type);
     match socket.socket_type {
         SocketType::STREAM | SocketType::SEQPACKET => {
+            let _net_lock = crate::network::NET_LOCK.lock_guard();
             let ret = socket.sock.ops.listen(&socket.sock, backlog);
             log::info!("[listen] done");
             ret
@@ -325,7 +328,12 @@ pub extern "C" fn accept(sockfd: isize, addr: *mut u8, addrlen: *mut u32) -> Sys
     let new_sock = match socket.socket_type {
         SocketType::STREAM | SocketType::SEQPACKET => autoretry_advanced(
             sock.nonblocking.load(Ordering::Relaxed),
-            || sock.ops.accept(&socket.sock),
+            // 网络操作必须在 NET_LOCK 下进行（可重入）。见 NET_LOCK 的文档。
+            // 注意只能在闭包内获取：autoretry 会睡眠，绝不能在持锁时睡眠。
+            || {
+                let _net_lock = crate::network::NET_LOCK.lock_guard();
+                sock.ops.accept(&socket.sock)
+            },
             |result| matches!(result, Err(E_SPECIAL_NET_RETRY)),
         )??,
         _ => return EOPNOTSUPP,
@@ -405,6 +413,9 @@ pub extern "C" fn sendto(
             let addr = copy_addr_from_user(dest_addr, addrlen)?;
 
             autoretry(sock.nonblocking.load(Ordering::Relaxed), || {
+                // 网络操作必须在 NET_LOCK 下进行（可重入）。见 NET_LOCK 的文档。
+                // 注意只能在闭包内获取：autoretry 会睡眠，绝不能在持锁时睡眠。
+                let _net_lock = crate::network::NET_LOCK.lock_guard();
                 sock.ops.sendto(&socket.sock, buf.cast(), size, addr)
             })
         }
@@ -424,6 +435,9 @@ pub extern "C" fn recvfrom(
     let sock = &socket.sock;
 
     autoretry(sock.nonblocking.load(Ordering::Relaxed), || {
+        // 网络操作必须在 NET_LOCK 下进行（可重入）。见 NET_LOCK 的文档。
+        // 注意只能在闭包内获取：autoretry 会睡眠，绝不能在持锁时睡眠。
+        let _net_lock = crate::network::NET_LOCK.lock_guard();
         sock.ops.recvfrom(sock, buf.cast(), size, src_addr, addrlen)
     })
 }
@@ -434,6 +448,8 @@ pub extern "C" fn connect(sockfd: isize, addr: *const u8, addrlen: usize) -> Sys
     let sock = &socket.sock;
 
     let addr = copy_addr_from_user(addr, addrlen)?;
+    // 网络操作必须在 NET_LOCK 下进行（可重入）。见 NET_LOCK 的文档。
+    let _net_lock = crate::network::NET_LOCK.lock_guard();
     sock.data.connect_part_1(addr)?;
     sock.ops.connect(sock)
 }
@@ -453,5 +469,7 @@ pub extern "C" fn send(
     let socket = get_socket_from_file(&file)?;
     let sock = &socket.sock;
 
+    // 网络操作必须在 NET_LOCK 下进行（可重入）。见 NET_LOCK 的文档。
+    let _net_lock = crate::network::NET_LOCK.lock_guard();
     sock.ops.send(sock, buf.cast(), size)
 }
