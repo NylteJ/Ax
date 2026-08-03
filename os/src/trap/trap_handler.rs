@@ -117,10 +117,15 @@ extern "C" fn trap_handler(context: &mut NativeTrapContext) {
 
             check_all_timers();
 
-            let mut brw = TASK_SCHEDULER.lock();
-            if let Some(next_task) = brw.on_time_interrupt(cur_task()) {
-                drop(brw);
-                Task::switch_to(next_task);
+            // 内核态不抢占：SpinMutex / SpinRwLock 临界区依赖"无抢占"的不变量，
+            // 若在持锁期间被切走，其它核上等待同一把锁的任务将永远自旋。
+            // 用户态的抢占行为由调度器的 RoundRobin 时间片机制正常处理。
+            if !trap_is_from_kernel {
+                let mut brw = TASK_SCHEDULER.lock();
+                if let Some(next_task) = brw.on_time_interrupt(cur_task()) {
+                    drop(brw);
+                    Task::switch_to(next_task);
+                }
             }
         }
         Trap::Exception(fault) if fault.is_page_fault() => {

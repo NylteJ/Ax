@@ -131,7 +131,6 @@ pub(crate) fn do_egress(socket: SocketMRef<'_, '_>, established_tcp: bool) -> Op
     use crate::{
         basic::timer::{cpu_tick_to_us, get_cpu_tick},
         devices::DEVICES,
-        network::NET_LOCK,
     };
     use smoltcp::{
         iface::{EgressError, IngressPacket, Meta, PollIngressSingleResult},
@@ -140,8 +139,7 @@ pub(crate) fn do_egress(socket: SocketMRef<'_, '_>, established_tcp: bool) -> Op
 
     debug_assert!(!established_tcp || matches!(&socket, SocketMRef::Tcp(_)));
 
-    // 网络操作必须在 NET_LOCK 下进行（可重入：系统调用内部已持有）。见 NET_LOCK 的文档。
-    let _net_lock = NET_LOCK.lock_guard();
+    // NET_LOCK 由调用方持有（系统调用处理器或 Tcp::drop），此处不再获取
 
     let mut iface = DEVICES.network_lo_iface.lock();
     let mut lo = DEVICES.network_lo.lock();

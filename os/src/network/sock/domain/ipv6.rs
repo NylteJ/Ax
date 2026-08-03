@@ -58,8 +58,7 @@ impl<Proto: ?Sized + SockProtocol> SockDomain for IPv6<Proto> {
 
 impl<Proto: ?Sized + SockProtocol> Drop for IPv6<Proto> {
     fn drop(&mut self) {
-        // 网络操作必须在 NET_LOCK 下进行（可重入）。见 NET_LOCK 的文档。
-        let _net_lock = crate::network::NET_LOCK.lock_guard();
+        let _net_lock = crate::network::NET_LOCK.lock();
 
         if let Some(address) = self.address.get_mut() {
             GLOBAL_NET_NAMESPACE.unbind_socket(address.ipv6_addr(), address.port.get());
